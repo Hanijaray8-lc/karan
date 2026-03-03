@@ -1,0 +1,34 @@
+// routes/agentRoutes.js
+const express = require('express');
+const router = express.Router();
+const {
+  getAgents,
+  createAgent,
+  updateAgent,
+  deleteAgent,
+  getAgentById,
+  getAgentsByDepartment,
+  getAgentStats
+} = require('../controllers/agentController');
+
+const { protect, authorize } = require('../middleware/auth');
+const upload = require('../middleware/upload');
+
+// All agent routes require authentication
+router.use(protect);
+
+// Admin only routes
+router.route('/')
+  .get(authorize('admin'), getAgents)
+  .post(authorize('admin'), upload.single('profilePhoto'), createAgent);
+
+router.get('/stats', authorize('admin'), getAgentStats);
+router.get('/department/:dept', authorize('admin'), getAgentsByDepartment);
+
+// Admin or agent can view, only admin can modify
+router.route('/:id')
+  .get(authorize('admin', 'agent'), getAgentById)
+  .put(authorize('admin'), upload.single('profilePhoto'), updateAgent)
+  .delete(authorize('admin'), deleteAgent);
+
+module.exports = router;
