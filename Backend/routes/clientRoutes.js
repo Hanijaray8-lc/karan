@@ -213,24 +213,39 @@ router.put('/:id', protect, authorize('admin', 'agent', 'manager'), async functi
       client.status = 'pending';
     }
 
-    // Recalculate weekly installment (fallback)
-    const computedUpdate = calculateWeeklyInstallment(
-      client.loan_start_date,
-      client.loan_end_date,
-      client.pending
-    );
-
-    // If admin provided values in the request body, prefer them.
-    // Agents/managers are not allowed to provide these fields (they only update loan_end_date).
-    let finalWeekly = computedUpdate.weekly_amount;
-    let finalWeeks = computedUpdate.total_weeks;
+    // Determine how to update weekly fields. Admins may recalc or override;
+    // agents/managers should keep the existing weekly_amount but still adjust
+    // total_weeks when the end date changes so that the schedule lengthens.
+    let finalWeekly = client.weekly_amount;
+    let finalWeeks = client.total_weeks;
 
     if (req.user.role === 'admin') {
+      // Admins recompute by default and can override via request body.
+      const computedUpdate = calculateWeeklyInstallment(
+        client.loan_start_date,
+        client.loan_end_date,
+        client.pending
+      );
+      finalWeekly = computedUpdate.weekly_amount;
+      finalWeeks = computedUpdate.total_weeks;
+
       if (req.body.weekly_amount !== undefined && !isNaN(Number(req.body.weekly_amount))) {
         finalWeekly = Math.round(Number(req.body.weekly_amount) * 100) / 100;
       }
       if (req.body.total_weeks !== undefined && Number(req.body.total_weeks) > 0) {
         finalWeeks = Number(req.body.total_weeks);
+      }
+    } else {
+      // Agent/manager update: only loan_end_date changes (per earlier guard)
+      // Extend total_weeks if end date has been modified. Do NOT recalc
+      // weekly_amount so the customer keeps the same weekly installment.
+      if (req.body.loan_end_date !== undefined) {
+        const computedUpdate = calculateWeeklyInstallment(
+          client.loan_start_date,
+          client.loan_end_date,
+          client.pending
+        );
+        finalWeeks = computedUpdate.total_weeks;
       }
     }
 
