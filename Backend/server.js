@@ -25,6 +25,7 @@ connectDB();
 const allowedOrigins = [
   process.env.FRONTEND_URL,          // set this in production (e.g. https://karan-e26t.onrender.com)
   'https://karan-e26t.onrender.com', // explicit fallback
+  'https://www.karanfinance.com', // frontend production domain
   'http://localhost:3000',
   'https://localhost',
   'http://localhost',
