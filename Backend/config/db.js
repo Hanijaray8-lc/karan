@@ -1,5 +1,4 @@
 const mongoose = require('mongoose');
-const bcrypt = require('bcryptjs');
 const Admin = require('../models/Admin'); // உங்கள் Admin மாடல் இருக்கும் பாதை
 
 const connectDB = async () => {
@@ -12,14 +11,11 @@ const connectDB = async () => {
     // --- Admin Seeding Logic Start ---
     const adminExists = await Admin.findOne({ username: 'admin' });
     if (!adminExists) {
-      // 123 என்பதை ஹேஷ் (Hash) செய்து சேமிக்கிறோம்
-      const salt = await bcrypt.genSalt(10);
-      const hashedPassword = await bcrypt.hash('123', salt);
-
+      // Store plaintext password (no hashing)
       await Admin.create({
         username: 'admin',
         email: 'admin@gmail.com',
-        password: hashedPassword,
+        password: '123',
         role: 'admin' // உங்கள் மாடலில் ரோல் இருந்தால்
       });
       console.log('🚀 Default Admin Created (User: admin / Pass: 123)');

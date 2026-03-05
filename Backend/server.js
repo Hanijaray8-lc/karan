@@ -21,8 +21,19 @@ const app = express();
 connectDB();
 
 // 1. Middlewares
+// Configure allowed origins for CORS (includes env variable and common local/production URLs)
+const allowedOrigins = [
+  process.env.FRONTEND_URL,          // set this in production (e.g. https://karan-e26t.onrender.com)
+  'https://karan-e26t.onrender.com', // explicit fallback
+  'http://localhost:3000',
+  'https://localhost',
+  'http://localhost',
+  'capacitor://localhost',
+  'ionic://localhost'
+].filter(Boolean);
+
 app.use(cors({
-  origin: 'http://localhost:3000',
+  origin: allowedOrigins,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']

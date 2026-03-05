@@ -27,6 +27,7 @@ const DailyDues = () => {
   const [paidTodayMap, setPaidTodayMap] = useState({}); // localStorage marker for Mark Paid
   const [notPaidTodayMap, setNotPaidTodayMap] = useState({}); // localStorage marker for Not Paid
   const [serverPaidTodayMap, setServerPaidTodayMap] = useState({}); // server-side payments today
+  const [refreshTrigger, setRefreshTrigger] = useState(0); // trigger to refresh clients after state changes
 
   // Derive available landmarks from clients (filtered by selected district)
   const getAvailableLandmarks = () => {
@@ -477,6 +478,7 @@ const DailyDues = () => {
       // Mark action locally for today so button stays disabled on page reload
       setLocalActionDone(client._id, 'markedPaid');
       showNotification('Marked as paid successfully', 'success');
+      setRefreshTrigger(prev => prev + 1); // Trigger state refresh
       setShowClientModal(false);
     } catch (err) {
       console.error('Mark paid error:', err);
@@ -526,6 +528,7 @@ const DailyDues = () => {
       // mark action locally for today so Not Paid can't be clicked again
       setLocalActionDone(client._id, 'pushedNotPaid');
       showNotification('Due extended by 1 week', 'success');
+      setRefreshTrigger(prev => prev + 1); // Trigger state refresh
       setShowClientModal(false);
     } catch (err) {
       console.error('Extend due error:', err);
@@ -1155,7 +1158,7 @@ const DailyDues = () => {
                 className={`w-full py-4 mb-3 ${notPaidTodayMap[selectedClient._id] ? 'bg-gray-300 text-gray-600 cursor-not-allowed' : 'bg-yellow-500 text-white'} rounded-xl font-semibold flex items-center justify-center gap-3 shadow-lg hover:-translate-y-1 hover:shadow-xl transition-all active:scale-95`}
               >
                 <i className="fas fa-forward"></i>
-                {notPaidTodayMap[selectedClient._id] ? 'Already Pushed Today' : 'Not Paid (Push to next week)'}
+                {notPaidTodayMap[selectedClient._id] ? 'Already Pushed Today' : 'CANCEL (Push to next week)'}
               </button>
               
               <button

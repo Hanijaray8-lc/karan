@@ -35,6 +35,7 @@ export default function MClientManagement() {
     name: '',
     husband_name: '',
     phone: '',
+    // password: '',
     landmark: '',
     address: '',
     district: '',
@@ -297,6 +298,7 @@ export default function MClientManagement() {
       name: '',
       husband_name: '',
       phone: '',
+      // password: '',
       landmark: '',
       address: '',
       district: '',
@@ -577,14 +579,14 @@ export default function MClientManagement() {
                   <th className="px-3 py-4 font-semibold whitespace-nowrap">Received</th>
                   <th className="px-3 py-4 font-semibold whitespace-nowrap">Pending</th>
                   <th className="px-3 py-4 font-semibold whitespace-nowrap">Weekly Amount</th>
-                  <th className="px-3 py-4 font-semibold whitespace-nowrap">Weeks</th>
+                  {/* <th className="px-3 py-4 font-semibold whitespace-nowrap">Weeks</th> */}
                   <th className="px-3 py-4 font-semibold whitespace-nowrap">Start Date</th>
                   <th className="px-3 py-4 font-semibold whitespace-nowrap">End Date</th>
                   <th className="px-3 py-4 font-semibold whitespace-nowrap">Status</th>
                   <th className="px-3 py-4 font-semibold whitespace-nowrap">Nominee Name</th>
                   <th className="px-3 py-4 font-semibold whitespace-nowrap">Nominee Phone</th>
                   <th className="px-3 py-4 font-semibold whitespace-nowrap">Nominee Address</th>
-                  <th className="px-3 py-4 font-semibold whitespace-nowrap">Notes</th>
+                  {/* <th className="px-3 py-4 font-semibold whitespace-nowrap">Notes</th> */}
                   <th className="px-3 py-4 font-semibold text-center whitespace-nowrap">Actions</th>
                 </tr>
               </thead>
@@ -623,7 +625,7 @@ export default function MClientManagement() {
                       <td className="px-3 py-4 whitespace-nowrap text-green-700 font-medium">₹{(client.received || 0).toLocaleString('en-IN')}</td>
                       <td className="px-3 py-4 whitespace-nowrap text-red-700 font-medium">₹{(client.pending || 0).toLocaleString('en-IN')}</td>
                       <td className="px-3 py-4 whitespace-nowrap font-medium text-blue-600">₹{(client.weekly_amount || 0).toFixed(2)}</td>
-                      <td className="px-3 py-4 whitespace-nowrap font-medium">{client.total_weeks || 0} weeks</td>
+                      {/* <td className="px-3 py-4 whitespace-nowrap font-medium">{client.total_weeks || 0} weeks</td> */}
                       <td className="px-3 py-4 whitespace-nowrap">{formatDate(client.loan_start_date)}</td>
                       <td className="px-3 py-4 whitespace-nowrap">{formatDate(client.loan_end_date)}</td>
                       <td className="px-3 py-4 whitespace-nowrap">
@@ -634,9 +636,9 @@ export default function MClientManagement() {
                       <td className="px-3 py-4 whitespace-nowrap">{client.nominee_name || '—'}</td>
                       <td className="px-3 py-4 whitespace-nowrap">{client.nominee_phone || '—'}</td>
                       <td className="px-3 py-4 whitespace-nowrap">{client.nominee_address || '—'}</td>
-                      <td className="px-3 py-4 max-w-[200px] truncate" title={client.notes}>
+                      {/* <td className="px-3 py-4 max-w-[200px] truncate" title={client.notes}>
                         {client.notes || '—'}
-                      </td>
+                      </td> */}
                       <td className="px-3 py-4 whitespace-nowrap">
                         <div className="flex items-center gap-2 justify-center">
                           <button
@@ -707,7 +709,7 @@ export default function MClientManagement() {
                     value={formData.husband_name}
                     onChange={handleInputChange}
                     className="w-full px-4 py-2 border-2 border-[#16423C]/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#16423C]"
-                    required
+                    
                   />
                 </div>
               </div>
@@ -728,6 +730,18 @@ export default function MClientManagement() {
                   required
                 />
               </div>
+
+              {/* <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                <input
+                  name="password"
+                  type="text"
+                  value={formData.password}
+                  onChange={handleInputChange}
+                  className="w-full px-4 py-2 border-2 border-[#16423C]/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#16423C]"
+                  placeholder="Enter password (stored as plain text)"
+                />
+              </div> */}
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Landmark</label>
@@ -874,7 +888,7 @@ export default function MClientManagement() {
               {formData.loan_start_date && formData.loan_end_date && (
                 <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-4">
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div>
+                    {/* <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">
                         Total Weeks
                       </label>
@@ -884,7 +898,7 @@ export default function MClientManagement() {
                         readOnly
                         className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg bg-gray-100 text-gray-700 cursor-not-allowed font-semibold"
                       />
-                    </div>
+                    </div> */}
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">
                         Weekly Amount (₹)
@@ -948,7 +962,7 @@ export default function MClientManagement() {
                 />
               </div>
 
-              <div>
+              {/* <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
                 <textarea
                   name="notes"
@@ -957,7 +971,7 @@ export default function MClientManagement() {
                   rows={2}
                   className="w-full px-4 py-2 border-2 border-[#16423C]/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#16423C]"
                 />
-              </div>
+              </div> */}
 
               <div className="sticky bottom-0 bg-white/80 backdrop-blur-lg pt-4 pb-1 border-t-2 border-[#16423C]/10 mt-4">
                 <div className="flex gap-4">
@@ -1031,6 +1045,18 @@ export default function MClientManagement() {
                   required
                 />
               </div>
+{/* 
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                <input
+                  name="password"
+                  type="text"
+                  value={formData.password}
+                  onChange={handleInputChange}
+                  className="w-full px-4 py-2 border-2 border-[#16423C]/20 rounded-lg"
+                  placeholder="Enter password (stored as plain text)"
+                />
+              </div> */}
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Landmark</label>

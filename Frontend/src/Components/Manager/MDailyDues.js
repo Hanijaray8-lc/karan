@@ -491,8 +491,15 @@ const MDailyDues = () => {
       setServerPaidTodayMap(prev => ({ ...prev, [client._id]: true }));
       // Mark action locally for today so button stays disabled on page reload
       setLocalActionDone(client._id, 'markedPaid');
-      showNotification('Marked as paid successfully', 'success');
+      
+      // Reset overflow immediately before closing modal
+      document.body.style.overflow = 'auto';
+      
+      // Close modal and clear selected client
       setShowClientModal(false);
+      setSelectedClient(null);
+      
+      showNotification('Marked as paid successfully', 'success');
     } catch (err) {
       console.error('Mark paid error:', err);
       showNotification(err.message || 'Failed to mark paid', 'error');
@@ -542,8 +549,15 @@ const MDailyDues = () => {
       }
       // mark action locally for today so Not Paid can't be clicked again
       setLocalActionDone(client._id, 'pushedNotPaid');
-      showNotification('Due extended by 1 week', 'success');
+      
+      // Reset overflow immediately before closing modal
+      document.body.style.overflow = 'auto';
+      
+      // Close modal and clear selected client
       setShowClientModal(false);
+      setSelectedClient(null);
+      
+      showNotification('Due extended by 1 week', 'success');
     } catch (err) {
       console.error('Extend due error:', err);
       showNotification(err.message || 'Failed to extend due', 'error');
@@ -552,9 +566,9 @@ const MDailyDues = () => {
 
   // Close modal
   const closeModal = () => {
+    document.body.style.overflow = 'auto';
     setShowClientModal(false);
     setSelectedClient(null);
-    document.body.style.overflow = 'auto';
   };
 
   // Handle export PDF
@@ -1176,7 +1190,7 @@ const MDailyDues = () => {
                 className={`w-full py-4 mb-3 ${notPaidTodayMap[selectedClient._id] || serverPaidTodayMap[selectedClient._id] || paidTodayMap[selectedClient._id] ? 'bg-gray-300 text-gray-600 cursor-not-allowed' : 'bg-yellow-500 text-white'} rounded-xl font-semibold flex items-center justify-center gap-3 shadow-lg hover:-translate-y-1 hover:shadow-xl transition-all active:scale-95`}
               >
                 <i className="fas fa-forward"></i>
-                {serverPaidTodayMap[selectedClient._id] || paidTodayMap[selectedClient._id] ? 'Already Paid Today' : notPaidTodayMap[selectedClient._id] ? 'Already Pushed Today' : 'Not Paid (Push to next week)'}
+                {serverPaidTodayMap[selectedClient._id] || paidTodayMap[selectedClient._id] ? 'Already Paid Today' : notPaidTodayMap[selectedClient._id] ? 'Already Pushed Today' : 'CANCEL (Push to next week)'}
               </button>
               
               <button

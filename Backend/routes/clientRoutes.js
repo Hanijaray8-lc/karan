@@ -191,7 +191,7 @@ router.put('/:id', protect, authorize('admin', 'agent', 'manager'), async functi
       client.loan_end_date = req.body.loan_end_date;
     } else {
       // Update fields (NO agent field)
-      const fields = ['name', 'husband_name', 'phone', 'landmark', 'address', 'district',
+      const fields = ['name', 'husband_name', 'phone', 'password', 'landmark', 'address', 'district',
         'amount', 'received', 'loan_start_date', 'loan_end_date',
         'notes', 'nominee_name', 'nominee_phone', 'nominee_address'];
 

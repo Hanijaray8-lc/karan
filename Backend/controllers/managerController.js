@@ -1,6 +1,7 @@
 // controllers/managerController.js
 const Manager = require('../models/Manager');
-const bcrypt = require('bcryptjs');
+// storing passwords in plaintext (insecure) - no bcrypt needed
+
 
 // @desc    Get all managers
 // @route   GET /api/managers
@@ -56,17 +57,13 @@ const createManager = async (req, res) => {
       });
     }
 
-    // Hash password
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
-
-    // Create manager
+    // store plaintext password
     const manager = await Manager.create({
       username,
       name,
       email,
       phone,
-      password: hashedPassword,
+      password,
       status: status || 'Active',
       addedBy: req.user.id // Admin ID who added
     });
@@ -120,10 +117,9 @@ const updateManager = async (req, res) => {
     if (phone) manager.phone = phone;
     if (status) manager.status = status;
 
-    // Update password if provided
+    // Update password if provided (plaintext)
     if (password) {
-      const salt = await bcrypt.genSalt(10);
-      manager.password = await bcrypt.hash(password, salt);
+      manager.password = password;
     }
 
     const updatedManager = await manager.save();
@@ -178,7 +174,8 @@ const deleteManager = async (req, res) => {
 // @route   GET /api/managers/:id
 const getManagerById = async (req, res) => {
   try {
-    const manager = await Manager.findById(req.params.id).select('-password');
+    // include password so frontend can show it
+    const manager = await Manager.findById(req.params.id);
     
     if (!manager) {
       return res.status(404).json({ 
@@ -235,11 +232,36 @@ const getManagerStats = async (req, res) => {
   }
 };
 
+// @desc    Reset manager password (generate a temporary password and return it once)
+// @route   POST /api/managers/:id/reset-password
+const resetManagerPassword = async (req, res) => {
+  try {
+    const manager = await Manager.findById(req.params.id);
+
+    if (!manager) {
+      return res.status(404).json({ success: false, message: 'Manager not found' });
+    }
+
+    // Generate a temporary password
+    const tempPassword = Math.random().toString(36).slice(-8);
+
+    // store temporary plaintext
+    manager.password = tempPassword;
+    await manager.save();
+
+    res.json({ success: true, password: tempPassword, message: 'Temporary password generated' });
+  } catch (error) {
+    console.error('Reset manager password error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 module.exports = {
   getManagers,
   createManager,
   updateManager,
   deleteManager,
   getManagerById,
-  getManagerStats
+  getManagerStats,
+  resetManagerPassword
 };

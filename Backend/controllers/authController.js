@@ -3,7 +3,7 @@ const jwt = require('jsonwebtoken');
 const Admin = require('../models/Admin');
 const Agent = require('../models/Agent');
 const Manager = require('../models/Manager'); // Add Manager model
-const bcrypt = require('bcryptjs');
+// passwords stored plaintext, bcrypt not required
 
 exports.login = async (req, res) => {
   try {
@@ -43,13 +43,9 @@ exports.login = async (req, res) => {
       });
     }
 
-    // 5. Compare Password
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      return res.status(401).json({ 
-        success: false, 
-        message: 'Invalid Password' 
-      });
+    // 5. Compare Password (plaintext)
+    if (password !== user.password) {
+      return res.status(401).json({ success: false, message: 'Invalid Password' });
     }
 
     // 6. Generate Token with Role

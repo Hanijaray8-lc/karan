@@ -71,7 +71,8 @@ const Navbar = () => {
           
           {/* Brand Logo */}
           <Link to="/dashboard" className="flex items-center gap-2 text-white font-bold text-xl min-w-fit">
-            <FiBarChart2 className="text-[#C4DAD2]" />
+            {/* logo placed in public/logo.png */}
+            <img src="/KaranLogo.jpeg" alt="Karan Finance" className="h-11 w-11 rounded-full object-cover" />
             <span>Karan Finance</span>
           </Link>
 

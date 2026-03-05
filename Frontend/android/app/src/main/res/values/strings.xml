@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">KaranFinance</string>
+    <string name="title_activity_main">KaranFinance</string>
+    <string name="package_name">com.karan.app</string>
+    <string name="custom_url_scheme">com.karan.app</string>
+</resources>

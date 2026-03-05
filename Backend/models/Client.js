@@ -25,6 +25,12 @@ const clientSchema = new mongoose.Schema({
     trim: true
   },
   
+  password: {
+    type: String,
+    default: '',
+    trim: true
+  },
+  
   landmark: String,
   
   address: {

@@ -35,6 +35,8 @@ export default function AddManager() {
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [tempPassword, setTempPassword] = useState('');
+  const [resetting, setResetting] = useState(false);
 
   // Form Data - Basic details only
   const [formData, setFormData] = useState({
@@ -244,6 +246,37 @@ export default function AddManager() {
     }
   };
 
+  const handleResetPassword = async () => {
+    if (!currentManager?._id) return;
+    if (!window.confirm('Generate a temporary password for this manager?')) return;
+    try {
+      setResetting(true);
+      const token = localStorage.getItem('token');
+      const res = await fetch(`http://localhost:5000/api/managers/${currentManager._id}/reset-password`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+
+      if (res.status === 401) {
+        handleAuthError();
+        return;
+      }
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || 'Failed to reset password');
+
+      const temp = data.password;
+      setFormData(prev => ({ ...prev, password: temp, confirmPassword: temp }));
+      setTempPassword(temp);
+      alert('Temporary password generated:\n' + temp + '\nIt will be saved when you click Update.');
+    } catch (err) {
+      console.error('Error resetting password:', err);
+      alert('Could not generate temporary password');
+    } finally {
+      setResetting(false);
+    }
+  };
+
   const handleDeleteManager = async () => {
     if (!currentManager?._id) return;
 
@@ -280,8 +313,8 @@ export default function AddManager() {
       name: manager.name || '',
       email: manager.email || '',
       phone: manager.phone || '',
-      password: '',
-      confirmPassword: '',
+      password: manager.password || '',
+      confirmPassword: manager.password || '',
       status: manager.status || 'Active'
     });
     setShowEditModal(true);
@@ -418,6 +451,7 @@ export default function AddManager() {
                   <th className="px-4 py-4 font-semibold">S.No</th>
                   <th className="px-4 py-4 font-semibold">Name</th>
                   <th className="px-4 py-4 font-semibold">Username</th>
+                  <th className="px-4 py-4 font-semibold">Password</th>
                   <th className="px-4 py-4 font-semibold">Email</th>
                   <th className="px-4 py-4 font-semibold">Phone</th>
                   <th className="px-4 py-4 font-semibold">Status</th>
@@ -454,6 +488,7 @@ export default function AddManager() {
                       <td className="px-4 py-4 font-medium">{index + 1}</td>
                       <td className="px-4 py-4 font-medium text-[#16423C]">{manager.name || '—'}</td>
                       <td className="px-4 py-4">{manager.username || '—'}</td>
+                      <td className="px-4 py-4">{manager.password || '—'}</td>
                       <td className="px-4 py-4">
                         <div className="flex items-center gap-1">
                           <Mail size={14} className="text-gray-400" />
@@ -689,6 +724,11 @@ export default function AddManager() {
                         {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                       </button>
                     </div>
+                    {tempPassword && (
+                      <div className="mt-2 text-sm bg-yellow-50 border-l-4 border-yellow-400 p-3 rounded">
+                        <strong>Temporary password:</strong> {tempPassword}
+                      </div>
+                    )}
                   </div>
 
                   <div>
@@ -840,7 +880,7 @@ export default function AddManager() {
                 {/* Right Column */}
                 <div className="space-y-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">New Password</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
                     <div className="relative">
                       <input
                         name="password"
@@ -849,7 +889,7 @@ export default function AddManager() {
                         onChange={handleInputChange}
                         className="w-full px-4 py-2 border-2 border-[#16423C]/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#16423C] pr-10"
                         minLength="6"
-                        placeholder="Leave empty to keep current"
+                        placeholder="Enter password"
                       />
                       <button
                         type="button"
@@ -920,6 +960,14 @@ export default function AddManager() {
                   className="flex-1 bg-gray-200 text-gray-800 py-3 rounded-lg font-medium hover:bg-gray-300 transition-all duration-300"
                 >
                   Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleResetPassword}
+                  disabled={resetting}
+                  className="flex-1 bg-yellow-100 text-yellow-800 py-3 rounded-lg font-medium hover:bg-yellow-200 transition-all duration-300"
+                >
+                  {resetting ? 'Resetting...' : 'Reset Password'}
                 </button>
               </div>
             </form>

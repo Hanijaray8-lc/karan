@@ -7,7 +7,8 @@ const {
   updateManager,
   deleteManager,
   getManagerById,
-  getManagerStats
+  getManagerStats,
+  resetManagerPassword
 } = require('../controllers/managerController');
 
 const { protect, authorize } = require('../middleware/auth');
@@ -27,5 +28,8 @@ router.route('/:id')
   .get(getManagerById)
   .put(updateManager)
   .delete(deleteManager);
+
+// Reset password endpoint (admin)
+router.post('/:id/reset-password', resetManagerPassword);
 
 module.exports = router;

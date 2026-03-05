@@ -60,7 +60,9 @@ const ManagerNavbar = () => {
         <div className="flex justify-between items-center h-16">
 
           <div className="flex items-center space-x-3">
-            <span className="text-2xl font-bold tracking-tight">₹ Karan Finance</span>
+            {/* logo.png should be placed in public folder (e.g. public/logo.png) */}
+            <img src="/KaranLogo.jpeg" alt="Karan Finance" className="h-11 w-11 rounded-full object-cover" />
+            <span className="text-2xl font-bold tracking-tight">Karan Finance</span>
           </div>
 
           <div className="hidden md:flex items-center space-x-2">

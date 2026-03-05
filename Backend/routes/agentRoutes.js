@@ -8,7 +8,8 @@ const {
   deleteAgent,
   getAgentById,
   getAgentsByDepartment,
-  getAgentStats
+  getAgentStats,
+  resetAgentPassword
 } = require('../controllers/agentController');
 
 const { protect, authorize } = require('../middleware/auth');
@@ -30,5 +31,8 @@ router.route('/:id')
   .get(authorize('admin', 'agent'), getAgentById)
   .put(authorize('admin'), upload.single('profilePhoto'), updateAgent)
   .delete(authorize('admin'), deleteAgent);
+
+// Reset password endpoint (admin)
+router.post('/:id/reset-password', authorize('admin'), resetAgentPassword);
 
 module.exports = router;

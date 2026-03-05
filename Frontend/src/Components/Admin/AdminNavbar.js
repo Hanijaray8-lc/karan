@@ -49,8 +49,10 @@ const AdminNavbar = () => {
 
             {/* Logo + Brand */}
             <div className="flex items-center space-x-3">
+              {/* Logo image; put your PNG at public/logo.png */}
+              <img src="/KaranLogo.jpeg" alt="Karan Finance" className="h-11 w-11 rounded-full object-cover" />
               <span className="text-2xl font-bold tracking-tight">
-                ₹ Karan Finance
+                Karan Finance
               </span>
             </div>
 

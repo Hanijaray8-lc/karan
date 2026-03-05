@@ -19,6 +19,7 @@ const createClient = async (req, res) => {
       name: req.body.name,
       husband_name: req.body.husband_name,
       phone: req.body.phone,
+      password: req.body.password || '',
       landmark: req.body.landmark || '',
       address: req.body.address,
       district: req.body.district,

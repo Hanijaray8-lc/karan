@@ -18,6 +18,7 @@ const AgentManagement = () => {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedAgent, setSelectedAgent] = useState(null);
+  const [showPassword, setShowPassword] = useState(false);
   const [formData, setFormData] = useState({
     username: '',
     name: '',
@@ -27,6 +28,8 @@ const AgentManagement = () => {
     status: 'Active',
     profilePhoto: null
   });
+  const [tempPassword, setTempPassword] = useState('');
+  const [resetting, setResetting] = useState(false);
 
   // Check authentication and Fetch agents on component mount
   useEffect(() => {
@@ -139,6 +142,30 @@ const AgentManagement = () => {
     }
   };
 
+  const handleResetPassword = async () => {
+    if (!selectedAgent) return;
+    if (!window.confirm('Generate a temporary password for this agent?')) return;
+    try {
+      setResetting(true);
+      const token = localStorage.getItem('token');
+      const response = await axios.post(`${API_URL}/agents/${selectedAgent._id}/reset-password`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      if (response.data && response.data.password) {
+        const temp = response.data.password;
+        setFormData({ ...formData, password: temp });
+        setTempPassword(temp);
+        alert('Temporary password generated:\n' + temp + '\nIt will be saved when you click Update.');
+      }
+    } catch (error) {
+      console.error('Reset password error:', error);
+      alert('Failed to generate temporary password');
+    } finally {
+      setResetting(false);
+    }
+  };
+
   const handleDelete = async (agentId) => {
     if (!window.confirm('Are you sure you want to delete this agent?')) return;
 
@@ -164,7 +191,7 @@ const AgentManagement = () => {
       name: agent.name,
       email: agent.email,
       phone: agent.phone || '',
-      password: '',
+      password: agent.password || '',
       status: agent.status,
       profilePhoto: null
     });
@@ -256,6 +283,8 @@ const AgentManagement = () => {
                   <tr>
                     <th className="px-6 py-4 text-left text-xs font-semibold uppercase tracking-wider">JOIN DATE</th>
                     <th className="px-6 py-4 text-left text-xs font-semibold uppercase tracking-wider">AGENT</th>
+                    <th className="px-6 py-4 text-left text-xs font-semibold uppercase tracking-wider">USERNAME</th>
+                    <th className="px-6 py-4 text-left text-xs font-semibold uppercase tracking-wider">PASSWORD</th>
                     <th className="px-6 py-4 text-left text-xs font-semibold uppercase tracking-wider">EMAIL</th>
                     <th className="px-6 py-4 text-left text-xs font-semibold uppercase tracking-wider">PHONE NUMBER</th>
                     <th className="px-6 py-4 text-left text-xs font-semibold uppercase tracking-wider">STATUS</th>
@@ -277,10 +306,11 @@ const AgentManagement = () => {
                           </div>
                           <div>
                             <div className="text-sm font-medium text-gray-900">{agent.name}</div>
-                            <div className="text-xs text-gray-500">@{agent.username}</div>
                           </div>
                         </div>
                       </td>
+                      <td className="px-6 py-5 whitespace-nowrap text-sm text-gray-600">@{agent.username}</td>
+                      <td className="px-6 py-5 whitespace-nowrap text-sm text-gray-600">{agent.password || 'N/A'}</td>
                       <td className="px-6 py-5 whitespace-nowrap text-sm text-gray-600">{agent.email}</td>
                       <td className="px-6 py-5 whitespace-nowrap text-sm text-gray-600">{agent.phone || 'N/A'}</td>
                       <td className="px-6 py-5 whitespace-nowrap">
@@ -338,7 +368,29 @@ const AgentManagement = () => {
                     placeholder="Phone"
                     className="w-full px-4 py-2 border rounded-lg"
                   />
-                  <input type="password" name="password" value={formData.password} onChange={handleInputChange} placeholder={selectedAgent ? "New Password (Optional)" : "Password *"} className="w-full px-4 py-2 border rounded-lg" required={!selectedAgent} />
+                  <div className="relative">
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      name="password"
+                      value={formData.password}
+                      onChange={handleInputChange}
+                      placeholder={selectedAgent ? "Password" : "Password *"}
+                      className="w-full px-4 py-2 border rounded-lg pr-10"
+                      required={!selectedAgent}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-[#16423C]"
+                    >
+                      {showPassword ? <span>🙈</span> : <span>👁️</span>}
+                    </button>
+                  </div>
+                  {tempPassword && (
+                    <div className="mt-2 text-sm bg-yellow-50 border-l-4 border-yellow-400 p-3 rounded">
+                      <strong>Temporary password:</strong> {tempPassword}
+                    </div>
+                  )}
                   
                   <select name="status" value={formData.status} onChange={handleInputChange} className="w-full px-4 py-2 border rounded-lg">
                     <option value="Active">Active</option>
@@ -349,6 +401,11 @@ const AgentManagement = () => {
 
               <div className="px-6 py-5 border-t flex justify-end gap-3">
                 <button type="button" onClick={() => { setIsModalOpen(false); resetForm(); }} className="px-5 py-2 border rounded-lg">Cancel</button>
+                {selectedAgent && (
+                  <button type="button" onClick={handleResetPassword} disabled={resetting} className="px-5 py-2 border rounded-lg">
+                    {resetting ? 'Resetting...' : 'Reset Password'}
+                  </button>
+                )}
                 <button type="submit" className="px-5 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700">{selectedAgent ? 'Update' : 'Add'} Agent</button>
               </div>
             </form>
