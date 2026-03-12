@@ -146,6 +146,7 @@ router.post('/', protect, authorize('admin','manager'), async function createCli
       status: status,
       notes: req.body.notes || '',
       nominee_name: req.body.nominee_name || '',
+      nominee_husband: req.body.nominee_husband || '',
       nominee_phone: req.body.nominee_phone || '',
       nominee_address: req.body.nominee_address || ''
     };
@@ -172,7 +173,8 @@ router.post('/', protect, authorize('admin','manager'), async function createCli
   }
 });
 
-// PUT - Update client (Admin, Agent, and Manager). Agents/managers may only update loan_end_date.
+// PUT - Update client (Admin, Agent, and Manager).
+// Agents may only update `loan_end_date`. Managers and Admins may update all fields.
 router.put('/:id', protect, authorize('admin', 'agent', 'manager'), async function updateClient(req, res) {
   try {
     const client = await Client.findById(req.params.id);
@@ -181,19 +183,19 @@ router.put('/:id', protect, authorize('admin', 'agent', 'manager'), async functi
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
 
-    // If the requester is an agent or manager, only allow updating the loan_end_date
-    // (used by the 'Not Paid' action to extend the due date). Admins may
-    // update all standard fields.
-    if (req.user.role === 'agent' || req.user.role === 'manager') {
+    // If the requester is an agent, only allow updating the loan_end_date
+    // (used by the 'Not Paid' action to extend the due date). Managers and
+    // admins may update all standard fields.
+    if (req.user.role === 'agent') {
       if (req.body.loan_end_date === undefined) {
-        return res.status(403).json({ success: false, message: 'Agents/managers may only update loan_end_date' });
+        return res.status(403).json({ success: false, message: 'Agents may only update loan_end_date' });
       }
       client.loan_end_date = req.body.loan_end_date;
     } else {
       // Update fields (NO agent field)
       const fields = ['name', 'husband_name', 'phone', 'password', 'landmark', 'address', 'district',
         'amount', 'received', 'loan_start_date', 'loan_end_date',
-        'notes', 'nominee_name', 'nominee_phone', 'nominee_address'];
+        'notes', 'nominee_name', 'nominee_husband', 'nominee_phone', 'nominee_address'];
 
       fields.forEach(field => {
         if (req.body[field] !== undefined) {
@@ -213,24 +215,39 @@ router.put('/:id', protect, authorize('admin', 'agent', 'manager'), async functi
       client.status = 'pending';
     }
 
-    // Recalculate weekly installment (fallback)
-    const computedUpdate = calculateWeeklyInstallment(
-      client.loan_start_date,
-      client.loan_end_date,
-      client.pending
-    );
-
-    // If admin provided values in the request body, prefer them.
-    // Agents/managers are not allowed to provide these fields (they only update loan_end_date).
-    let finalWeekly = computedUpdate.weekly_amount;
-    let finalWeeks = computedUpdate.total_weeks;
+    // Determine how to update weekly fields. Admins may recalc or override;
+    // agents/managers should keep the existing weekly_amount but still adjust
+    // total_weeks when the end date changes so that the schedule lengthens.
+    let finalWeekly = client.weekly_amount;
+    let finalWeeks = client.total_weeks;
 
     if (req.user.role === 'admin') {
+      // Admins recompute by default and can override via request body.
+      const computedUpdate = calculateWeeklyInstallment(
+        client.loan_start_date,
+        client.loan_end_date,
+        client.pending
+      );
+      finalWeekly = computedUpdate.weekly_amount;
+      finalWeeks = computedUpdate.total_weeks;
+
       if (req.body.weekly_amount !== undefined && !isNaN(Number(req.body.weekly_amount))) {
         finalWeekly = Math.round(Number(req.body.weekly_amount) * 100) / 100;
       }
       if (req.body.total_weeks !== undefined && Number(req.body.total_weeks) > 0) {
         finalWeeks = Number(req.body.total_weeks);
+      }
+    } else {
+      // Agent/manager update: only loan_end_date changes (per earlier guard)
+      // Extend total_weeks if end date has been modified. Do NOT recalc
+      // weekly_amount so the customer keeps the same weekly installment.
+      if (req.body.loan_end_date !== undefined) {
+        const computedUpdate = calculateWeeklyInstallment(
+          client.loan_start_date,
+          client.loan_end_date,
+          client.pending
+        );
+        finalWeeks = computedUpdate.total_weeks;
       }
     }
 

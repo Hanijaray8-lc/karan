@@ -72,6 +72,7 @@ const clientSchema = new mongoose.Schema({
   notes: String,
 
   nominee_name: String,
+  nominee_husband: String,
   nominee_phone: String,
   nominee_address: String,
 

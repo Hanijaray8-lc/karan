@@ -8,20 +8,22 @@ const Manager = require('../models/Manager'); // Add Manager model
 exports.login = async (req, res) => {
   try {
     const { username, password } = req.body;
-    const lowerUsername = username.toLowerCase();
 
     let user = null;
     let role = null;
 
+    // Case-insensitive regex query to match username regardless of case in database
+    const usernameRegex = new RegExp(`^${username}$`, 'i');
+
     // 1. Check Admin table
-    user = await Admin.findOne({ username: lowerUsername });
+    user = await Admin.findOne({ username: usernameRegex });
     if (user) {
       role = 'admin';
     }
 
     // 2. If not admin, check Manager table
     if (!user) {
-      user = await Manager.findOne({ username: lowerUsername });
+      user = await Manager.findOne({ username: usernameRegex });
       if (user) {
         role = 'manager';
       }
@@ -29,7 +31,7 @@ exports.login = async (req, res) => {
 
     // 3. If not manager, check Agent table
     if (!user) {
-      user = await Agent.findOne({ username: lowerUsername });
+      user = await Agent.findOne({ username: usernameRegex });
       if (user) {
         role = 'agent';
       }

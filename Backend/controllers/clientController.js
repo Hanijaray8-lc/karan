@@ -31,6 +31,7 @@ const createClient = async (req, res) => {
       status: req.body.status || 'pending',
       notes: req.body.notes || '',
       nominee_name: req.body.nominee_name || '',
+      nominee_husband: req.body.nominee_husband || '',
       nominee_address: req.body.nominee_address || '',
       nominee_phone: req.body.nominee_phone || '',
       staff_id: req.user.id,
