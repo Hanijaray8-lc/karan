@@ -1,36 +1,70 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
+// Import logo from src so bundler includes it in production/native builds.
+// Place your image at `Frontend/src/assets/KaranLogo.jpeg` (or .png)
+import KaranLogo from '../assets/karanLogo.jpeg';
 import axios from 'axios';
+import { CheckCircle } from 'lucide-react';
 
 export default function Login() {
   const [formData, setFormData] = useState({ username: '', password: '' });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [popup, setPopup] = useState({ visible: false, type: 'success', title: '', message: '' });
+  const popupTimeoutRef = useRef(null);
+  const redirectTimeoutRef = useRef(null);
+  const [showFallbackLogo, setShowFallbackLogo] = useState(false);
+
+  const showPopup = (type, title, message, duration = 2000) => {
+    if (popupTimeoutRef.current) clearTimeout(popupTimeoutRef.current);
+    setPopup({ visible: true, type, title, message });
+    popupTimeoutRef.current = setTimeout(() => {
+      setPopup(prev => ({ ...prev, visible: false }));
+      popupTimeoutRef.current = null;
+    }, duration);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (popupTimeoutRef.current) clearTimeout(popupTimeoutRef.current);
+      if (redirectTimeoutRef.current) clearTimeout(redirectTimeoutRef.current);
+    };
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
     setError('');
-    
+
     try {
-      const res = await axios.post('http://localhost:5000/api/auth/login', formData);
-      
+      // Convert username to lowercase for case-insensitive login
+      const loginData = {
+        ...formData,
+        username: formData.username.toLowerCase()
+      };
+      const res = await axios.post('http://localhost:5000/api/auth/login', loginData);
+
       if (res.data.success) {
         localStorage.setItem('token', res.data.token);
         localStorage.setItem('user', JSON.stringify(res.data.user));
 
-        // Redirect based on the role assigned in DB
+        // Show success popup with role
         const role = res.data.user.role;
-        if (role === 'admin') {
-          window.location.href = '/Admin/AdminDashboard';
-        } else if (role === 'manager') {
-          window.location.href = '/Manager/managerdashboard';
-        } else {
-          window.location.href = '/AgentDashboard';
-        }
+        const roleDisplay = role.charAt(0).toUpperCase() + role.slice(1);
+        showPopup('success', 'Login Successful', `Welcome ${roleDisplay}!`, 2000);
+
+        // Redirect after popup is shown
+        redirectTimeoutRef.current = setTimeout(() => {
+          if (role === 'admin') {
+            window.location.href = '/Admin/AdminDashboard';
+          } else if (role === 'manager') {
+            window.location.href = '/Manager/managerdashboard';
+          } else {
+            window.location.href = '/AgentDashboard';
+          }
+        }, 2100);
       }
     } catch (err) {
       setError(err.response?.data?.message || 'Login Failed');
-    } finally {
       setLoading(false);
     }
   };
@@ -40,10 +74,19 @@ export default function Login() {
       <div className="bg-white p-8 rounded-2xl shadow-2xl w-96 transform transition-all hover:scale-105 duration-300">
         {/* Logo/Icon Section */}
         <div className="flex justify-center mb-6">
-          <div className="w-20 h-20 rounded-full bg-[#16423c] flex items-center justify-center">
-            <svg className="w-10 h-10 text-white" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 4c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm0 14c-2.03 0-4.43-.82-6-2.28 0-2.56 3.5-4.72 6-4.72s6 2.16 6 4.72c-1.57 1.46-3.97 2.28-6 2.28z"/>
-            </svg>
+          <div className="w-20 h-20 rounded-full bg-[#16423c] flex items-center justify-center overflow-hidden">
+            {!showFallbackLogo ? (
+              <img
+                src={KaranLogo}
+                alt="Karan Finance"
+                className="w-20 h-20 object-cover"
+                onError={() => setShowFallbackLogo(true)}
+              />
+            ) : (
+              <svg className="w-10 h-10 text-white" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 4c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm0 14c-2.03 0-4.43-.82-6-2.28 0-2.56 3.5-4.72 6-4.72s6 2.16 6 4.72c-1.57 1.46-3.97 2.28-6 2.28z" />
+              </svg>
+            )}
           </div>
         </div>
 
@@ -78,7 +121,7 @@ export default function Login() {
                 type="text"
                 placeholder="Enter your username"
                 className="w-full border border-gray-300 pl-10 p-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#16423c] focus:border-transparent transition"
-                onChange={(e) => setFormData({...formData, username: e.target.value})}
+                onChange={(e) => setFormData({ ...formData, username: e.target.value })}
                 value={formData.username}
                 required
               />
@@ -101,7 +144,7 @@ export default function Login() {
                 type="password"
                 placeholder="Enter your password"
                 className="w-full border border-gray-300 pl-10 p-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#16423c] focus:border-transparent transition"
-                onChange={(e) => setFormData({...formData, password: e.target.value})}
+                onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                 value={formData.password}
                 required
               />
@@ -138,9 +181,22 @@ export default function Login() {
 
         {/* Footer */}
         <p className="text-center mt-6 text-sm text-gray-600">
-          © 2024 Karan Finance. All rights reserved.
+          © 2026 Karan Finance. All rights reserved.
         </p>
       </div>
+
+      {/* Login Success Popup */}
+      {popup.visible && popup.type === 'success' && (
+        <div className="fixed top-5 right-5 z-[1001] p-4 rounded-lg shadow-xl flex items-start gap-3 max-w-xs font-medium bg-green-600 text-white border border-green-700">
+          <div className="flex-shrink-0 mt-0.5">
+            <CheckCircle size={28} />
+          </div>
+          <div className="leading-snug">
+            <div className="font-bold">{popup.title}</div>
+            <div className="text-sm mt-1">{popup.message}</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

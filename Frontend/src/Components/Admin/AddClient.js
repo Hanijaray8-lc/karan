@@ -1,5 +1,6 @@
 // AddClient.js (Admin version - NO agent dropdown)
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { CheckCircle, XCircle } from 'lucide-react';
 import {
   UserPlus,
   Pencil,
@@ -29,6 +30,7 @@ export default function ClientManagement() {
 
   const [currentClient, setCurrentClient] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [agents, setAgents] = useState([]);
 
   // Form Data with default values (NO agent field)
   const [formData, setFormData] = useState({
@@ -47,8 +49,10 @@ export default function ClientManagement() {
     status: 'pending',
     notes: '',
     nominee_name: '',
+    nominee_husband: '',
     nominee_address: '',
     nominee_phone: '',
+    assigned_agent: '',
   });
 
   useEffect(() => {
@@ -60,8 +64,23 @@ export default function ClientManagement() {
       window.location.href = '/';
     } else {
       fetchClients();
+      fetchAgents();
     }
   }, []);
+
+  const fetchAgents = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch('http://localhost:5000/api/agents', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.status === 401) return handleAuthError();
+      const data = await res.json();
+      if (data && data.success) setAgents(data.agents || []);
+    } catch (err) {
+      console.error('Error fetching agents:', err);
+    }
+  };
 
   // Listen for external updates to a client's loan_end_date (e.g., from DailyDues Not Paid)
   useEffect(() => {
@@ -94,7 +113,7 @@ export default function ClientManagement() {
     const amount = parseFloat(formData.amount) || 0;
     const received = parseFloat(formData.received) || 0;
     const pending = amount - received;
-    
+
     setFormData(prev => ({
       ...prev,
       pending: pending >= 0 ? pending.toString() : '0'
@@ -107,6 +126,25 @@ export default function ClientManagement() {
     alert('Your session has expired. Please login again.');
     window.location.href = '/';
   };
+
+  // Popup state for success / error feedback
+  const [popup, setPopup] = useState({ visible: false, type: 'success', title: '', message: '' });
+  const popupTimeoutRef = useRef(null);
+
+  const showPopup = (type, title, message, duration = 4000) => {
+    if (popupTimeoutRef.current) clearTimeout(popupTimeoutRef.current);
+    setPopup({ visible: true, type, title, message });
+    popupTimeoutRef.current = setTimeout(() => {
+      setPopup(prev => ({ ...prev, visible: false }));
+      popupTimeoutRef.current = null;
+    }, duration);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (popupTimeoutRef.current) clearTimeout(popupTimeoutRef.current);
+    };
+  }, []);
 
   // Calculate total weeks between loan start and end date
   const calculateTotalWeeks = () => {
@@ -127,8 +165,15 @@ export default function ClientManagement() {
     return totalWeeks;
   };
 
-  // Calculate weekly amount based on pending amount and total weeks
+  // Calculate weekly amount based on pending amount and total weeks.
+  // When editing, use the stored amount so the user isn't surprised by a
+  // recomputation (especially important for ₹5000 loans that are supposed
+  // to remain at ₹575).
   const calculateWeeklyAmount = () => {
+    if (currentClient && currentClient.weekly_amount != null) {
+      return Number(currentClient.weekly_amount);
+    }
+
     const pending = Number(parseFloat(formData.pending) || 0);
     const amount = Number(parseFloat(formData.amount) || 0);
     const totalWeeks = calculateTotalWeeks();
@@ -149,14 +194,14 @@ export default function ClientManagement() {
       const res = await fetch('http://localhost:5000/api/clients', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      
+
       if (res.status === 401) {
         handleAuthError();
         return;
       }
-      
+
       const data = await res.json();
-      
+
       if (data.success) {
         setClients(data.clients || []);
         setTotalClients(data.totalClients || 0);
@@ -165,7 +210,7 @@ export default function ClientManagement() {
       }
     } catch (err) {
       console.error('Error fetching clients:', err);
-      alert('Could not fetch clients');
+      showPopup('error', 'Error', 'Could not fetch clients');
     } finally {
       setLoading(false);
     }
@@ -173,16 +218,16 @@ export default function ClientManagement() {
 
   const handleAddClient = async (e) => {
     e.preventDefault();
-    
+
     if (!formData.loan_start_date || !formData.loan_end_date) {
-      alert('Please select loan start and end dates');
+      showPopup('error', 'Validation', 'Please select loan start and end dates');
       return;
     }
 
     try {
       setLoading(true);
       const token = localStorage.getItem('token');
-      
+
       const amount = parseFloat(formData.amount) || 5000;
       const received = parseFloat(formData.received) || 0;
 
@@ -193,13 +238,15 @@ export default function ClientManagement() {
         landmark: formData.landmark || '',
         address: formData.address,
         district: formData.district,
+        assigned_agent: formData.assigned_agent || undefined,
         amount: amount,
         received: received,
         loan_start_date: formData.loan_start_date,
         loan_end_date: formData.loan_end_date,
         status: formData.status,
-        notes: formData.notes || '',
+        // notes: formData.notes || '',
         nominee_name: formData.nominee_name || '',
+        nominee_husband: formData.nominee_husband || '',
         nominee_address: formData.nominee_address || '',
         nominee_phone: formData.nominee_phone || ''
       };
@@ -218,17 +265,17 @@ export default function ClientManagement() {
       });
 
       const data = await res.json();
-      
+
       if (!res.ok) throw new Error(data.message || 'Failed to add client');
-      
+
       setShowAddModal(false);
       resetForm();
       await fetchClients();
-      alert('Client added successfully!');
-      
+      showPopup('success', 'Added', `Client ${formattedData.name || ''} added successfully!`);
+
     } catch (err) {
       console.error('Error adding client:', err);
-      alert('Could not add client: ' + err.message);
+      showPopup('error', 'Error', 'Could not add client: ' + (err.message || ''));
     } finally {
       setLoading(false);
     }
@@ -236,6 +283,7 @@ export default function ClientManagement() {
 
   const filteredClients = clients.filter((client) => {
     const searchLower = searchTerm.toLowerCase();
+    const displayId = client.clientId || `#${client._id?.slice(-6)}`;
     const matchesSearch =
       client.name?.toLowerCase().includes(searchLower) ||
       client.husband_name?.toLowerCase().includes(searchLower) ||
@@ -244,8 +292,10 @@ export default function ClientManagement() {
       client.address?.toLowerCase().includes(searchLower) ||
       client.district?.toLowerCase().includes(searchLower) ||
       client.nominee_name?.toLowerCase().includes(searchLower) ||
+      client.nominee_husband?.toLowerCase().includes(searchLower) ||
       client.nominee_phone?.includes(searchLower) ||
-      client.notes?.toLowerCase().includes(searchLower);
+      client.notes?.toLowerCase().includes(searchLower) ||
+      String(displayId).toLowerCase().includes(searchLower);
 
     const matchesStatus = !statusFilter || client.status === statusFilter;
 
@@ -309,6 +359,7 @@ export default function ClientManagement() {
       status: 'pending',
       notes: '',
       nominee_name: '',
+      nominee_husband: '',
       nominee_address: '',
       nominee_phone: '',
     });
@@ -317,7 +368,7 @@ export default function ClientManagement() {
   const handleEditClient = async (e) => {
     e.preventDefault();
     if (!currentClient?._id) return;
-    
+
     try {
       const amount = parseFloat(formData.amount) || 0;
       const received = parseFloat(formData.received) || 0;
@@ -343,17 +394,17 @@ export default function ClientManagement() {
         },
         body: JSON.stringify(updatedData),
       });
-      
+
       if (res.status === 401) handleAuthError();
       if (!res.ok) throw new Error('Failed to update');
-      
+
       setShowEditModal(false);
       resetForm();
       fetchClients();
-      alert('Client updated successfully!');
+      showPopup('success', 'Updated', `Client ${formData.name || ''} updated successfully!`);
     } catch (err) {
       console.error('Error editing client:', err);
-      alert('Could not update client: ' + err.message);
+      showPopup('error', 'Error', 'Could not update client: ' + (err.message || ''));
     }
   };
 
@@ -362,26 +413,26 @@ export default function ClientManagement() {
     try {
       const res = await fetch(`http://localhost:5000/api/clients/${currentClient._id}`, {
         method: 'DELETE',
-        headers: { 
+        headers: {
           Authorization: `Bearer ${localStorage.getItem('token')}`,
         },
       });
-      
+
       if (res.status === 401) handleAuthError();
       if (!res.ok) throw new Error('Failed to delete');
-      
+
       setShowDeleteModal(false);
       fetchClients();
-      alert('Client deleted successfully!');
+      showPopup('success', 'Deleted', 'Client deleted successfully!');
     } catch (err) {
       console.error('Error deleting client:', err);
-      alert('Could not delete client: ' + err.message);
+      showPopup('error', 'Error', 'Could not delete client: ' + (err.message || ''));
     }
   };
 
   const openEditModal = (client) => {
     setCurrentClient(client);
-    setFormData({ 
+    setFormData({
       name: client.name || '',
       husband_name: client.husband_name || '',
       phone: client.phone || '',
@@ -396,8 +447,10 @@ export default function ClientManagement() {
       status: client.status || 'pending',
       notes: client.notes || '',
       nominee_name: client.nominee_name || '',
+      nominee_husband: client.nominee_husband || '',
       nominee_address: client.nominee_address || '',
       nominee_phone: client.nominee_phone || '',
+      assigned_agent: client.assigned_agent || '',
     });
     setShowEditModal(true);
   };
@@ -408,7 +461,7 @@ export default function ClientManagement() {
   };
 
   const getStatusClass = (status) => {
-    switch(status) {
+    switch (status) {
       case 'paid': return 'bg-green-100 text-green-800 border border-green-200';
       case 'partial': return 'bg-amber-100 text-amber-800 border border-amber-200';
       default: return 'bg-red-100 text-red-800 border border-red-200';
@@ -416,7 +469,7 @@ export default function ClientManagement() {
   };
 
   const getStatusBadge = (status) => {
-    switch(status) {
+    switch (status) {
       case 'paid': return 'Paid ✅';
       case 'partial': return 'Partial ⚠️';
       default: return 'Pending ⏳';
@@ -431,7 +484,7 @@ export default function ClientManagement() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#f8fafc] to-[#e9f0f5] pb-12">
       <AdminNavbar />
-      
+
       {/* Header */}
       <header className="relative mt-2 mx-4 rounded-2xl overflow-hidden backdrop-blur-lg bg-gradient-to-r from-[#16423C] to-[#1f5a52] shadow-xl mb-6">
         <div className="absolute inset-0 bg-black/20"></div>
@@ -492,7 +545,7 @@ export default function ClientManagement() {
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[#16423C]/60" size={18} />
             <input
               type="text"
-              placeholder="Search by name, phone, district..."
+              placeholder="Search by name, phone, district, ID..."
               className="w-full pl-10 pr-4 py-3 bg-transparent border border-[#16423C]/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#16423C] placeholder-gray-500 text-sm"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
@@ -561,6 +614,7 @@ export default function ClientManagement() {
                 <tr>
                   <th className="px-3 py-4 font-semibold whitespace-nowrap">ID</th>
                   <th className="px-3 py-4 font-semibold whitespace-nowrap">Client Name</th>
+                  <th className="px-3 py-4 font-semibold whitespace-nowrap">Agent</th>
                   <th className="px-3 py-4 font-semibold whitespace-nowrap">Husband</th>
                   <th className="px-3 py-4 font-semibold whitespace-nowrap">Phone</th>
                   <th className="px-3 py-4 font-semibold whitespace-nowrap">Landmark</th>
@@ -574,7 +628,8 @@ export default function ClientManagement() {
                   <th className="px-3 py-4 font-semibold whitespace-nowrap">Start Date</th>
                   <th className="px-3 py-4 font-semibold whitespace-nowrap">End Date</th>
                   <th className="px-3 py-4 font-semibold whitespace-nowrap">Status</th>
-                  <th className="px-3 py-4 font-semibold whitespace-nowrap">Nominee Name</th>
+                  <th className="px-3 py-4 font-semibold whitespace-nowrap">Nominee Name </th>
+                  <th className="px-3 py-4 font-semibold whitespace-nowrap">Nominee Husband</th>
                   <th className="px-3 py-4 font-semibold whitespace-nowrap">Nominee Phone</th>
                   <th className="px-3 py-4 font-semibold whitespace-nowrap">Nominee Address</th>
                   {/* <th className="px-3 py-4 font-semibold whitespace-nowrap">Notes</th> */}
@@ -607,6 +662,7 @@ export default function ClientManagement() {
                         {client.clientId || `#${client._id?.slice(-6)}`}
                       </td>
                       <td className="px-3 py-4 whitespace-nowrap">{client.name || '—'}</td>
+                      <td className="px-3 py-4 whitespace-nowrap">{client.assigned_agent_name || '—'}</td>
                       <td className="px-3 py-4 whitespace-nowrap">{client.husband_name || '—'}</td>
                       <td className="px-3 py-4 whitespace-nowrap">{client.phone || '—'}</td>
                       <td className="px-3 py-4 whitespace-nowrap">{client.landmark || '—'}</td>
@@ -625,6 +681,7 @@ export default function ClientManagement() {
                         </span>
                       </td>
                       <td className="px-3 py-4 whitespace-nowrap">{client.nominee_name || '—'}</td>
+                      <td className="px-3 py-4 whitespace-nowrap">{client.nominee_husband || '—'}</td>
                       <td className="px-3 py-4 whitespace-nowrap">{client.nominee_phone || '—'}</td>
                       <td className="px-3 py-4 whitespace-nowrap">{client.nominee_address || '—'}</td>
                       {/* <td className="px-3 py-4 max-w-[200px] truncate" title={client.notes}>
@@ -700,8 +757,22 @@ export default function ClientManagement() {
                     value={formData.husband_name}
                     onChange={handleInputChange}
                     className="w-full px-4 py-2 border-2 border-[#16423C]/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#16423C]"
-                  
+
                   />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Assigned Agent</label>
+                  <select
+                    name="assigned_agent"
+                    value={formData.assigned_agent}
+                    onChange={handleInputChange}
+                    className="w-full px-4 py-2 border-2 border-[#16423C]/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#16423C]"
+                  >
+                    <option value="">Unassigned</option>
+                    {agents.map(a => (
+                      <option key={a._id} value={a._id}>{a.name || a.username}</option>
+                    ))}
+                  </select>
                 </div>
               </div>
 
@@ -758,13 +829,13 @@ export default function ClientManagement() {
                   required
                 >
                   <option value="">Select District</option>
-                  {['Ariyalur','Chengalpattu','Chennai','Coimbatore','Cuddalore','Dharmapuri',
-                    'Dindigul','Erode','Kallakurichi','Kanchipuram','Kanyakumari','Karur',
-                    'Krishnagiri','Madurai','Mayiladuthurai','Nagapattinam','Namakkal',
-                    'Nilgiris','Perambalur','Pudukkottai','Ramanathapuram','Ranipet',
-                    'Salem','Sivaganga','Tenkasi','Thanjavur','Theni','Thoothukudi',
-                    'Tiruchirappalli','Tirunelveli','Tirupathur','Tiruppur','Tiruvallur',
-                    'Tiruvannamalai','Tiruvarur','Vellore','Viluppuram','Virudhunagar'].map(d => (
+                  {['Ariyalur', 'Chengalpattu', 'Chennai', 'Coimbatore', 'Cuddalore', 'Dharmapuri',
+                    'Dindigul', 'Erode', 'Kallakurichi', 'Kanchipuram', 'Kanyakumari', 'Karur',
+                    'Krishnagiri', 'Madurai', 'Mayiladuthurai', 'Nagapattinam', 'Namakkal',
+                    'Nilgiris', 'Perambalur', 'Pudukkottai', 'Ramanathapuram', 'Ranipet',
+                    'Salem', 'Sivaganga', 'Tenkasi', 'Thanjavur', 'Theni', 'Thoothukudi',
+                    'Tiruchirappalli', 'Tirunelveli', 'Tirupathur', 'Tiruppur', 'Tiruvallur',
+                    'Tiruvannamalai', 'Tiruvarur', 'Vellore', 'Viluppuram', 'Virudhunagar'].map(d => (
                       <option key={d} value={d}>{d}</option>
                     ))}
                 </select>
@@ -905,12 +976,21 @@ export default function ClientManagement() {
               )}
 
               {/* Nominee Fields */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Nominee Name</label>
                   <input
                     name="nominee_name"
                     value={formData.nominee_name}
+                    onChange={handleInputChange}
+                    className="w-full px-4 py-2 border-2 border-[#16423C]/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#16423C]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Nominee Husband</label>
+                  <input
+                    name="nominee_husband"
+                    value={formData.nominee_husband}
                     onChange={handleInputChange}
                     className="w-full px-4 py-2 border-2 border-[#16423C]/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#16423C]"
                   />
@@ -1006,7 +1086,7 @@ export default function ClientManagement() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Husband Name *</label>
-                  <input name="husband_name" value={formData.husband_name} onChange={handleInputChange} className="w-full px-4 py-2 border-2 border-[#16423C]/20 rounded-lg" required />
+                  <input name="husband_name" value={formData.husband_name} onChange={handleInputChange} className="w-full px-4 py-2 border-2 border-[#16423C]/20 rounded-lg"  />
                 </div>
               </div>
 
@@ -1039,13 +1119,13 @@ export default function ClientManagement() {
                 <label className="block text-sm font-medium text-gray-700 mb-1">District *</label>
                 <select name="district" value={formData.district} onChange={handleInputChange} className="w-full px-4 py-2 border-2 border-[#16423C]/20 rounded-lg" required>
                   <option value="">Select District</option>
-                  {['Ariyalur','Chengalpattu','Chennai','Coimbatore','Cuddalore','Dharmapuri',
-                    'Dindigul','Erode','Kallakurichi','Kanchipuram','Kanyakumari','Karur',
-                    'Krishnagiri','Madurai','Mayiladuthurai','Nagapattinam','Namakkal',
-                    'Nilgiris','Perambalur','Pudukkottai','Ramanathapuram','Ranipet',
-                    'Salem','Sivaganga','Tenkasi','Thanjavur','Theni','Thoothukudi',
-                    'Tiruchirappalli','Tirunelveli','Tirupathur','Tiruppur','Tiruvallur',
-                    'Tiruvannamalai','Tiruvarur','Vellore','Viluppuram','Virudhunagar'].map(d => (
+                  {['Ariyalur', 'Chengalpattu', 'Chennai', 'Coimbatore', 'Cuddalore', 'Dharmapuri',
+                    'Dindigul', 'Erode', 'Kallakurichi', 'Kanchipuram', 'Kanyakumari', 'Karur',
+                    'Krishnagiri', 'Madurai', 'Mayiladuthurai', 'Nagapattinam', 'Namakkal',
+                    'Nilgiris', 'Perambalur', 'Pudukkottai', 'Ramanathapuram', 'Ranipet',
+                    'Salem', 'Sivaganga', 'Tenkasi', 'Thanjavur', 'Theni', 'Thoothukudi',
+                    'Tiruchirappalli', 'Tirunelveli', 'Tirupathur', 'Tiruppur', 'Tiruvallur',
+                    'Tiruvannamalai', 'Tiruvarur', 'Vellore', 'Viluppuram', 'Virudhunagar'].map(d => (
                       <option key={d} value={d}>{d}</option>
                     ))}
                 </select>
@@ -1086,10 +1166,14 @@ export default function ClientManagement() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Nominee Name</label>
                   <input name="nominee_name" value={formData.nominee_name} onChange={handleInputChange} className="w-full px-4 py-2 border-2 border-[#16423C]/20 rounded-lg" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Nominee Husband</label>
+                  <input name="nominee_husband" value={formData.nominee_husband} onChange={handleInputChange} className="w-full px-4 py-2 border-2 border-[#16423C]/20 rounded-lg" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Nominee Phone</label>
@@ -1111,10 +1195,10 @@ export default function ClientManagement() {
                 <textarea name="nominee_address" value={formData.nominee_address} onChange={handleInputChange} rows={2} className="w-full px-4 py-2 border-2 border-[#16423C]/20 rounded-lg" />
               </div>
 
-              <div>
+              {/* <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
                 <textarea name="notes" value={formData.notes} onChange={handleInputChange} rows={2} className="w-full px-4 py-2 border-2 border-[#16423C]/20 rounded-lg" />
-              </div>
+              </div> */}
 
               <div className="sticky bottom-0 bg-white/80 backdrop-blur-lg pt-4 pb-1 border-t-2 border-[#16423C]/10 mt-4">
                 <div className="flex gap-4">
@@ -1160,6 +1244,18 @@ export default function ClientManagement() {
                 Cancel
               </button>
             </div>
+          </div>
+        </div>
+      )}
+      {/* Popup notification (success / error) */}
+      {popup.visible && (
+        <div className={`fixed top-5 right-5 z-[1001] p-4 rounded-lg shadow-xl flex items-start gap-3 max-w-xs font-medium ${popup.type === 'success' ? 'bg-green-600 text-white border border-green-700' : 'bg-red-600 text-white border border-red-700'}`}>
+          <div className="flex-shrink-0 mt-0.5">
+            {popup.type === 'success' ? <CheckCircle size={28} /> : <XCircle size={28} />}
+          </div>
+          <div className="leading-snug">
+            <div className="font-bold">{popup.title}</div>
+            <div className="text-sm mt-1">{popup.message}</div>
           </div>
         </div>
       )}

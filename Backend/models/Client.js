@@ -75,6 +75,9 @@ const clientSchema = new mongoose.Schema({
   nominee_husband: String,
   nominee_phone: String,
   nominee_address: String,
+  // Assigned agent (optional) - reference and denormalized name for easy display
+  assigned_agent: { type: mongoose.Schema.Types.ObjectId, ref: 'Agent' },
+  assigned_agent_name: { type: String, default: '' },
 
 }, {
   timestamps: true

@@ -51,8 +51,8 @@ export default function AgentDashboard() {
 
     const start = new Date(client.loan_start_date);
     const defaultWeeks = 12;
-    const end = client.loan_end_date 
-      ? new Date(client.loan_end_date) 
+    const end = client.loan_end_date
+      ? new Date(client.loan_end_date)
       : new Date(start.getTime() + (defaultWeeks - 1) * 7 * 24 * 60 * 60 * 1000);
 
     const target = new Date(dateObj);
@@ -80,17 +80,17 @@ export default function AgentDashboard() {
     const computeStats = (payments) => {
       const totalCollected = payments.reduce((s, x) => s + (Number(x.amount) || 0), 0);
       const totalPending = payments.reduce((s, x) => s + (Number(x.remainingDue || x.pending) || 0), 0);
-      const today = new Date(); today.setHours(0,0,0,0);
+      const today = new Date(); today.setHours(0, 0, 0, 0);
       const todayCollected = payments.reduce((s, x) => {
         const d = x.paymentDate ? new Date(x.paymentDate) : (x.date ? new Date(x.date) : null);
         if (!d) return s;
-        d.setHours(0,0,0,0);
+        d.setHours(0, 0, 0, 0);
         return s + ((d.getTime() === today.getTime()) ? (Number(x.amount) || 0) : 0);
       }, 0);
       const todayPending = payments.reduce((s, x) => {
         const d = x.paymentDate ? new Date(x.paymentDate) : (x.date ? new Date(x.date) : null);
         if (!d) return s;
-        d.setHours(0,0,0,0);
+        d.setHours(0, 0, 0, 0);
         return s + ((d.getTime() === today.getTime()) ? (Number(x.remainingDue || x.pending) || 0) : 0);
       }, 0);
       const pendingClients = payments.filter(p => Number(p.remainingDue || p.pending) > 0).length;
@@ -100,7 +100,7 @@ export default function AgentDashboard() {
       const todayClientsDue = payments.filter(p => {
         const d = p.paymentDate ? new Date(p.paymentDate) : (p.date ? new Date(p.date) : null);
         if (!d) return false;
-        d.setHours(0,0,0,0);
+        d.setHours(0, 0, 0, 0);
         return d.getTime() === today.getTime();
       }).length;
       return { totalCollected, totalPending, todayCollected, todayPending, pendingClients, totalClients, totalLoan, collectionRate, todayClientsDue };
@@ -150,7 +150,7 @@ export default function AgentDashboard() {
           const fbData = await fallback.json();
           const payments = (fbData.data && fbData.data.payments) || fbData.data || [];
           const filteredPayments = enforceAgentFilter(payments);
-          const recent = filteredPayments.slice(0,6);
+          const recent = filteredPayments.slice(0, 6);
           setRecentPayments(recent.map(mapPaymentToRow));
           const stats = computeStats(filteredPayments);
           setMonthlyStats(stats);
@@ -161,7 +161,7 @@ export default function AgentDashboard() {
         const payments = (data.data && data.data.payments) || data.payments || [];
         // ensure the list contains only records belonging to this agent
         const filteredPayments = enforceAgentFilter(payments);
-        setRecentPayments(filteredPayments.slice(0,6).map(mapPaymentToRow));
+        setRecentPayments(filteredPayments.slice(0, 6).map(mapPaymentToRow));
         // set agent name from localStorage user info (again, safe)
         try {
           const userRaw = localStorage.getItem('user');
@@ -189,7 +189,7 @@ export default function AgentDashboard() {
             console.warn('Clients API failed, status:', clientsRes.status);
           }
 
-          const today = new Date(); today.setHours(0,0,0,0);
+          const today = new Date(); today.setHours(0, 0, 0, 0);
           let todayClientsDue = 0;
           let todayPendingAmount = 0;
           let todayDueTotal = 0;
@@ -224,13 +224,13 @@ export default function AgentDashboard() {
           agentClients.forEach(client => {
             const isDue = isClientDueOnDate(client, today);
             console.log(`Client ${client.name || client.id}: isDue=${isDue}, pending=${client.pending}, start=${client.loan_start_date}`);
-            
+
             if (isDue) {
               todayClientsDue++;
               const weekly = computeWeeklyAmount(client) || 575;
               console.log(`  Adding to due total: ${weekly}`);
               todayDueTotal += weekly; // Add to total due amount
-              
+
               // check if a payment exists for this client with today's date
               const paidToday = filteredPayments.some(p => {
                 const clientId = p.client?._id || p.client || p.clientName || '';
@@ -240,7 +240,7 @@ export default function AgentDashboard() {
                 if (!sameClient) return false;
                 const pDate = p.paymentDate ? new Date(p.paymentDate) : (p.date ? new Date(p.date) : null);
                 if (!pDate) return false;
-                pDate.setHours(0,0,0,0);
+                pDate.setHours(0, 0, 0, 0);
                 return pDate.getTime() === today.getTime();
               });
 
@@ -249,9 +249,9 @@ export default function AgentDashboard() {
               }
             }
           });
-          
+
           console.log('todayDueTotal:', todayDueTotal);
-          
+
           // merge client counts now and combine with today-specific values
           const finalStats = {
             ...stats,
@@ -285,7 +285,7 @@ export default function AgentDashboard() {
 
       <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-10 xl:px-12 py-8 lg:py-10 space-y-10">
         {/* Welcome Banner */}
-        <div className="bg-gradient-to-r from-emerald-800 to-emerald-700 text-white rounded-2xl p-6 md:p-8 shadow-xl flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mt-[40px]">
+        <div className="bg-gradient-to-r from-emerald-800 to-emerald-700 text-white rounded-2xl p-6 md:p-8 shadow-xl flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mt-0">
           <div>
             <h1 className="text-3xl md:text-4xl font-bold">Welcome back, {agentName || 'Agent'}!</h1>
             <p className="text-emerald-100 mt-2 text-lg">Have a productive day ahead</p>
@@ -328,54 +328,54 @@ export default function AgentDashboard() {
 
         {/* Today Status Card */}
         <div className="bg-white rounded-xl shadow-md border border-gray-200 p-6">
-            <div className="bg-gradient-to-r from-[#16423C] to-[#1f5a52] text-white px-4 py-3 rounded-lg mb-6">
-              <h3 className="text-xl font-semibold">Today Status</h3>
+          <div className="bg-gradient-to-r from-[#16423C] to-[#1f5a52] text-white px-4 py-3 rounded-lg mb-6">
+            <h3 className="text-xl font-semibold">Today Status</h3>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {/* Today Due Amount */}
+            <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg p-4 border-l-4 border-blue-500 hover:shadow-md transition-shadow">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-blue-600 font-medium uppercase tracking-wide">Today Due</p>
+                  <p className="text-3xl font-bold text-blue-800 mt-2">
+                    ₹{(monthlyStats.todayDueTotal || 0).toLocaleString()}
+                  </p>
+                </div>
+                <div className="text-4xl opacity-30">📅</div>
+              </div>
+              <p className="text-xs text-blue-600 mt-2">Today total due amount</p>
             </div>
-            
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              {/* Today Due Amount */}
-              <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg p-4 border-l-4 border-blue-500 hover:shadow-md transition-shadow">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-blue-600 font-medium uppercase tracking-wide">Today Due</p>
-                    <p className="text-3xl font-bold text-blue-800 mt-2">
-                      ₹{(monthlyStats.todayDueTotal || 0).toLocaleString()}
-                    </p>
-                  </div>
-                  <div className="text-4xl opacity-30">📅</div>
-                </div>
-                <p className="text-xs text-blue-600 mt-2">Today total due amount</p>
-              </div>
 
-              {/* Today Payment Success */}
-              <div className="bg-gradient-to-br from-emerald-50 to-emerald-100 rounded-lg p-4 border-l-4 border-emerald-500 hover:shadow-md transition-shadow">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-emerald-600 font-medium uppercase tracking-wide">Payment Success</p>
-                    <p className="text-3xl font-bold text-emerald-800 mt-2">
-                      ₹{(monthlyStats.todayCollected || 0).toLocaleString()}
-                    </p>
-                  </div>
-                  <div className="text-4xl opacity-30">✓</div>
+            {/* Today Payment Success */}
+            <div className="bg-gradient-to-br from-emerald-50 to-emerald-100 rounded-lg p-4 border-l-4 border-emerald-500 hover:shadow-md transition-shadow">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-emerald-600 font-medium uppercase tracking-wide">Payment Success</p>
+                  <p className="text-3xl font-bold text-emerald-800 mt-2">
+                    ₹{(monthlyStats.todayCollected || 0).toLocaleString()}
+                  </p>
                 </div>
-                <p className="text-xs text-emerald-600 mt-2">Today collected amount</p>
+                <div className="text-4xl opacity-30">✓</div>
               </div>
+              <p className="text-xs text-emerald-600 mt-2">Today collected amount</p>
+            </div>
 
-              {/* Today Pending Amount */}
-              <div className="bg-gradient-to-br from-amber-50 to-amber-100 rounded-lg p-4 border-l-4 border-amber-500 hover:shadow-md transition-shadow">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-amber-600 font-medium uppercase tracking-wide">Today Pending</p>
-                    <p className="text-3xl font-bold text-amber-800 mt-2">
-                      ₹{(monthlyStats.todayPending || 0).toLocaleString()}
-                    </p>
-                  </div>
-                  <div className="text-4xl opacity-30">⏳</div>
+            {/* Today Pending Amount */}
+            <div className="bg-gradient-to-br from-amber-50 to-amber-100 rounded-lg p-4 border-l-4 border-amber-500 hover:shadow-md transition-shadow">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-amber-600 font-medium uppercase tracking-wide">Today Pending</p>
+                  <p className="text-3xl font-bold text-amber-800 mt-2">
+                    ₹{(monthlyStats.todayPending || 0).toLocaleString()}
+                  </p>
                 </div>
-                <p className="text-xs text-amber-600 mt-2">Today not collected yet</p>
+                <div className="text-4xl opacity-30">⏳</div>
               </div>
+              <p className="text-xs text-amber-600 mt-2">Today not collected yet</p>
             </div>
           </div>
+        </div>
 
         {/* Collection Progress + Recent Communications side by side */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">

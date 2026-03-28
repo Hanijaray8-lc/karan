@@ -1,5 +1,6 @@
 // controllers/clientController.js
 const Client = require('../models/Client');
+const Agent = require('../models/Agent');
 
 // CREATE CLIENT
 const createClient = async (req, res) => {
@@ -13,6 +14,14 @@ const createClient = async (req, res) => {
         success: false, 
         message: 'User not authenticated' 
       });
+    }
+
+    // If an assigned agent id was provided, resolve its name for denormalized storage
+    let assignedAgentId = req.body.assigned_agent || null;
+    let assignedAgentName = '';
+    if (assignedAgentId) {
+      const agent = await Agent.findById(assignedAgentId);
+      if (agent) assignedAgentName = agent.name || agent.username || '';
     }
 
     const clientData = {
@@ -37,6 +46,11 @@ const createClient = async (req, res) => {
       staff_id: req.user.id,
       staff_name: req.user.name || req.user.username || 'Agent',
     };
+
+    if (assignedAgentId) {
+      clientData.assigned_agent = assignedAgentId;
+      clientData.assigned_agent_name = assignedAgentName;
+    }
 
     const client = new Client(clientData);
     const savedClient = await client.save();
@@ -93,5 +107,83 @@ const getClients = async (req, res) => {
 
 module.exports = {
   createClient,
-  getClients
+  getClients,
+  getClientsByAgent,
+  transferClient
+};
+
+// GET CLIENTS BY AGENT
+const getClientsByAgent = async (req, res) => {
+  try {
+    const { agentId } = req.params;
+
+    if (!agentId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Agent ID is required'
+      });
+    }
+
+    const clients = await Client.find({ assigned_agent: agentId }).sort({ createdAt: -1 });
+
+    return res.json({
+      success: true,
+      clients,
+      total: clients.length
+    });
+  } catch (err) {
+    console.error('Error:', err);
+    return res.status(500).json({
+      success: false,
+      message: err.message
+    });
+  }
+};
+
+// TRANSFER CLIENT FROM ONE AGENT TO ANOTHER
+const transferClient = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { new_agent_id, new_agent_name } = req.body;
+
+    if (!id || !new_agent_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Client ID and new agent ID are required'
+      });
+    }
+
+    const client = await Client.findById(id);
+    if (!client) {
+      return res.status(404).json({
+        success: false,
+        message: 'Client not found'
+      });
+    }
+
+    const oldAgentId = client.assigned_agent;
+    const oldAgentName = client.assigned_agent_name;
+
+    // Update client with new agent
+    client.assigned_agent = new_agent_id;
+    client.assigned_agent_name = new_agent_name;
+
+    // Store transfer history in notes or metadata
+    const transferInfo = `\n[TRANSFERRED] From: ${oldAgentName || 'Unassigned'} → To: ${new_agent_name || 'Unknown'} on ${new Date().toLocaleDateString('en-IN')}`;
+    client.notes = (client.notes || '') + transferInfo;
+
+    const updatedClient = await client.save();
+
+    return res.json({
+      success: true,
+      data: updatedClient,
+      message: `Client transferred successfully from ${oldAgentName || 'Unassigned'} to ${new_agent_name}`
+    });
+  } catch (err) {
+    console.error('Error:', err);
+    return res.status(500).json({
+      success: false,
+      message: err.message
+    });
+  }
 };

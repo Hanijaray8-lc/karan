@@ -1,5 +1,5 @@
 // AddManager.js (Admin only - Add Managers) - Two Column Layout
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   UserPlus,
   Pencil,
@@ -25,18 +25,37 @@ export default function AddManager() {
   const [managers, setManagers] = useState([]);
   const [filteredManagers, setFilteredManagers] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
-  
+
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [showViewModal, setShowViewModal] = useState(false);
-  
+
   const [currentManager, setCurrentManager] = useState(null);
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [tempPassword, setTempPassword] = useState('');
   const [resetting, setResetting] = useState(false);
+
+  // Popup state for success / error feedback
+  const [popup, setPopup] = useState({ visible: false, type: 'success', title: '', message: '' });
+  const popupTimeoutRef = useRef(null);
+
+  const showPopup = (type, title, message, duration = 4000) => {
+    if (popupTimeoutRef.current) clearTimeout(popupTimeoutRef.current);
+    setPopup({ visible: true, type, title, message });
+    popupTimeoutRef.current = setTimeout(() => {
+      setPopup(prev => ({ ...prev, visible: false }));
+      popupTimeoutRef.current = null;
+    }, duration);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (popupTimeoutRef.current) clearTimeout(popupTimeoutRef.current);
+    };
+  }, []);
 
   // Form Data - Basic details only
   const [formData, setFormData] = useState({
@@ -104,7 +123,7 @@ export default function AddManager() {
       setFilteredManagers(managers);
       return;
     }
-    
+
     const searchLower = searchTerm.toLowerCase();
     const filtered = managers.filter(manager =>
       manager.name?.toLowerCase().includes(searchLower) ||
@@ -145,12 +164,12 @@ export default function AddManager() {
 
     // Validation
     if (formData.password !== formData.confirmPassword) {
-      alert('Passwords do not match');
+      showPopup('error', 'Validation', 'Passwords do not match');
       return;
     }
 
     if (formData.password.length < 6) {
-      alert('Password must be at least 6 characters long');
+      showPopup('error', 'Validation', 'Password must be at least 6 characters long');
       return;
     }
 
@@ -183,11 +202,11 @@ export default function AddManager() {
       setShowAddModal(false);
       resetForm();
       await fetchManagers();
-      alert('Manager added successfully!');
+      showPopup('success', 'Added', `Manager ${managerData.name || managerData.username} added successfully`);
 
     } catch (err) {
       console.error('Error adding manager:', err);
-      alert('Could not add manager: ' + err.message);
+      showPopup('error', 'Error', err.message || 'Could not add manager');
     } finally {
       setLoading(false);
     }
@@ -331,13 +350,13 @@ export default function AddManager() {
   };
 
   const getStatusBadge = (status) => {
-    return status === 'Active' 
+    return status === 'Active'
       ? <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800 border border-green-200">
-          <CheckCircle size={12} className="mr-1" /> Active
-        </span>
+        <CheckCircle size={12} className="mr-1" /> Active
+      </span>
       : <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800 border border-red-200">
-          <XCircle size={12} className="mr-1" /> Inactive
-        </span>;
+        <XCircle size={12} className="mr-1" /> Inactive
+      </span>;
   };
 
   const formatDate = (date) => {
@@ -386,7 +405,7 @@ export default function AddManager() {
             </div>
           </div>
         </div>
-        
+
         <div className="backdrop-blur-lg bg-white/80 p-3 sm:p-6 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-300 border border-white/20">
           <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
             <div className="p-2 sm:p-3 bg-green-100 rounded-xl">
@@ -480,8 +499,8 @@ export default function AddManager() {
                   </tr>
                 ) : (
                   filteredManagers.map((manager, index) => (
-                    <tr 
-                      key={manager._id} 
+                    <tr
+                      key={manager._id}
                       className="hover:bg-[#16423C]/5 transition-colors duration-200 cursor-pointer"
                       onClick={() => openViewModal(manager)}
                     >
@@ -1005,6 +1024,19 @@ export default function AddManager() {
                 Cancel
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Popup notification (success / error) */}
+      {popup.visible && (
+        <div className={`fixed top-5 right-5 z-[1001] p-4 rounded-lg shadow-xl flex items-start gap-3 max-w-xs font-medium ${popup.type === 'success' ? 'bg-green-600 text-white border border-green-700' : 'bg-red-600 text-white border border-red-700'}`}>
+          <div className="flex-shrink-0 mt-0.5">
+            {popup.type === 'success' ? <CheckCircle size={28} /> : <XCircle size={28} />}
+          </div>
+          <div className="leading-snug">
+            <div className="font-bold">{popup.title}</div>
+            <div className="text-sm mt-1">{popup.message}</div>
           </div>
         </div>
       )}

@@ -2,6 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const Client = require('../models/Client');
+const Agent = require('../models/Agent');
 const { protect, authorize } = require('../middleware/auth');
 
 // Helper function to calculate weekly installment
@@ -80,8 +81,14 @@ router.get('/', protect, authorize('admin','manager'), async function getClients
 // GET all clients for authenticated users (agents/managers/admin) - used by agent portal
 router.get('/all', protect, authorize('admin', 'manager', 'agent'), async function getClientsForAgents(req, res) {
   try {
-    // You may later restrict fields or filter by agent; for now return full list
-    const clients = await Client.find().sort({ createdAt: -1 });
+    // If the requester is an agent, return only clients assigned to them.
+    // Admins and managers continue to receive all clients.
+    const filter = {};
+    if (req.user && req.user.role === 'agent') {
+      filter.assigned_agent = req.user.id;
+    }
+
+    const clients = await Client.find(filter).sort({ createdAt: -1 });
 
     res.json({
       success: true,
@@ -128,7 +135,15 @@ router.post('/', protect, authorize('admin','manager'), async function createCli
       total_weeks = Number(req.body.total_weeks);
     }
 
-    // Create client data (NO agent field)
+    // Resolve assigned agent if provided
+    let assignedAgentId = req.body.assigned_agent || null;
+    let assignedAgentName = '';
+    if (assignedAgentId) {
+      const agent = await Agent.findById(assignedAgentId);
+      if (agent) assignedAgentName = agent.name || agent.username || '';
+    }
+
+    // Create client data (may include agent fields)
     const clientData = {
       name: req.body.name,
       husband_name: req.body.husband_name,
@@ -150,6 +165,11 @@ router.post('/', protect, authorize('admin','manager'), async function createCli
       nominee_phone: req.body.nominee_phone || '',
       nominee_address: req.body.nominee_address || ''
     };
+
+    if (assignedAgentId) {
+      clientData.assigned_agent = assignedAgentId;
+      clientData.assigned_agent_name = assignedAgentName;
+    }
 
     const newClient = new Client(clientData);
     await newClient.save();
@@ -202,6 +222,18 @@ router.put('/:id', protect, authorize('admin', 'agent', 'manager'), async functi
           client[field] = req.body[field];
         }
       });
+
+      // Allow admin/manager to assign/unassign an agent when updating
+      if (req.body.assigned_agent !== undefined) {
+        let assignedId = req.body.assigned_agent || null;
+        let assignedName = '';
+        if (assignedId) {
+          const agent = await Agent.findById(assignedId);
+          if (agent) assignedName = agent.name || agent.username || '';
+        }
+        client.assigned_agent = assignedId;
+        client.assigned_agent_name = assignedName;
+      }
     }
 
     // Recalculate pending and status
@@ -269,6 +301,82 @@ router.delete('/:id', protect, authorize('admin','manager'), async function dele
     res.json({ success: true, message: 'Client deleted successfully' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// GET clients by agent (Manager & Admin only)
+router.get('/agent/:agentId', protect, authorize('admin', 'manager'), async function getClientsByAgent(req, res) {
+  try {
+    const { agentId } = req.params;
+
+    if (!agentId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Agent ID is required'
+      });
+    }
+
+    const clients = await Client.find({ assigned_agent: agentId }).sort({ createdAt: -1 });
+
+    return res.json({
+      success: true,
+      clients,
+      total: clients.length
+    });
+  } catch (err) {
+    console.error('Error:', err);
+    return res.status(500).json({
+      success: false,
+      message: err.message
+    });
+  }
+});
+
+// TRANSFER client from one agent to another (Manager & Admin only)
+router.put('/:id/transfer', protect, authorize('admin', 'manager'), async function transferClient(req, res) {
+  try {
+    const { id } = req.params;
+    const { new_agent_id, new_agent_name } = req.body;
+
+    if (!id || !new_agent_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Client ID and new agent ID are required'
+      });
+    }
+
+    const client = await Client.findById(id);
+    if (!client) {
+      return res.status(404).json({
+        success: false,
+        message: 'Client not found'
+      });
+    }
+
+    const oldAgentId = client.assigned_agent;
+    const oldAgentName = client.assigned_agent_name;
+
+    // Update client with new agent
+    client.assigned_agent = new_agent_id;
+    client.assigned_agent_name = new_agent_name;
+
+    // Store transfer history in notes
+    const transferInfo = `\n[TRANSFERRED] From: ${oldAgentName || 'Unassigned'} → To: ${new_agent_name || 'Unknown'} on ${new Date().toLocaleDateString('en-IN')} by ${req.user.name || req.user.username}`;
+    client.notes = (client.notes || '') + transferInfo;
+
+    const updatedClient = await client.save();
+
+    return res.json({
+      success: true,
+      data: updatedClient,
+      message: `Client transferred successfully from ${oldAgentName || 'Unassigned'} to ${new_agent_name}`
+    });
+  } catch (err) {
+    console.error('Error:', err);
+    return res.status(500).json({
+      success: false,
+      message: err.message
+    });
   }
 });
 

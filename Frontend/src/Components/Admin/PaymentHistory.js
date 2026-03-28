@@ -41,12 +41,12 @@ export default function PaymentHistory() {
   // Fetch payment data from backend
   useEffect(() => {
     fetchPayments();
-    
+
     // Setup polling to check for new payments (every 20 seconds)
     const pollInterval = setInterval(() => {
       fetchPaymentsWithoutLoading();
     }, 20000); // 20 seconds
-    
+
     // Cleanup interval on unmount
     return () => clearInterval(pollInterval);
   }, []);
@@ -83,7 +83,7 @@ export default function PaymentHistory() {
       }
 
       const data = await response.json();
-      
+
       if (data.success) {
         // Map backend data to frontend format
         const formattedRecords = data.data.payments.map((payment) => ({
@@ -103,6 +103,7 @@ export default function PaymentHistory() {
             role: payment.collectedByRole ? payment.collectedByRole.charAt(0).toUpperCase() + payment.collectedByRole.slice(1) : null,
           },
           client: {
+            id: payment.client?._id || 'N/A',
             name: payment.clientName || payment.client?.name || 'Unknown',
             phone: payment.client?.phone || 'N/A',
             district: payment.client?.district || 'N/A',
@@ -158,12 +159,12 @@ export default function PaymentHistory() {
 
   const filteredRecords = paymentRecords.filter((record) => {
     const matchesSearch =
-      record.staff.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      record.client.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      record.client.id.toLowerCase().includes(searchTerm.toLowerCase());
+      (record.staff?.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (record.client?.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (record.client?.id || '').toLowerCase().includes(searchTerm.toLowerCase());
 
     const matchesStaff =
-      staffFilter === 'All Staff' || record.staff.name === staffFilter;
+      staffFilter === 'All Staff' || record.staff?.name === staffFilter;
 
     return matchesSearch && matchesStaff;
   });

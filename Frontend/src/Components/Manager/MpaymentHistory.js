@@ -42,12 +42,12 @@ export default function MpaymentHistory() {
   // Fetch payment data from backend
   useEffect(() => {
     fetchPayments();
-    
+
     // Setup polling to check for new payments (every 20 seconds)
     const pollInterval = setInterval(() => {
       fetchPaymentsWithoutLoading();
     }, 20000); // 20 seconds
-    
+
     // Cleanup interval on unmount
     return () => clearInterval(pollInterval);
   }, []);
@@ -84,7 +84,7 @@ export default function MpaymentHistory() {
       }
 
       const data = await response.json();
-      
+
       if (data.success) {
         // Map backend data to frontend format
         const formattedRecords = data.data.payments.map((payment) => ({
@@ -115,6 +115,7 @@ export default function MpaymentHistory() {
             };
           })(),
           client: {
+            id: payment.client?._id || 'N/A',
             name: payment.clientName || payment.client?.name || 'Unknown',
             phone: payment.client?.phone || 'N/A',
             district: payment.client?.district || 'N/A',
@@ -170,12 +171,12 @@ export default function MpaymentHistory() {
 
   const filteredRecords = paymentRecords.filter((record) => {
     const matchesSearch =
-      record.staff.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      record.client.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      record.client.id.toLowerCase().includes(searchTerm.toLowerCase());
+      (record.staff?.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (record.client?.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (record.client?.id || '').toLowerCase().includes(searchTerm.toLowerCase());
 
     const matchesStaff =
-      staffFilter === 'All Staff' || record.staff.name === staffFilter;
+      staffFilter === 'All Staff' || record.staff?.name === staffFilter;
 
     return matchesSearch && matchesStaff;
   });
@@ -207,7 +208,7 @@ export default function MpaymentHistory() {
               <div>
                 <p className="text-sm text-gray-600">Logged in as:</p>
                 <p className="text-lg font-semibold text-emerald-700">
-                  {loggedInUser.name || loggedInUser.username || 'User'} 
+                  {loggedInUser.name || loggedInUser.username || 'User'}
                   {loggedInUser.role && `(${loggedInUser.role})`}
                 </p>
               </div>

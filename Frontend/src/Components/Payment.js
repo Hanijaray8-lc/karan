@@ -22,6 +22,9 @@ export default function Payments() {
   const [processing, setProcessing] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [notes, setNotes] = useState('');
+  const [showCancelConfirmModal, setShowCancelConfirmModal] = useState(false);
+  const [cancelPaymentData, setCancelPaymentData] = useState(null);
+  const [notification, setNotification] = useState(null);
 
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user'));
@@ -55,21 +58,21 @@ export default function Payments() {
   // Filter by search
   useEffect(() => {
     let filtered = payments;
-    
+
     if (searchQuery) {
       const query = searchQuery.toLowerCase();
-      filtered = payments.filter(p => 
-        p.name.toLowerCase().includes(query) || 
+      filtered = payments.filter(p =>
+        p.name.toLowerCase().includes(query) ||
         p.phone.includes(query)
       );
     }
-    
+
     if (activeFilter !== 'All') {
-      filtered = filtered.filter(p => 
+      filtered = filtered.filter(p =>
         p.status.toLowerCase() === activeFilter.toLowerCase()
       );
     }
-    
+
     setFilteredPayments(filtered);
   }, [searchQuery, payments, activeFilter]);
 
@@ -78,7 +81,7 @@ export default function Payments() {
   };
 
   const getStatusColor = (status) => {
-    switch(status.toLowerCase()) {
+    switch (status.toLowerCase()) {
       case 'pending': return 'bg-yellow-100 text-yellow-800 border-yellow-200';
       case 'paid': return 'bg-green-100 text-green-800 border-green-200';
       case 'partial': return 'bg-blue-100 text-blue-800 border-blue-200';
@@ -87,7 +90,7 @@ export default function Payments() {
   };
 
   const getStatusBadgeColor = (status) => {
-    switch(status.toLowerCase()) {
+    switch (status.toLowerCase()) {
       case 'pending': return 'bg-[#ffe8b3] text-[#7a5a00]';
       case 'paid': return 'bg-[#d4f3e5] text-[#0f5132]';
       case 'partial': return 'bg-[#d7eef6] text-[#055160]';
@@ -96,9 +99,9 @@ export default function Payments() {
   };
 
   const formatAmount = (amount) => {
-    return '₹' + Number(amount).toLocaleString('en-IN', { 
-      minimumFractionDigits: 2, 
-      maximumFractionDigits: 2 
+    return '₹' + Number(amount).toLocaleString('en-IN', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
     });
   };
 
@@ -119,7 +122,7 @@ export default function Payments() {
   };
 
   const handlePaymentOption = (option) => {
-    switch(option) {
+    switch (option) {
       case 'MIN':
         setSelectedAmount(totalAmount * 0.2);
         break;
@@ -181,6 +184,127 @@ export default function Payments() {
     }
   };
 
+  // Show notification
+  const showNotification = (message, type = 'info') => {
+    setNotification({ message, type });
+    setTimeout(() => setNotification(null), 4000);
+  };
+
+  // Open cancel confirmation modal
+  const openCancelConfirmModal = (payment) => {
+    setCancelPaymentData(payment);
+    setShowCancelConfirmModal(true);
+  };
+
+  // Close cancel confirmation modal
+  const closeCancelConfirmModal = () => {
+    setShowCancelConfirmModal(false);
+    setCancelPaymentData(null);
+  };
+
+  // Handle cancel payment - extend client's loan by 1 week
+  const handleConfirmCancelPayment = async () => {
+    if (!selectedClient) {
+      showNotification('No client selected', 'error');
+      return;
+    }
+
+    setProcessing(true);
+    closeCancelConfirmModal();
+
+    try {
+      const token = localStorage.getItem('token');
+      const clientId = selectedClient._id;
+
+      // Extend loan_end_date by 7 days
+      const currentEndDate = selectedClient.loan_end_date ? new Date(selectedClient.loan_end_date) : null;
+      let newEndDate;
+
+      if (currentEndDate && !isNaN(currentEndDate)) {
+        newEndDate = new Date(currentEndDate.getTime() + 7 * 24 * 60 * 60 * 1000);
+      } else if (selectedClient.loan_start_date) {
+        const start = new Date(selectedClient.loan_start_date);
+        newEndDate = new Date(start.getTime() + 13 * 7 * 24 * 60 * 60 * 1000); // push to 13 weeks
+      } else {
+        throw new Error('Unable to calculate new loan end date');
+      }
+
+      // Update client loan_end_date in backend
+      const updateRes = await fetch(`http://localhost:5000/api/clients/${clientId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ loan_end_date: newEndDate.toISOString() })
+      });
+
+      if (!updateRes.ok) {
+        const errorData = await updateRes.json();
+        throw new Error(errorData.message || 'Failed to update loan end date');
+      }
+
+      // Clear localStorage markers for this client
+      try {
+        localStorage.removeItem(`markedPaid_${clientId}`);
+        localStorage.removeItem(`pushedNotPaid_${clientId}`);
+      } catch (e) {
+        console.error('Error clearing localStorage:', e);
+      }
+
+      // Compute new total weeks locally to keep UI in sync
+      let updatedTotalWeeks = selectedClient.total_weeks || 0;
+      if (newEndDate && selectedClient.loan_start_date) {
+        const start = new Date(selectedClient.loan_start_date);
+        const end = new Date(newEndDate);
+        const durationDays = Math.round((end - start) / (1000 * 60 * 60 * 24));
+        updatedTotalWeeks = Math.max(1, Math.round(durationDays / 7));
+      }
+
+      // Update selectedClient
+      const updatedClient = {
+        ...selectedClient,
+        loan_end_date: newEndDate.toISOString(),
+        total_weeks: updatedTotalWeeks
+      };
+
+      setSelectedClient(updatedClient);
+
+      // Update in payments list
+      setPayments(prevPayments =>
+        prevPayments.map(p =>
+          p._id === clientId
+            ? {
+              ...p,
+              loan_end_date: newEndDate.toISOString(),
+              total_weeks: updatedTotalWeeks
+            }
+            : p
+        )
+      );
+
+      // Update filtered payments as well
+      setFilteredPayments(prevFiltered =>
+        prevFiltered.map(p =>
+          p._id === clientId
+            ? {
+              ...p,
+              loan_end_date: newEndDate.toISOString(),
+              total_weeks: updatedTotalWeeks
+            }
+            : p
+        )
+      );
+
+      showNotification('Due extended successfully! Loan extended by 1 week', 'success');
+    } catch (error) {
+      console.error('Error extending due:', error);
+      showNotification(`Failed to extend due: ${error.message}`, 'error');
+    } finally {
+      setProcessing(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#E9EFEC] font-sans">
       {/* Agent Navbar */}
@@ -195,7 +319,7 @@ export default function Payments() {
               Payments Collection
             </h4>
             <p className="text-sm text-emerald-100 mt-1">
-              Total Due: {formatAmount(stats.totalDue)} | 
+              Total Due: {formatAmount(stats.totalDue)} |
               Clients: {stats.totalClients}
             </p>
           </div>
@@ -216,33 +340,30 @@ export default function Payments() {
             {/* Search and Filter */}
             <div className="flex flex-col sm:flex-row gap-3 mb-4">
               <div className="flex gap-2">
-                <button 
+                <button
                   onClick={() => setActiveFilter('All')}
-                  className={`px-5 py-2 rounded-full border transition-all ${
-                    activeFilter === 'All' 
-                      ? 'bg-[#16423C] text-white border-[#16423C]' 
+                  className={`px-5 py-2 rounded-full border transition-all ${activeFilter === 'All'
+                      ? 'bg-[#16423C] text-white border-[#16423C]'
                       : 'border-[#6A9C89] text-[#16423C] hover:bg-[#16423C] hover:text-white'
-                  }`}
+                    }`}
                 >
                   All
                 </button>
-                <button 
+                <button
                   onClick={() => setActiveFilter('Pending')}
-                  className={`px-5 py-2 rounded-full border transition-all ${
-                    activeFilter === 'Pending' 
-                      ? 'bg-[#16423C] text-white border-[#16423C]' 
+                  className={`px-5 py-2 rounded-full border transition-all ${activeFilter === 'Pending'
+                      ? 'bg-[#16423C] text-white border-[#16423C]'
                       : 'border-[#6A9C89] text-[#16423C] hover:bg-[#16423C] hover:text-white'
-                  }`}
+                    }`}
                 >
                   Pending
                 </button>
-                <button 
+                <button
                   onClick={() => setActiveFilter('Partial')}
-                  className={`px-5 py-2 rounded-full border transition-all ${
-                    activeFilter === 'Partial' 
-                      ? 'bg-[#16423C] text-white border-[#16423C]' 
+                  className={`px-5 py-2 rounded-full border transition-all ${activeFilter === 'Partial'
+                      ? 'bg-[#16423C] text-white border-[#16423C]'
                       : 'border-[#6A9C89] text-[#16423C] hover:bg-[#16423C] hover:text-white'
-                  }`}
+                    }`}
                 >
                   Partial
                 </button>
@@ -319,7 +440,7 @@ export default function Payments() {
 
                   {/* Progress Bar */}
                   <div className="mt-3 w-full bg-gray-200 rounded-full h-1.5">
-                    <div 
+                    <div
                       className="bg-[#16423C] h-1.5 rounded-full"
                       style={{ width: `${100 - payment.duePercentage}%` }}
                     ></div>
@@ -344,7 +465,7 @@ export default function Payments() {
               <div className="bg-white rounded-xl shadow-xl p-6 sticky top-24">
                 <h5 className="text-xl font-bold text-[#16423C] mb-1">{selectedClient.name}</h5>
                 <p className="text-gray-500 mb-2">{selectedClient.phone}</p>
-                
+
                 {/* Due Info */}
                 <div className="bg-yellow-50 p-3 rounded-lg mb-4">
                   <div className="flex justify-between items-center">
@@ -360,7 +481,7 @@ export default function Payments() {
                     <span className="text-red-600">{formatAmount(totalAmount)}</span>
                   </div>
                 </div>
-                
+
                 <div className="text-center my-4">
                   <div className="text-4xl font-bold text-[#16423C]">
                     {formatAmount(selectedAmount)}
@@ -376,8 +497,8 @@ export default function Payments() {
                       onClick={() => handlePaymentOption(option)}
                       className={`
                         p-2 text-center rounded-lg cursor-pointer transition-all border-2 text-sm
-                        ${option === '50%' 
-                          ? 'bg-[#C4DAD2] border-[#16423C] font-semibold' 
+                        ${option === '50%'
+                          ? 'bg-[#C4DAD2] border-[#16423C] font-semibold'
                           : 'bg-[#E9EFEC] border-transparent hover:border-[#16423C] hover:bg-[#C4DAD2]'
                         }
                       `}
@@ -436,6 +557,16 @@ export default function Payments() {
                     </>
                   )}
                 </button>
+
+                {/* Cancel Button */}
+                <button
+                  onClick={() => openCancelConfirmModal(selectedClient)}
+                  disabled={processing}
+                  className="w-full bg-red-600 text-white py-3 rounded-full font-semibold hover:bg-red-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2 mt-2"
+                >
+                  <i className="fas fa-times-circle"></i>
+                  Cancel Payment & Extend 1 Week
+                </button>
               </div>
             ) : (
               <div className="bg-white rounded-xl shadow-lg p-8 text-center sticky top-24">
@@ -450,11 +581,11 @@ export default function Payments() {
 
       {/* Mobile Payment Modal */}
       {showModal && selectedClient && (
-        <div 
+        <div
           className="fixed inset-0 bg-black/50 z-[9999] flex items-end lg:hidden"
           onClick={closeModal}
         >
-          <div 
+          <div
             className="bg-white rounded-t-2xl w-full max-h-[90vh] overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
@@ -465,7 +596,7 @@ export default function Payments() {
                   <h5 className="text-xl font-bold text-[#16423C]">{selectedClient.name}</h5>
                   <p className="text-gray-500">{selectedClient.phone}</p>
                 </div>
-                <button 
+                <button
                   onClick={closeModal}
                   className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center"
                 >
@@ -504,8 +635,8 @@ export default function Payments() {
                     onClick={() => handlePaymentOption(option)}
                     className={`
                       p-2 text-center rounded-lg text-sm
-                      ${option === '50%' 
-                        ? 'bg-[#C4DAD2] border-[#16423C] font-semibold' 
+                      ${option === '50%'
+                        ? 'bg-[#C4DAD2] border-[#16423C] font-semibold'
                         : 'bg-[#E9EFEC] hover:bg-[#C4DAD2]'
                       }
                     `}
@@ -565,6 +696,19 @@ export default function Payments() {
                 )}
               </button>
 
+              {/* Cancel Button */}
+              <button
+                onClick={() => {
+                  openCancelConfirmModal(selectedClient);
+                  closeModal();
+                }}
+                disabled={processing}
+                className="w-full bg-red-600 text-white py-3 rounded-full font-semibold hover:bg-red-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2 mb-3"
+              >
+                <i className="fas fa-times-circle"></i>
+                Cancel & Extend 1 Week
+              </button>
+
               {/* Close Button */}
               <button
                 onClick={closeModal}
@@ -577,10 +721,83 @@ export default function Payments() {
         </div>
       )}
 
+      {/* Cancel Payment Confirmation Modal */}
+      {showCancelConfirmModal && (
+        <div
+          className="fixed inset-0 bg-black/50 z-[10000] flex items-center justify-center"
+          onClick={closeCancelConfirmModal}
+        >
+          <div
+            className="bg-white rounded-xl shadow-2xl p-6 max-w-sm w-full mx-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-center w-12 h-12 rounded-full bg-red-100 mx-auto mb-4">
+              <i className="fas fa-exclamation-triangle text-red-600 text-lg"></i>
+            </div>
+            <h3 className="text-lg font-bold text-[#16423C] text-center mb-2">
+              Cancel Payment?
+            </h3>
+            <p className="text-gray-600 text-center mb-4">
+              This will cancel all payments for <strong>{cancelPaymentData?.name}</strong> and extend their loan by 1 week.
+            </p>
+
+            <div className="flex gap-3">
+              <button
+                onClick={closeCancelConfirmModal}
+                className="flex-1 px-4 py-2 rounded-lg border border-gray-300 text-gray-700 font-semibold hover:bg-gray-50 transition-all"
+              >
+                No, Keep It
+              </button>
+              <button
+                onClick={handleConfirmCancelPayment}
+                disabled={processing}
+                className="flex-1 px-4 py-2 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {processing ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                    Canceling...
+                  </>
+                ) : (
+                  <>
+                    <i className="fas fa-times"></i>
+                    Yes, Cancel
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Notification Toast */}
+      {notification && (
+        <div
+          className={`fixed bottom-6 right-6 px-6 py-4 rounded-lg shadow-lg text-white flex items-center gap-3 z-[50000] animate-in fade-in slide-in-from-bottom-4 ${
+            notification.type === 'success'
+              ? 'bg-green-600'
+              : notification.type === 'error'
+              ? 'bg-red-600'
+              : 'bg-blue-600'
+          }`}
+        >
+          <i
+            className={`fas ${
+              notification.type === 'success'
+                ? 'fa-check-circle'
+                : notification.type === 'error'
+                ? 'fa-exclamation-circle'
+                : 'fa-info-circle'
+            }`}
+          ></i>
+          <span>{notification.message}</span>
+        </div>
+      )}
+
       {/* Add Font Awesome */}
-      <link 
-        rel="stylesheet" 
-        href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" 
+      <link
+        rel="stylesheet"
+        href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
       />
     </div>
   );

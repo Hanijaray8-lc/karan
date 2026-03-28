@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { CheckCircle, XCircle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom'; // Added for redirection
 import AdminNavbar from './AdminNavbar';
 import axios from 'axios';
@@ -31,6 +32,25 @@ const AgentManagement = () => {
   const [tempPassword, setTempPassword] = useState('');
   const [resetting, setResetting] = useState(false);
 
+  // Popup state for success / error feedback
+  const [popup, setPopup] = useState({ visible: false, type: 'success', title: '', message: '' });
+  const popupTimeoutRef = useRef(null);
+
+  const showPopup = (type, title, message, duration = 4000) => {
+    if (popupTimeoutRef.current) clearTimeout(popupTimeoutRef.current);
+    setPopup({ visible: true, type, title, message });
+    popupTimeoutRef.current = setTimeout(() => {
+      setPopup(prev => ({ ...prev, visible: false }));
+      popupTimeoutRef.current = null;
+    }, duration);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (popupTimeoutRef.current) clearTimeout(popupTimeoutRef.current);
+    };
+  }, []);
+
   // Check authentication and Fetch agents on component mount
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -38,7 +58,7 @@ const AgentManagement = () => {
 
     // Secure the route: If no token or not admin, send to login
     if (!token || !user || user.role !== 'admin') {
-      navigate('/'); 
+      navigate('/');
     } else {
       fetchAgents();
     }
@@ -48,13 +68,13 @@ const AgentManagement = () => {
     try {
       setLoading(true);
       const token = localStorage.getItem('token');
-      
+
       const response = await axios.get(`${API_URL}/agents`, {
         headers: {
           Authorization: `Bearer ${token}` // Added Token
         }
       });
-      
+
       if (response.data && response.data.agents) {
         setAgents(response.data.agents);
         setStats({
@@ -91,15 +111,15 @@ const AgentManagement = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
+
     if (!formData.username || !formData.name || !formData.email || (!selectedAgent && !formData.password)) {
-      alert('Please fill in all required fields');
+      showPopup('error', 'Validation', 'Please fill in all required fields');
       return;
     }
 
     const token = localStorage.getItem('token');
     const formDataToSend = new FormData();
-    
+
     formDataToSend.append('username', formData.username);
     formDataToSend.append('name', formData.name);
     formDataToSend.append('email', formData.email);
@@ -108,23 +128,23 @@ const AgentManagement = () => {
     formDataToSend.append('status', formData.status);
     formDataToSend.append('department', 'Field Agent');
     formDataToSend.append('commission', '0');
-    
+
     if (formData.profilePhoto instanceof File) {
       formDataToSend.append('profilePhoto', formData.profilePhoto);
     }
 
     try {
-      const url = selectedAgent 
+      const url = selectedAgent
         ? `${API_URL}/agents/${selectedAgent._id}`
         : `${API_URL}/agents`;
-      
+
       const method = selectedAgent ? 'put' : 'post';
-      
+
       const response = await axios({
         method: method,
         url: url,
         data: formDataToSend,
-        headers: { 
+        headers: {
           'Content-Type': 'multipart/form-data',
           Authorization: `Bearer ${token}` // Added Token
         }
@@ -134,11 +154,11 @@ const AgentManagement = () => {
         await fetchAgents();
         setIsModalOpen(false);
         resetForm();
-        alert(`Agent ${selectedAgent ? 'updated' : 'created'} successfully!`);
+        showPopup('success', selectedAgent ? 'Updated' : 'Created', `Agent ${formData.name || formData.username} ${selectedAgent ? 'updated' : 'created'} successfully!`);
       }
     } catch (error) {
       console.error('Submit error:', error);
-      alert('Error: ' + (error.response?.data?.message || 'Failed to save agent'));
+      showPopup('error', 'Error', error.response?.data?.message || 'Failed to save agent');
     }
   };
 
@@ -156,7 +176,7 @@ const AgentManagement = () => {
         const temp = response.data.password;
         setFormData({ ...formData, password: temp });
         setTempPassword(temp);
-        alert('Temporary password generated:\n' + temp + '\nIt will be saved when you click Update.');
+        showPopup('success', 'Temporary Password', `Temporary password: ${temp}`);
       }
     } catch (error) {
       console.error('Reset password error:', error);
@@ -177,10 +197,10 @@ const AgentManagement = () => {
         }
       });
       await fetchAgents();
-      alert('Agent deleted successfully!');
+      showPopup('success', 'Deleted', 'Agent deleted successfully!');
     } catch (error) {
       console.error('Delete error:', error);
-      alert('Failed to delete agent');
+      showPopup('error', 'Error', 'Failed to delete agent');
     }
   };
 
@@ -211,7 +231,7 @@ const AgentManagement = () => {
     });
   };
 
-  const filteredAgents = agents.filter(agent => 
+  const filteredAgents = agents.filter(agent =>
     agent.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
     agent.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
     agent.username?.toLowerCase().includes(searchTerm.toLowerCase())
@@ -330,6 +350,18 @@ const AgentManagement = () => {
               </table>
             </div>
           )}
+          {/* Popup notification (success / error) */}
+          {popup.visible && (
+            <div className={`fixed top-5 right-5 z-[1001] p-4 rounded-lg shadow-xl flex items-start gap-3 max-w-xs font-medium ${popup.type === 'success' ? 'bg-green-600 text-white border border-green-700' : 'bg-red-600 text-white border border-red-700'}`}>
+              <div className="flex-shrink-0 mt-0.5">
+                {popup.type === 'success' ? <CheckCircle size={28} /> : <XCircle size={28} />}
+              </div>
+              <div className="leading-snug">
+                <div className="font-bold">{popup.title}</div>
+                <div className="text-sm mt-1">{popup.message}</div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -391,7 +423,7 @@ const AgentManagement = () => {
                       <strong>Temporary password:</strong> {tempPassword}
                     </div>
                   )}
-                  
+
                   <select name="status" value={formData.status} onChange={handleInputChange} className="w-full px-4 py-2 border rounded-lg">
                     <option value="Active">Active</option>
                     <option value="Inactive">Inactive</option>

@@ -1,6 +1,31 @@
 import React, { useState, useEffect } from 'react';
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, isToday, isSameDay } from 'date-fns';
+import { Capacitor } from '@capacitor/core';
+import { Filesystem, Directory } from '@capacitor/filesystem';
+import { Share } from '@capacitor/share';
 import ManagerNavbar from './ManagerNavbar';
+
+// Robust native PDF saver with multiple fallbacks and mkdir attempt
+const savePdfBase64 = async (fileName, base64) => {
+  const candidates = [Directory.Documents, Directory.Downloads, Directory.External];
+  for (const dir of candidates) {
+    try {
+      await Filesystem.writeFile({ path: fileName, data: base64, directory: dir });
+      return { success: true, directory: dir };
+    } catch (err) {
+      // try to create the directory and retry
+      try {
+        await Filesystem.mkdir({ path: '', directory: dir, recursive: true });
+        await Filesystem.writeFile({ path: fileName, data: base64, directory: dir });
+        return { success: true, directory: dir };
+      } catch (err2) {
+        console.warn('Write attempt failed for', dir, err2 || err);
+        // continue to next directory candidate
+      }
+    }
+  }
+  return { success: false };
+};
 
 const MDailyDues = () => {
   const [clients, setClients] = useState([]);
@@ -27,20 +52,42 @@ const MDailyDues = () => {
   const [paidTodayMap, setPaidTodayMap] = useState({}); // localStorage marker for Mark Paid
   const [notPaidTodayMap, setNotPaidTodayMap] = useState({}); // localStorage marker for Not Paid
   const [serverPaidTodayMap, setServerPaidTodayMap] = useState({}); // server-side payments today
+  const [selectedAlpha, setSelectedAlpha] = useState(''); // alphabet filter for landmarks
+  const [showMoreAlpha, setShowMoreAlpha] = useState(false);
+  // Maintain an ordered list of landmarks (persisted to localStorage) for drag-reorder
+  const [orderedLandmarks, setOrderedLandmarks] = useState(() => {
+    try {
+      const saved = localStorage.getItem('landmarkOrder');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) { return []; }
+  });
 
   // Derive available landmarks from clients (filtered by selected district)
   const getAvailableLandmarks = () => {
-    const set = new Set();
+    // Count clients per landmark (respect selected district filter) and
+    // return landmarks sorted by count desc, then alphabetically.
+    const counts = {};
     clients.forEach((c) => {
-      if (!c.landmark) return;
+      const lm = (c.landmark || '').toString().trim();
+      if (!lm) return;
       if (selectedDistrict) {
-        if ((c.district || '').toString() === selectedDistrict) set.add(c.landmark);
-      } else {
-        set.add(c.landmark);
+        if ((c.district || '').toString() !== selectedDistrict) return;
       }
+      counts[lm] = (counts[lm] || 0) + 1;
     });
-    return Array.from(set).sort();
+    return Object.keys(counts).sort((a, b) => {
+      if (counts[b] !== counts[a]) return counts[b] - counts[a];
+      return a.localeCompare(b);
+    });
   };
+
+  // Auto-select a landmark when an alphabet filter yields exactly one match
+  useEffect(() => {
+    if (!selectedAlpha) return;
+    const avail = getAvailableLandmarks();
+    const filtered = avail.filter(l => (l || '').toString().toLowerCase().startsWith(selectedAlpha.toLowerCase()));
+    if (filtered.length === 1) setSelectedLandmark(filtered[0]);
+  }, [selectedAlpha, clients, selectedDistrict]);
 
   const getIconForLandmark = (name) => {
     if (!name) return '🏷️';
@@ -99,14 +146,77 @@ const MDailyDues = () => {
   // Mock data - replace with actual API call
   useEffect(() => {
     fetchClients();
-    
+
     // Setup polling to check for payments made by other users (every 30 seconds)
     const pollInterval = setInterval(() => {
       fetchClientsWithoutLoading();
     }, 30000); // 30 seconds
-    
+
     // Cleanup interval on unmount
     return () => clearInterval(pollInterval);
+  }, []);
+
+  // Listen for client updates from other components (e.g., payment cancellation)
+  useEffect(() => {
+    const handleClientUpdate = (event) => {
+      const { clientId, loan_end_date } = event.detail;
+      const todayISO = new Date().toISOString().split('T')[0];
+      setClients(prevClients =>
+        prevClients.map(client => {
+          if (client._id !== clientId) return client;
+          const updated = { ...client, loan_end_date: loan_end_date, paid: false };
+          if (updated.paidDates instanceof Set) {
+            const newSet = new Set(updated.paidDates);
+            newSet.delete(todayISO);
+            updated.paidDates = newSet;
+          } else if (Array.isArray(updated.paidDates)) {
+            updated.paidDates = updated.paidDates.filter(d => d !== todayISO);
+          }
+          return updated;
+        })
+      );
+      // Update selectedClient if it's the same client
+      setSelectedClient(prev => {
+        if (!prev || prev._id !== clientId) return prev;
+        const updated = { ...prev, loan_end_date: loan_end_date, paid: false };
+        if (updated.paidDates instanceof Set) {
+          const newSet = new Set(updated.paidDates);
+          newSet.delete(todayISO);
+          updated.paidDates = newSet;
+        } else if (Array.isArray(updated.paidDates)) {
+          updated.paidDates = updated.paidDates.filter(d => d !== todayISO);
+        }
+        return updated;
+      });
+      // Clear local action markers to re-enable buttons
+      setPaidTodayMap(prev => {
+        const newMap = { ...prev };
+        delete newMap[clientId];
+        return newMap;
+      });
+      setNotPaidTodayMap(prev => {
+        const newMap = { ...prev };
+        delete newMap[clientId];
+        return newMap;
+      });
+      showNotification('Client due date has been extended due to payment cancellation.', 'info');
+    };
+
+    const handleClientPaid = (event) => {
+      const { clientId } = event.detail;
+      setClients(prevClients =>
+        prevClients.map(client =>
+          client._id === clientId ? { ...client, paid: true } : client
+        )
+      );
+    };
+
+    window.addEventListener('clientUpdated', handleClientUpdate);
+    window.addEventListener('clientPaid', handleClientPaid);
+    return () => {
+      window.removeEventListener('clientUpdated', handleClientUpdate);
+      window.removeEventListener('clientPaid', handleClientPaid);
+    };
   }, []);
 
   // Fetch clients without showing loading indicator (for polling)
@@ -116,11 +226,11 @@ const MDailyDues = () => {
       const res = await fetch('http://localhost:5000/api/clients/all', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      
+
       if (!res.ok) return;
-      
+
       const data = await res.json();
-      
+
       if (data.success && data.clients) {
         const transformedClients = data.clients.map(client => {
           const forcedWeekly = 575;
@@ -135,27 +245,32 @@ const MDailyDues = () => {
             daily_amount: display,
             daily_amount_value: forcedWeekly,
             pending_amount: isNaN(normalizedPending) ? 0 : normalizedPending,
+            paidDates: new Set(),
             paid: false,
             type: 'loan'
           };
         });
-        // Attach paid status by checking payment records for today
+        // Attach paid status by checking payment records
         try {
           const payRes = await fetch('http://localhost:5000/api/payments/test/all');
           const payJson = payRes.ok ? await payRes.json() : null;
           const payments = (payJson && payJson.data && payJson.data.payments) || [];
           const todayISO = new Date().toISOString().split('T')[0];
-          const paidTodaySet = new Set();
+          const paidDatesMap = {};
 
           payments.forEach(p => {
             const clientId = p.client && p.client._id ? String(p.client._id) : (p.client ? String(p.client) : null);
             const pDate = p.paymentDate ? new Date(p.paymentDate).toISOString().split('T')[0] : null;
-            if (clientId && pDate === todayISO) paidTodaySet.add(clientId);
+            if (clientId && pDate) {
+              if (!paidDatesMap[clientId]) paidDatesMap[clientId] = new Set();
+              paidDatesMap[clientId].add(pDate);
+            }
           });
 
           const withPaid = transformedClients.map(c => {
             const id = c._id ? String(c._id) : (c.clientId ? String(c.clientId) : null);
-            return { ...c, paid: id ? paidTodaySet.has(id) : false };
+            const paidDates = paidDatesMap[id] || new Set();
+            return { ...c, paidDates, paid: paidDates.has(todayISO) };
           });
 
           const paidMap = {};
@@ -179,11 +294,11 @@ const MDailyDues = () => {
       const res = await fetch('http://localhost:5000/api/clients/all', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      
+
       if (!res.ok) throw new Error('Failed to fetch clients');
-      
+
       const data = await res.json();
-      
+
       if (data.success && data.clients) {
         // Transform API data to include weekly due information
         const transformedClients = data.clients.map(client => {
@@ -206,6 +321,7 @@ const MDailyDues = () => {
             daily_amount: display,
             daily_amount_value: forcedWeekly,
             pending_amount: isNaN(normalizedPending) ? 0 : normalizedPending,
+            paidDates: new Set(),
             paid: false,
             type: 'loan'
           };
@@ -216,17 +332,21 @@ const MDailyDues = () => {
           const payJson = payRes.ok ? await payRes.json() : null;
           const payments = (payJson && payJson.data && payJson.data.payments) || [];
           const todayISO = new Date().toISOString().split('T')[0];
-          const paidTodaySet = new Set();
+          const paidDatesMap = {};
 
           payments.forEach(p => {
             const clientId = p.client && p.client._id ? String(p.client._id) : (p.client ? String(p.client) : null);
             const pDate = p.paymentDate ? new Date(p.paymentDate).toISOString().split('T')[0] : null;
-            if (clientId && pDate === todayISO) paidTodaySet.add(clientId);
+            if (clientId && pDate) {
+              if (!paidDatesMap[clientId]) paidDatesMap[clientId] = new Set();
+              paidDatesMap[clientId].add(pDate);
+            }
           });
 
           const withPaid = transformedClients.map(c => {
             const id = c._id ? String(c._id) : (c.clientId ? String(c.clientId) : null);
-            return { ...c, paid: id ? paidTodaySet.has(id) : false };
+            const paidDates = paidDatesMap[id] || new Set();
+            return { ...c, paidDates, paid: paidDates.has(todayISO) };
           });
 
           const paidMap = {};
@@ -266,13 +386,13 @@ const MDailyDues = () => {
 
     // Calculate all weekly due dates for the client
     let dueDate = new Date(loanStartDate);
-    
+
     while (dueDate <= loanEndDate) {
       // Check if this due date falls within the selected week
       if (dueDate >= weekStartDate && dueDate <= weekEndDate) {
         return true;
       }
-      
+
       // Move to next week
       dueDate.setDate(dueDate.getDate() + 7);
     }
@@ -287,11 +407,11 @@ const MDailyDues = () => {
     const weekStart = new Date(curr.setDate(first));
     const weekEnd = new Date(weekStart);
     weekEnd.setDate(weekEnd.getDate() + 6);
-    
+
     // Set time to start and end of day
     weekStart.setHours(0, 0, 0, 0);
     weekEnd.setHours(23, 59, 59, 999);
-    
+
     return { weekStart, weekEnd };
   };
 
@@ -305,7 +425,7 @@ const MDailyDues = () => {
   const getFilteredClients = () => {
     // kept for week-based calculations (calendar, stats, export)
     let filtered = filterClientsByDueWeek(selectedDate);
-    
+
     if (selectedDistrict) {
       filtered = filtered.filter(client => client.district === selectedDistrict);
     }
@@ -313,22 +433,26 @@ const MDailyDues = () => {
     if (selectedLandmark) {
       filtered = filtered.filter(client => client.landmark === selectedLandmark);
     }
-    
+
     if (searchQuery) {
       const query = searchQuery.toLowerCase();
       filtered = filtered.filter(client => {
         return client.name.toLowerCase().includes(query) ||
-               client.phone.includes(query) ||
-               (client.address && client.address.toLowerCase().includes(query));
+          client.phone.includes(query) ||
+          (client.address && client.address.toLowerCase().includes(query));
       });
     }
-    
+
     return filtered;
   };
 
-  // Get clients to display in the grid (shows all clients, but still respects district/landmark/search)
+  // Get clients to display in the grid (shows clients due on selected date and unpaid)
   const getDisplayedClients = () => {
     let displayed = [...clients];
+
+    // Filter by due date (today or selected calendar date) and unpaid
+    const filterDate = calendarDateFilter || selectedDate.toISOString().split('T')[0];
+    displayed = displayed.filter(client => isClientDueOnDate(client, filterDate) && !client.paidDates.has(filterDate));
 
     if (selectedDistrict) {
       displayed = displayed.filter(client => client.district === selectedDistrict);
@@ -342,14 +466,9 @@ const MDailyDues = () => {
       const query = searchQuery.toLowerCase();
       displayed = displayed.filter(client => {
         return (client.name && client.name.toLowerCase().includes(query)) ||
-               (client.phone && client.phone.includes(query)) ||
-               (client.address && client.address.toLowerCase().includes(query));
+          (client.phone && client.phone.includes(query)) ||
+          (client.address && client.address.toLowerCase().includes(query));
       });
-    }
-
-    // If a calendar date filter is active, show only clients due on that date
-    if (calendarDateFilter) {
-      displayed = displayed.filter(client => isClientDueOnDate(client, calendarDateFilter));
     }
 
     return displayed;
@@ -363,15 +482,15 @@ const MDailyDues = () => {
   // Calculate stats
   const calculateStats = () => {
     let filtered = getFilteredClients();
-    
+
     // If a calendar date is selected, only show stats for clients due on that specific date
     if (calendarDateFilter) {
       filtered = filtered.filter(client => isClientDueOnDate(client, calendarDateFilter));
     }
-    
+
     let totalDue = 0;
     let totalPaid = 0;
-    
+
     filtered.forEach(client => {
       const amt = client.daily_amount_value || 0;
       if (client.paid) {
@@ -380,7 +499,7 @@ const MDailyDues = () => {
         totalDue += amt;
       }
     });
-    
+
     return { totalDue, totalPaid };
   };
 
@@ -396,7 +515,7 @@ const MDailyDues = () => {
   // Helpers for per-day action checks
   const todayKey = () => {
     const d = new Date();
-    return d.toISOString().slice(0,10); // YYYY-MM-DD
+    return d.toISOString().slice(0, 10); // YYYY-MM-DD
   };
 
   const isLocalActionDoneToday = (clientId, action) => {
@@ -413,7 +532,7 @@ const MDailyDues = () => {
       localStorage.setItem(key, todayKey());
       if (action === 'markedPaid') setPaidTodayMap(prev => ({ ...prev, [clientId]: true }));
       if (action === 'pushedNotPaid') setNotPaidTodayMap(prev => ({ ...prev, [clientId]: true }));
-    } catch (e) {}
+    } catch (e) { }
   };
 
   // Helper to get today's date string (YYYY-MM-DD)
@@ -427,15 +546,15 @@ const MDailyDues = () => {
     try {
       const token = localStorage.getItem('token');
       if (!clientId) return false;
-      
+
       const today = getTodayDateString();
       // Query for payments made today for this specific client
       const res = await fetch(`http://localhost:5000/api/payments/history?clientId=${clientId}&startDate=${today}&endDate=${today}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      
+
       if (!res.ok) return false;
-      
+
       const data = await res.json();
       // Check if there are any payments recorded today
       const exists = data && data.data && Array.isArray(data.data.payments) && data.data.payments.length > 0;
@@ -491,14 +610,24 @@ const MDailyDues = () => {
       setServerPaidTodayMap(prev => ({ ...prev, [client._id]: true }));
       // Mark action locally for today so button stays disabled on page reload
       setLocalActionDone(client._id, 'markedPaid');
-      
+      // Update client paid status immediately
+      setSelectedClient(prev => ({ ...prev, paidDates: new Set([...prev.paidDates, currentDate]), paid: true }));
+      setClients(prevClients =>
+        prevClients.map(c =>
+          c._id === client._id ? { ...c, paidDates: new Set([...c.paidDates, currentDate]), paid: true } : c
+        )
+      );
+
       // Reset overflow immediately before closing modal
       document.body.style.overflow = 'auto';
-      
+
       // Close modal and clear selected client
       setShowClientModal(false);
       setSelectedClient(null);
-      
+
+      // Dispatch event to sync with other components
+      window.dispatchEvent(new CustomEvent('clientPaid', { detail: { clientId: client._id } }));
+
       showNotification('Marked as paid successfully', 'success');
     } catch (err) {
       console.error('Mark paid error:', err);
@@ -549,14 +678,14 @@ const MDailyDues = () => {
       }
       // mark action locally for today so Not Paid can't be clicked again
       setLocalActionDone(client._id, 'pushedNotPaid');
-      
+
       // Reset overflow immediately before closing modal
       document.body.style.overflow = 'auto';
-      
+
       // Close modal and clear selected client
       setShowClientModal(false);
       setSelectedClient(null);
-      
+
       showNotification('Due extended by 1 week', 'success');
     } catch (err) {
       console.error('Extend due error:', err);
@@ -581,7 +710,7 @@ const MDailyDues = () => {
       if (Number(c.pending) <= 0) return false;
       if (selectedDistrict && c.district !== selectedDistrict) return false;
       if (selectedLandmark && c.landmark !== selectedLandmark) return false;
-      if (c.paid) return false;
+      if (c.paidDates.has(exportDateStr)) return false;
       return isClientDueOnDate(c, exportDateStr);
     });
 
@@ -595,7 +724,11 @@ const MDailyDues = () => {
     const doc = new jsPDF();
 
     doc.setFontSize(16);
-    doc.text('Daily Dues Report', 105, 15, { align: 'center' });
+    let title = 'Daily Dues Report';
+    if (selectedLandmark) {
+      title += ` - ${selectedLandmark}`;
+    }
+    doc.text(title, 105, 15, { align: 'center' });
     doc.setFontSize(12);
     doc.text('Unpaid Clients Collection List', 105, 25, { align: 'center' });
     doc.text(`Report Date: ${format(new Date(exportDateStr + 'T00:00:00'), 'EEEE, MMMM d, yyyy')}`, 105, 35, { align: 'center' });
@@ -604,7 +737,7 @@ const MDailyDues = () => {
     doc.setFontSize(11);
 
     // Header row for clients
-   
+
 
     // Group candidates by landmark AND district combination
     const groups = {};
@@ -617,8 +750,17 @@ const MDailyDues = () => {
     });
 
     let total = 0;
-    // iterate groups in sorted order
-    Object.keys(groups).sort().forEach((landmark) => {
+    // iterate groups in the user-defined ordered landmark order first
+    const orderedKeys = [];
+    orderedAvailableLandmarks.forEach(lmk => {
+      Object.keys(groups).forEach(k => {
+        if (k.startsWith(lmk + '|')) orderedKeys.push(k);
+      });
+    });
+    // append any groups not present in ordered list
+    Object.keys(groups).forEach(k => { if (!orderedKeys.includes(k)) orderedKeys.push(k); });
+
+    orderedKeys.forEach((landmark) => {
       const list = groups[landmark];
 
       // Landmark and District header
@@ -628,11 +770,11 @@ const MDailyDues = () => {
       let hdr = `Landmark: ${lmk} ( ${dist})`;
       doc.text(hdr, 10, y);
       y += 7;
- doc.text('Client Name', 10, y);
-    doc.text('Address', 80, y);
-    doc.text('Phone', 130, y);
-    doc.text('Amount', 180, y, { align: 'right' });
-    y += 8;
+      doc.text('Client Name', 10, y);
+      doc.text('Client ID', 80, y);
+      doc.text('Phone', 130, y);
+      doc.text('Amount', 180, y, { align: 'right' });
+      y += 8;
       // For each client under this landmark
       list.forEach(client => {
         const amountValue = Number(client.daily_amount_value || client.weekly_amount_value || 0);
@@ -642,19 +784,18 @@ const MDailyDues = () => {
         // Prepare row values
         const nameText = String(client.name || '');
         const districtText = client.district ? ` (${client.district})` : '';
-        const address = String(client.address || '');
+        const clientId = String(client.clientId || 'N/A');
         const phone = String(client.phone || '');
 
         // write name+district in first column
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(11);
-        doc.text(nameText , 10, y);
+        doc.text(nameText, 10, y);
 
-        // write address in second column (wrap if needed)
+        // write clientId in second column
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(10);
-        const addrLines = doc.splitTextToSize(address, 40);
-        doc.text(addrLines, 80, y);
+        doc.text(clientId, 80, y);
 
         // phone in third column
         if (phone) doc.text(phone, 130, y);
@@ -664,7 +805,7 @@ const MDailyDues = () => {
         doc.text(amountText, 180, y, { align: 'right' });
 
         // move y by height of content (approx max of lines)
-        const lineCount = Math.max(1, addrLines.length);
+        const lineCount = 1; // clientId is single line
         y += 6 * lineCount;
 
         y += 4; // small spacer
@@ -688,8 +829,53 @@ const MDailyDues = () => {
     doc.setFont('helvetica', 'bold');
     doc.text(`Total: RS. ${total.toFixed(0)}`, 10, y + 10);
 
-    doc.save('DailyDuesReport.pdf');
-    showNotification('PDF downloaded successfully', 'success');
+    if (Capacitor.isNativePlatform()) {
+      const pdfBase64 = doc.output('dataurlstring').split(',')[1];
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const folder = 'DailyDuesReports';
+      const fileName = `DailyDuesReport_${timestamp}.pdf`;
+
+      // Try writing to app Cache (no external storage permission) and share the file
+      try {
+        const cachePath = `${folder}/${fileName}`;
+        await Filesystem.mkdir({ path: folder, directory: Directory.Cache, recursive: true }).catch(() => {});
+        await Filesystem.writeFile({ path: cachePath, data: pdfBase64, directory: Directory.Cache });
+        // Obtain a native URI to share
+        const uriResult = await Filesystem.getUri({ directory: Directory.Cache, path: cachePath });
+        const nativeUri = uriResult && uriResult.uri ? uriResult.uri : null;
+        if (nativeUri) {
+          await Share.share({ title: 'Daily Dues Report', text: 'Sharing Daily Dues PDF', url: nativeUri });
+          showNotification('Opened share sheet', 'success');
+        } else {
+          throw new Error('Could not obtain file URI');
+        }
+      } catch (err) {
+        console.warn('Cache share failed, falling back to save:', err);
+        // Try saving to external locations via helper (best-effort). If that works, notify user.
+        try {
+          const pdfSaved = await savePdfBase64(`${folder}/${fileName}`, pdfBase64);
+          if (pdfSaved.success) {
+            showNotification('PDF saved to device storage. Use File Manager to open or share.', 'success');
+          } else {
+            throw new Error('savePdfBase64 failed');
+          }
+        } catch (err2) {
+          console.error('All native save/share attempts failed:', err2, err);
+          // Last resort: fall back to web download (may open browser fallback on some platforms)
+          try {
+            const dataUrl = doc.output('dataurlstring');
+            await Share.share({ title: 'Daily Dues Report', text: 'Daily Dues PDF', url: dataUrl }).catch(() => {});
+          } catch (shareErr) {
+            // If even share with data URL fails, fall back to in-app download
+            doc.save('DailyDuesReport.pdf');
+          }
+          showNotification('Failed to save PDF to device. You can try sharing directly from the app.', 'error');
+        }
+      }
+    } else {
+      doc.save('DailyDuesReport.pdf');
+      showNotification('PDF downloaded successfully', 'success');
+    }
     setShowExportModal(false);
   };
 
@@ -724,12 +910,12 @@ const MDailyDues = () => {
   // Render calendar days for current week
   const renderCalendarDays = () => {
     const weekDays = getWeekDates(weekStartDate);
-    
+
     return weekDays.map((day) => {
       const dateStr = format(day, 'yyyy-MM-dd');
       const isCurrentDay = isToday(day);
       const isSelectedDay = isSameDay(day, selectedDate);
-      
+
       // Count clients due on this specific day
       const clientsForDate = clients.filter(c => {
         if (!c.loan_start_date || Number(c.pending) <= 0) return false;
@@ -752,10 +938,10 @@ const MDailyDues = () => {
         }
 
         return false;
-      });
-      
+      }).filter(c => !c.paidDates.has(dateStr));
+
       const clientCount = clientsForDate.length;
-      
+
       return (
         <button
           key={dateStr}
@@ -768,12 +954,12 @@ const MDailyDues = () => {
           className={`
             flex-1 min-w-0 aspect-square p-1 text-center rounded-lg border-2 transition-all duration-200
             flex flex-col gap-0.5 items-center justify-center text-sm
-            ${isCurrentDay 
-              ? 'bg-[#16423C] text-white border-[#16423C]' 
+            ${isCurrentDay
+              ? 'bg-[#16423C] text-white border-[#16423C]'
               : 'bg-white border-[#C4DAD2] text-[#16423C]'
             }
-            ${isSelectedDay && !isCurrentDay 
-              ? 'border-[#6A9C89] bg-[#6A9C89] text-white shadow-lg' 
+            ${isSelectedDay && !isCurrentDay
+              ? 'border-[#6A9C89] bg-[#6A9C89] text-white shadow-lg'
               : ''
             }
             ${clientCount > 0 && !isSelectedDay ? 'border-[#6A9C89]' : ''}
@@ -788,11 +974,10 @@ const MDailyDues = () => {
             {format(day, 'd')}
           </span>
           {clientCount > 0 && (
-            <span className={`text-xs font-bold px-1 py-0.5 rounded ${
-              isCurrentDay || isSelectedDay 
-                ? 'bg-white/20 text-white' 
+            <span className={`text-xs font-bold px-1 py-0.5 rounded ${isCurrentDay || isSelectedDay
+                ? 'bg-white/20 text-white'
                 : 'bg-[#6A9C89]/20 text-[#6A9C89]'
-            }`}>
+              }`}>
               {clientCount}
             </span>
           )}
@@ -845,413 +1030,588 @@ const MDailyDues = () => {
     return null;
   };
 
+  // Drag handlers for reordering landmarks
+  const handleDragStart = (e, landmarkName) => {
+    try {
+      e.dataTransfer.setData('text/plain', landmarkName);
+      e.dataTransfer.effectAllowed = 'move';
+    } catch (err) { }
+  };
+
+  const handleDropOnLandmark = (e, targetLandmark) => {
+    e.preventDefault();
+    try {
+      const dragged = e.dataTransfer.getData('text/plain');
+      if (!dragged) return;
+      if (dragged === targetLandmark) return;
+
+      const avail = getAvailableLandmarks();
+      const base = (orderedLandmarks && orderedLandmarks.length) ? [...orderedLandmarks] : [...avail];
+
+      // remove dragged
+      const filtered = base.filter(x => x !== dragged);
+      const targetIdx = filtered.indexOf(targetLandmark);
+      if (targetIdx === -1) filtered.push(dragged);
+      else filtered.splice(targetIdx, 0, dragged);
+
+      setOrderedLandmarks(filtered);
+      try { localStorage.setItem('landmarkOrder', JSON.stringify(filtered)); } catch (e) { }
+    } catch (err) {
+      console.error('drag drop error', err);
+    }
+  };
+
   const stats = calculateStats();
+  const availableLandmarks = getAvailableLandmarks();
+  // Merge saved order with currently available landmarks so new landmarks are appended
+  const orderedAvailableLandmarks = (orderedLandmarks && orderedLandmarks.length)
+    ? [...orderedLandmarks.filter(l => availableLandmarks.includes(l)), ...availableLandmarks.filter(l => !orderedLandmarks.includes(l))]
+    : availableLandmarks;
+
+  // Keep orderedLandmarks in sync when available landmarks change (add/remove)
+  useEffect(() => {
+    try {
+      const avail = getAvailableLandmarks();
+      if (!orderedLandmarks || orderedLandmarks.length === 0) {
+        setOrderedLandmarks(avail);
+        localStorage.setItem('landmarkOrder', JSON.stringify(avail));
+        return;
+      }
+      const merged = [...orderedLandmarks.filter(l => avail.includes(l)), ...avail.filter(l => !orderedLandmarks.includes(l))];
+      if (JSON.stringify(merged) !== JSON.stringify(orderedLandmarks)) {
+        setOrderedLandmarks(merged);
+        localStorage.setItem('landmarkOrder', JSON.stringify(merged));
+      }
+    } catch (e) { }
+  }, [clients, selectedDistrict]);
+
+  const filteredLandmarks = selectedAlpha
+    ? orderedAvailableLandmarks.filter(l => (l || '').toString().toLowerCase().startsWith(selectedAlpha.toLowerCase()))
+    : orderedAvailableLandmarks;
+  const currentDate = calendarDateFilter || selectedDate.toISOString().split('T')[0];
   // show all clients in the grid (but keep week-based logic for calendar/stats/export)
   const filteredClients = getDisplayedClients();
+  // Order displayed clients by the orderedAvailableLandmarks sequence
+  const orderedFilteredClients = (() => {
+    try {
+      const order = orderedAvailableLandmarks || [];
+      const buckets = {};
+      filteredClients.forEach(c => {
+        const lm = (c.landmark && String(c.landmark).trim()) || 'Other Areas';
+        if (!buckets[lm]) buckets[lm] = [];
+        buckets[lm].push(c);
+      });
+      const res = [];
+      order.forEach(lm => {
+        if (buckets[lm]) {
+          res.push(...buckets[lm]);
+          delete buckets[lm];
+        }
+      });
+      // append any remaining landmarks
+      Object.keys(buckets).forEach(k => res.push(...buckets[k]));
+      return res;
+    } catch (e) { return filteredClients; }
+  })();
 
   return (
     <>
-      <ManagerNavbar/>
+      <div className="sticky top-0 z-50">
+        <ManagerNavbar />
+      </div>
 
       {/* root wrapper now allows horizontal scrolling on desktop */}
-      <div className="min-h-screen bg-[#E9EFEC] p-4 md:p-6 pt-16 md:pt-20 w-full font-sans overflow-x-auto">
-      {/* Notification */}
-      {notification && (
-        <div className={`
+      <div className="min-h-screen bg-[#E9EFEC] p-4 md:p-6 pt-4 md:pt-6 w-full font-sans overflow-x-auto">
+        {/* Notification */}
+        {notification && (
+          <div className={`
           fixed top-5 right-5 z-[1001] p-4 rounded-lg shadow-xl border-2 max-w-[400px] font-semibold
           animate-[slideIn_0.3s_ease]
           ${notification.type === 'success' ? 'bg-[#6A9C89] text-white border-[#16423C]' : ''}
           ${notification.type === 'error' ? 'bg-[#16423C] text-white border-[#6A9C89]' : ''}
           ${notification.type === 'info' ? 'bg-[#16423C] text-white border-[#6A9C89]' : ''}
         `}>
-          {notification.message}
-        </div>
-      )}
-      <div className="flex flex-col gap-6 lg:gap-8">
-        {/* Header */}
-        <div className="flex flex-col md:flex-row items-center gap-4 mb-6 w-full">
-          <div className="flex items-center gap-3 w-full md:w-auto">
-            <div className="bg-[#16423C] text-white px-6 py-3 rounded-xl shadow-md flex items-center gap-3 w-full md:w-auto justify-center">
-              <i className="fas fa-money-bill-wave text-xl"></i>
-              <span className="font-bold text-lg">Weekly Dues</span>
-            </div>
-          </div>
-          <div className="flex-1 w-full">
-            <input
-              type="search"
-              placeholder="Search clients by name, phone, or address..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full px-5 py-3 border-2 border-[#C4DAD2] rounded-xl bg-white text-[#16423C] placeholder-[#6A9C89] focus:outline-none focus:border-[#6A9C89] focus:shadow-lg transition-all"
-            />
-          </div>
-        </div>
-
-        {/* Search results count */}
-        {searchQuery && (
-          <div className="bg-white p-3 rounded-lg border-2 border-[#C4DAD2] text-[#6A9C89] font-semibold mb-2 w-full">
-            Found {filteredClients.length} client(s)
+            {notification.message}
           </div>
         )}
-
-        {/* Sidebar and Main Content */}
-        <div className="flex flex-col lg:flex-row gap-6 lg:gap-8 w-full">
-          {/* Sidebar */}
-          <div className="bg-white rounded-xl p-5 shadow-lg border-2 border-[#C4DAD2] h-fit lg:sticky lg:top-5 w-full lg:w-[350px] flex-shrink-0">
-          {/* District Filter */}
-          <div className="mb-5">
-            <label className="block text-sm font-semibold text-[#6A9C89] uppercase tracking-wide mb-2">
-              Filter by District
-            </label>
-            <select
-              value={selectedDistrict}
-              onChange={(e) => setSelectedDistrict(e.target.value)}
-              className="w-full p-3 border-2 border-[#C4DAD2] rounded-lg bg-white text-[#16423C] font-medium cursor-pointer focus:outline-none focus:border-[#6A9C89]"
-            >
-              <option value="">All Districts</option>
-              {getUniqueDistricts().map(district => (
-                <option key={district} value={district}>{district}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* Calendar - Weekly View */}
-          <div className="mb-5">
-            <label className="block text-sm font-semibold text-[#6A9C89] uppercase tracking-wide mb-3">
-              This Week
-            </label>
-            <div className="bg-white p-3 rounded-lg border-2 border-[#C4DAD2]">
-              <div className="flex items-center gap-2 mb-3">
-                <button
-                  onClick={previousWeek}
-                  className="p-2 hover:bg-[#E9EFEC] rounded-lg transition-all text-[#16423C]"
-                >
-                  <i className="fas fa-chevron-left"></i>
-                </button>
-                <div className="flex-1 text-center text-sm font-semibold text-[#16423C]">
-                  {format(getWeekDates(weekStartDate)[0], 'MMM d')} - {format(getWeekDates(weekStartDate)[6], 'MMM d')}
-                </div>
-                <button
-                  onClick={nextWeek}
-                  className="p-2 hover:bg-[#E9EFEC] rounded-lg transition-all text-[#16423C]"
-                >
-                  <i className="fas fa-chevron-right"></i>
-                </button>
+        <div className="flex flex-col gap-6 lg:gap-8">
+          {/* Header */}
+          <div className="flex flex-col md:flex-row items-center gap-4 mb-6 w-full">
+            <div className="flex items-center gap-3 w-full md:w-auto">
+              <div className="bg-[#16423C] text-white px-6 py-3 rounded-xl shadow-md flex items-center gap-3 w-full md:w-auto justify-center">
+                <i className="fas fa-money-bill-wave text-xl"></i>
+                <span className="font-bold text-lg">Weekly Dues</span>
               </div>
-              <div className="flex gap-1">
-                {renderCalendarDays()}
-              </div>
+            </div>
+            <div className="flex-1 w-full">
+              <input
+                type="search"
+                placeholder="Search clients by name, phone, or address..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full px-5 py-3 border-2 border-[#C4DAD2] rounded-xl bg-white text-[#16423C] placeholder-[#6A9C89] focus:outline-none focus:border-[#6A9C89] focus:shadow-lg transition-all"
+              />
             </div>
           </div>
 
-          {/* Stats */}
-          <div className="grid grid-cols-2 gap-3 mb-5">
-            <div className="bg-[#E9EFEC] px-3 py-4 rounded-lg border-2 border-[#C4DAD2] text-center">
-              <div className="text-xs font-semibold text-[#6A9C89] uppercase tracking-wide mb-1">
-                Due
-              </div>
-              <div className="text-lg font-bold text-[#16423C] break-words">
-                ₹{stats.totalDue.toLocaleString('en-IN', { minimumFractionDigits: 0 })}
-              </div>
-            </div>
-            <div className="bg-[#E9EFEC] px-3 py-4 rounded-lg border-2 border-[#C4DAD2] text-center">
-              <div className="text-xs font-semibold text-[#6A9C89] uppercase tracking-wide mb-1">
-                Paid
-              </div>
-              <div className="text-lg font-bold text-[#16423C] break-words">
-                ₹{stats.totalPaid.toLocaleString('en-IN', { minimumFractionDigits: 0 })}
-              </div>
-            </div>
-          </div>
-
-          {/* Export Button */}
-          <button
-            onClick={() => setShowExportModal(true)}
-            className="w-full py-4 bg-gradient-to-r from-[#16423C] to-[#6A9C89] text-white rounded-xl font-semibold flex items-center justify-center gap-3 shadow-lg hover:-translate-y-1 hover:shadow-xl transition-all active:scale-95"
-          >
-            <i className="fas fa-file-export"></i>
-            Export Today's List
-          </button>
-        </div>
-
-        {/* Main Content */}
-        <div className="flex-1 w-full">
-          {/* Title Section */}
-          <div className="flex flex-col md:flex-row items-center justify-between gap-4 mb-6 pb-4 border-b-2 border-[#C4DAD2]">
-            <h2 className="text-xl md:text-2xl font-bold text-[#16423C]">
-              Clients Due Today
-            </h2>
-            <div className="bg-[#E9EFEC] px-5 py-3 rounded-lg border-2 border-[#C4DAD2] text-[#16423C] font-semibold text-center w-full md:w-auto">
-              {format(selectedDate, 'EEEE, MMMM d, yyyy')}
-            </div>
-          </div>
-
-          {/* Landmarks Display */}
-          <div className="mb-6">
-            <div className="flex gap-2 overflow-x-auto pb-3 scrollbar-hide">
-              <button
-                onClick={() => setSelectedLandmark('')}
-                className={`
-                  px-6 py-3 rounded-lg font-semibold whitespace-nowrap transition-all flex-shrink-0 border-2
-                  ${selectedLandmark === '' 
-                    ? 'bg-[#16423C] text-white border-[#16423C]' 
-                    : 'bg-white text-[#16423C] border-[#C4DAD2] hover:border-[#6A9C89]'
-                  }
-                `}
-              >
-                All Areas
-              </button>
-              {getAvailableLandmarks().map((landmarkName) => {
-                const landmarkClients = clients.filter(c => {
-                    if ((c.landmark || '') !== landmarkName || Number(c.pending) <= 0) return false;
-                  const { weekStart, weekEnd } = getWeekRange(selectedDate);
-                  return isClientDueInWeek(c, weekStart, weekEnd);
-                });
-                const icon = getIconForLandmark(landmarkName);
-                return (
-                  <button
-                    key={landmarkName}
-                    onClick={() => setSelectedLandmark(landmarkName)}
-                    className={`
-                      px-4 py-3 rounded-lg font-semibold whitespace-nowrap transition-all flex gap-2 items-center flex-shrink-0 border-2
-                      ${selectedLandmark === landmarkName 
-                        ? 'bg-[#16423C] text-white border-[#16423C]' 
-                        : 'bg-white text-[#16423C] border-[#C4DAD2] hover:border-[#6A9C89]'
-                      }
-                    `}
-                  >
-                    <span className="text-lg">{icon}</span>
-                    <div className="flex flex-col items-start text-left">
-                      <span className="text-sm">{landmarkName}</span>
-                      <span className={`text-xs font-normal ${selectedLandmark === landmarkName ? 'opacity-90' : 'opacity-70'}`}>
-                        {landmarkClients.length}
-                      </span>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Loading State */}
-          {loading && (
-            <div className="text-center py-20">
-              <div className="w-10 h-10 border-4 border-[#C4DAD2] border-t-[#16423C] rounded-full animate-spin mx-auto mb-4"></div>
-              <p className="text-[#6A9C89] font-semibold">Loading clients...</p>
+          {/* Search results count */}
+          {searchQuery && (
+            <div className="bg-white p-3 rounded-lg border-2 border-[#C4DAD2] text-[#6A9C89] font-semibold mb-2 w-full">
+              Found {filteredClients.length} client(s)
             </div>
           )}
 
-          {/* Client Grid */}
-          {!loading && filteredClients.length > 0 ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-1 justify-items-stretch">
-              {filteredClients.map((client) => (
-                <div
-                  key={client._id || client.clientId || client.id || client.phone}
-                  onClick={() => handleClientClick(client)}
-                  className="bg-white rounded-xl p-3 shadow-lg border-2 border-transparent hover:border-[#C4DAD2] hover:-translate-y-1 hover:shadow-xl transition-all cursor-pointer flex flex-col h-full active:scale-75w-medium"
+          {/* Sidebar and Main Content */}
+          <div className="flex flex-col lg:flex-row gap-6 lg:gap-8 w-full">
+            {/* Sidebar */}
+            <div className="bg-white rounded-xl p-5 shadow-lg border-2 border-[#C4DAD2] h-fit lg:sticky lg:top-5 w-full lg:w-[350px] flex-shrink-0">
+              {/* District Filter */}
+              <div className="mb-5">
+                <label className="block text-sm font-semibold text-[#6A9C89] uppercase tracking-wide mb-2">
+                  Filter by District
+                </label>
+                <select
+                  value={selectedDistrict}
+                  onChange={(e) => setSelectedDistrict(e.target.value)}
+                  className="w-full p-3 border-2 border-[#C4DAD2] rounded-lg bg-white text-[#16423C] font-medium cursor-pointer focus:outline-none focus:border-[#6A9C89]"
                 >
-                  <div className="flex items-start justify-between mb-4">
-                    <div className="flex-1">
-                      <h3 className="text-lg font-bold text-[#16423C] mb-2 break-words">
-                        {client.name}
-                      </h3>
-                      <span className={`
-                        inline-block text-xs font-semibold px-3 py-1.5 rounded-full
-                        ${client.type === 'personal' 
-                          ? 'bg-[#16423C]/10 text-[#16423C] border border-[#16423C]/20' 
-                          : 'bg-[#16423C] text-white border border-[#16423C]'}
-                      `}>
-                        {client.type.charAt(0).toUpperCase() + client.type.slice(1)}
-                      </span>
+                  <option value="">All Districts</option>
+                  {getUniqueDistricts().map(district => (
+                    <option key={district} value={district}>{district}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Calendar - Weekly View */}
+              <div className="mb-5">
+                <label className="block text-sm font-semibold text-[#6A9C89] uppercase tracking-wide mb-3">
+                  This Week
+                </label>
+                <div className="bg-white p-3 rounded-lg border-2 border-[#C4DAD2]">
+                  <div className="flex items-center gap-2 mb-3">
+                    <button
+                      onClick={previousWeek}
+                      className="p-2 hover:bg-[#E9EFEC] rounded-lg transition-all text-[#16423C]"
+                    >
+                      <i className="fas fa-chevron-left"></i>
+                    </button>
+                    <div className="flex-1 text-center text-sm font-semibold text-[#16423C]">
+                      {format(getWeekDates(weekStartDate)[0], 'MMM d')} - {format(getWeekDates(weekStartDate)[6], 'MMM d')}
                     </div>
-                    <span className={`
-                      w-3 h-3 rounded-full flex-shrink-0
-                      ${client.paid 
-                        ? 'bg-[#6A9C89] shadow-[0_0_0_3px_rgba(106,156,137,0.2)]' 
-                        : 'bg-[#16423C] shadow-[0_0_0_3px_rgba(22,66,60,0.2)]'}
-                    `}></span>
+                    <button
+                      onClick={nextWeek}
+                      className="p-2 hover:bg-[#E9EFEC] rounded-lg transition-all text-[#16423C]"
+                    >
+                      <i className="fas fa-chevron-right"></i>
+                    </button>
+                  </div>
+                  <div className="flex gap-1">
+                    {renderCalendarDays()}
+                  </div>
+                </div>
+              </div>
+
+              {/* Stats */}
+              <div className="grid grid-cols-2 gap-3 mb-5">
+                <div className="bg-[#E9EFEC] px-3 py-4 rounded-lg border-2 border-[#C4DAD2] text-center">
+                  <div className="text-xs font-semibold text-[#6A9C89] uppercase tracking-wide mb-1">
+                    Due
+                  </div>
+                  <div className="text-lg font-bold text-[#16423C] break-words">
+                    ₹{stats.totalDue.toLocaleString('en-IN', { minimumFractionDigits: 0 })}
+                  </div>
+                </div>
+                <div className="bg-[#E9EFEC] px-3 py-4 rounded-lg border-2 border-[#C4DAD2] text-center">
+                  <div className="text-xs font-semibold text-[#6A9C89] uppercase tracking-wide mb-1">
+                    Paid
+                  </div>
+                  <div className="text-lg font-bold text-[#16423C] break-words">
+                    ₹{stats.totalPaid.toLocaleString('en-IN', { minimumFractionDigits: 0 })}
+                  </div>
+                </div>
+              </div>
+
+              {/* Export Button */}
+              <button
+                onClick={() => setShowExportModal(true)}
+                className="w-full py-4 bg-gradient-to-r from-[#16423C] to-[#6A9C89] text-white rounded-xl font-semibold flex items-center justify-center gap-3 shadow-lg hover:-translate-y-1 hover:shadow-xl transition-all active:scale-95"
+              >
+                <i className="fas fa-file-export"></i>
+                Export Today's List
+              </button>
+            </div>
+
+            {/* Main Content */}
+            <div className="flex-1 w-full">
+              {/* Title Section */}
+              <div className="flex flex-col md:flex-row items-center justify-between gap-4 mb-6 pb-4 border-b-2 border-[#C4DAD2]">
+                <h2 className="text-xl md:text-2xl font-bold text-[#16423C]">
+                  Clients Due
+                </h2>
+                <div className="bg-[#E9EFEC] px-5 py-3 rounded-lg border-2 border-[#C4DAD2] text-[#16423C] font-semibold text-center w-full md:w-auto">
+                  {format(calendarDateFilter ? new Date(calendarDateFilter + 'T00:00:00') : selectedDate, 'EEEE, MMMM d, yyyy')}
+                </div>
+              </div>
+
+              {/* Landmarks Display - Grid Layout */}
+              <div className="mb-6">
+                {/* Alphabet filter (A-Z) */}
+                <div className="flex flex-col gap-3 pb-6 mb-6 border-b-2 border-[#C4DAD2]">
+                  <div className="flex items-center gap-2">
+                    {['A','B','C'].map(letter => (
+                      <button
+                        key={letter}
+                        onClick={() => setSelectedAlpha(prev => prev === letter ? '' : letter)}
+                        className={`px-3 py-1 rounded text-sm font-semibold flex-shrink-0 ${selectedAlpha === letter ? 'bg-[#16423C] text-white' : 'bg-white text-[#16423C] border border-transparent hover:border-[#C4DAD2]'}`}
+                      >
+                        {letter}
+                      </button>
+                    ))}
                   </div>
 
-                  <div className="flex-1">
-                    <div className="flex items-center gap-3 text-[#16423C] mb-3">
-                      <i className="fas fa-phone text-[#6A9C89] w-4"></i>
-                      <span className="text-sm break-all">{client.phone}</span>
-                    </div>
-                    {client.address && (
-                      <div className="text-sm text-[#6A9C89] leading-relaxed break-words">
-                        {client.address}
+                  <div className="flex items-center gap-3 justify-start">
+                    <button
+                      onClick={() => setShowMoreAlpha(v => !v)}
+                      className="px-4 py-1 rounded text-sm font-bold bg-white text-[#16423C] border border-[#C4DAD2]"
+                    >
+                      {showMoreAlpha ? '−' : '+'}
+                    </button>
+
+                    {showMoreAlpha && (
+                      <div className="flex items-center gap-1 flex-wrap">
+                        {'DEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(letter => (
+                          <button
+                            key={letter}
+                            onClick={() => setSelectedAlpha(prev => prev === letter ? '' : letter)}
+                            className={`px-2 py-1 rounded text-sm font-semibold ${selectedAlpha === letter ? 'bg-[#16423C] text-white' : 'bg-white text-[#16423C] border border-transparent hover:border-[#C4DAD2]'}`}
+                          >
+                            {letter}
+                          </button>
+                        ))}
                       </div>
                     )}
-                  </div>
 
-                  <div className="mt-4 pt-4 border-t-2 border-[#C4DAD2]">
-                    <div className="text-sm font-semibold text-[#6A9C89] mb-1">
-                      Weekly Payment
+                    <button
+                      onClick={() => { setSelectedAlpha(''); setShowMoreAlpha(false); }}
+                      className="px-3 py-1 rounded text-sm font-semibold bg-white text-[#16423C] border border-[#C4DAD2]"
+                    >
+                      Clear Filter
+                    </button>
+                  </div>
+                </div>
+
+                {/* All Areas Button */}
+                <div className="mb-6">
+                  <button
+                    onClick={() => setSelectedLandmark('')}
+                    className={`
+                  w-full px-6 py-4 rounded-lg font-semibold transition-all border-2
+                  ${selectedLandmark === ''
+                        ? 'bg-[#16423C] text-white border-[#16423C] shadow-lg'
+                        : 'bg-white text-[#16423C] border-[#C4DAD2] hover:border-[#6A9C89]'
+                      }
+                `}
+                  >
+                    <i className="fas fa-th-large mr-2"></i>
+                    All Areas
+                  </button>
+                </div>
+
+                {/* Landmarks Grid - 4 columns (hidden when landmark is selected) */}
+                {selectedLandmark === '' ? (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                    {filteredLandmarks.filter(landmarkName => {
+                      // Only show landmarks that have at least one client today
+                      const todayClients = filteredClients.filter(c => 
+                        (c.landmark || '') === landmarkName
+                      );
+                      return todayClients.length > 0;
+                    }).map((landmarkName) => {
+                      // Count today's clients for this landmark using filteredClients (already date-filtered)
+                      const todayClients = filteredClients.filter(c => 
+                        (c.landmark || '') === landmarkName
+                      );
+                      const icon = getIconForLandmark(landmarkName);
+                      return (
+                        <button
+                          key={landmarkName}
+                          draggable
+                          onDragStart={(e) => handleDragStart(e, landmarkName)}
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={(e) => handleDropOnLandmark(e, landmarkName)}
+                          onClick={() => setSelectedLandmark(landmarkName)}
+                          className={`
+                        p-4 rounded-lg font-semibold transition-all flex flex-col gap-3 items-center justify-center border-2 min-h-[120px]
+                        bg-white text-[#16423C] border-[#C4DAD2] hover:border-[#6A9C89] hover:shadow-md
+                      `}
+                        >
+                          <span className="text-3xl">{icon}</span>
+                          <div className="flex flex-col items-center text-center">
+                            <span className="text-sm font-semibold">{landmarkName}</span>
+                            <span className="text-xs font-normal opacity-70">
+                              {todayClients.length} today
+                            </span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  // Show selected landmark prominently with Clear button
+                  <div className="flex flex-col gap-4">
+                    <div className="p-6 rounded-lg bg-gradient-to-r from-[#16423C] to-[#6A9C89] text-white border-2 border-[#16423C] shadow-lg flex items-center justify-between">
+                      <div className="flex items-center gap-4">
+                        <span className="text-4xl">{getIconForLandmark(selectedLandmark)}</span>
+                        <div>
+                          <h3 className="text-2xl font-bold">{selectedLandmark}</h3>
+                          <p className="text-sm opacity-90">
+                            {filteredClients.length} clients today
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => setSelectedLandmark('')}
+                        className="px-6 py-3 bg-white text-[#16423C] rounded-lg font-semibold hover:bg-[#E9EFEC] transition-all"
+                      >
+                        <i className="fas fa-times mr-2"></i>
+                        Clear
+                      </button>
                     </div>
-                    <div className={`
+                  </div>
+                )}
+              </div>
+
+              {/* Message - no landmark selected */}
+              {selectedLandmark === '' && !loading && filteredLandmarks.length === 0 && (
+                <div className="text-center py-20 bg-white rounded-xl border-2 border-[#C4DAD2]">
+                  <i className="fas fa-map-marker-alt text-6xl text-[#C4DAD2] mb-5"></i>
+                  <h3 className="text-xl font-bold text-[#16423C] mb-3">No Landmarks Available</h3>
+                  <p className="text-[#6A9C89]">No landmarks found for the selected filter</p>
+                </div>
+              )}
+
+              {/* Loading State */}
+              {selectedLandmark && loading && (
+                <div className="text-center py-20">
+                  <div className="w-10 h-10 border-4 border-[#C4DAD2] border-t-[#16423C] rounded-full animate-spin mx-auto mb-4"></div>
+                  <p className="text-[#6A9C89] font-semibold">Loading clients...</p>
+                </div>
+              )}
+
+              {/* Client Grid - All Areas or Specific Landmark */}
+              {(selectedLandmark === '' || selectedLandmark !== '') && !loading && filteredClients.length > 0 ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-1 justify-items-stretch">
+                  {orderedFilteredClients.map((client) => (
+                    <div
+                      key={client._id || client.clientId || client.id || client.phone}
+                      onClick={() => handleClientClick(client)}
+                      className="bg-white rounded-xl p-3 shadow-lg border-2 border-transparent hover:border-[#C4DAD2] hover:-translate-y-1 hover:shadow-xl transition-all cursor-pointer flex flex-col h-full active:scale-75w-medium"
+                    >
+                      <div className="flex items-start justify-between mb-4">
+                        <div className="flex-1">
+                          <h3 className="text-lg font-bold text-[#16423C] mb-2 break-words">
+                            {client.name}
+                          </h3>
+                          <span className={`
+                        inline-block text-xs font-semibold px-3 py-1.5 rounded-full
+                        ${client.type === 'personal'
+                              ? 'bg-[#16423C]/10 text-[#16423C] border border-[#16423C]/20'
+                              : 'bg-[#16423C] text-white border border-[#16423C]'}
+                      `}>
+                            {client.type.charAt(0).toUpperCase() + client.type.slice(1)}
+                          </span>
+                        </div>
+                        <span className={`
+                      w-3 h-3 rounded-full flex-shrink-0
+                      ${client.paid
+                            ? 'bg-[#6A9C89] shadow-[0_0_0_3px_rgba(106,156,137,0.2)]'
+                            : 'bg-[#16423C] shadow-[0_0_0_3px_rgba(22,66,60,0.2)]'}
+                    `}></span>
+                      </div>
+
+                      <div className="flex-1">
+                        <div className="flex items-center gap-3 text-[#16423C] mb-3">
+                          <i className="fas fa-phone text-[#6A9C89] w-4"></i>
+                          <span className="text-sm break-all">{client.phone}</span>
+                        </div>
+                        {client.address && (
+                          <div className="text-sm text-[#6A9C89] leading-relaxed break-words">
+                            {client.address}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="mt-4 pt-4 border-t-2 border-[#C4DAD2]">
+                        <div className="text-sm font-semibold text-[#6A9C89] mb-1">
+                          Weekly Payment
+                        </div>
+                        <div className={`
                       text-xl font-bold
                       ${client.paid ? 'text-[#6A9C89] bg-[#6A9C89]/10 py-2 px-3 rounded-lg inline-block' : 'text-[#16423C]'}
                     `}>
-                      {client.daily_amount}
+                          {client.daily_amount}
+                        </div>
+                      </div>
                     </div>
-                  </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          ) : !loading && (
-            <div className="text-center py-20 bg-white rounded-xl border-2 border-[#C4DAD2]">
-              <i className="fas fa-users text-6xl text-[#C4DAD2] mb-5"></i>
-              <h3 className="text-xl font-bold text-[#16423C] mb-3">No clients found</h3>
-              <p className="text-[#6A9C89]">Try adjusting your search criteria</p>
-            </div>
-          )}
-        </div>
-        </div>
-      </div>
-
-      {/* Client Details Modal */}
-      {showClientModal && selectedClient && (
-        <div 
-          className="fixed inset-0 bg-[#16423C]/70 backdrop-blur-sm z-[1000] flex items-center justify-center p-4"
-          onClick={closeModal}
-        >
-          <div 
-            className="bg-white rounded-xl max-w-[380px] w-full max-h-[90vh] overflow-y-auto shadow-2xl border-2 border-[#C4DAD2] animate-[modalFade_0.3s_ease] md:animate-[modalSlideUp_0.3s_ease] md:rounded-t-2xl md:rounded-b-none md:fixed md:inset-x-0 md:bottom-0 md:top-auto md:max-w-full"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="bg-gradient-to-r from-[#16423C] to-[#6A9C89] text-white p-6 sticky top-0 z-10 flex justify-between items-center">
-              <h3 className="text-xl font-bold break-words pr-4">{selectedClient.name}</h3>
-              <button 
-                onClick={closeModal}
-                className="w-10 h-10 bg-white/20 rounded-lg hover:bg-white/30 transition-all flex items-center justify-center text-2xl hover:rotate-90"
-              >
-                ×
-              </button>
-            </div>
-            
-            <div className="p-6">
-              <div className="mb-5 pb-4 border-b-2 border-[#C4DAD2]">
-                <div className="text-sm font-semibold text-[#6A9C89] uppercase tracking-wide mb-2">
-                  Client Type
+              ) : !loading && (
+                <div className="text-center py-20 bg-white rounded-xl border-2 border-[#C4DAD2]">
+                  <i className="fas fa-users text-6xl text-[#C4DAD2] mb-5"></i>
+                  <h3 className="text-xl font-bold text-[#16423C] mb-3">
+                    {selectedLandmark ? 'No clients in this area' : 'No clients available'}
+                  </h3>
+                  <p className="text-[#6A9C89]">
+                    {selectedLandmark ? 'Try selecting a different landmark' : 'Try adjusting your search criteria'}
+                  </p>
                 </div>
-                <div className="text-base font-semibold text-[#16423C]">
-                  {selectedClient.type.charAt(0).toUpperCase() + selectedClient.type.slice(1)}
-                </div>
-              </div>
-              
-              <div className="mb-5 pb-4 border-b-2 border-[#C4DAD2]">
-                <div className="text-sm font-semibold text-[#6A9C89] uppercase tracking-wide mb-2">
-                  Phone Number
-                </div>
-                <div className="text-base font-semibold text-[#16423C] break-words">
-                  {selectedClient.phone}
-                </div>
-              </div>
-              
-              <div className="mb-5 pb-4 border-b-2 border-[#C4DAD2]">
-                <div className="text-sm font-semibold text-[#6A9C89] uppercase tracking-wide mb-2">
-                  Address
-                </div>
-                <div className="text-base font-semibold text-[#16423C] break-words">
-                  {selectedClient.address || 'Address not provided'}
-                </div>
-              </div>
-              
-              <div className="mb-5 pb-4 border-b-2 border-[#C4DAD2]">
-                <div className="text-sm font-semibold text-[#6A9C89] uppercase tracking-wide mb-2">
-                  Due Date
-                </div>
-                <div className="text-base font-semibold text-[#16423C]">
-                  {selectedClient.dueDate}
-                </div>
-              </div>
-              
-              <div className="text-4xl font-bold text-[#16423C] text-center my-8 p-8 bg-gradient-to-r from-[#E9EFEC] to-[#C4DAD2] rounded-xl border-2 border-[#C4DAD2] break-words">
-                {selectedClient.daily_amount}
-              </div>
-              
-              <button
-                onClick={() => handleMarkPaid(selectedClient)}
-                disabled={
-                  !selectedClient ||
-                  selectedClient.paid ||
-                  serverPaidTodayMap[selectedClient._id] ||
-                  paidTodayMap[selectedClient._id]
-                }
-                className={`w-full py-4 mb-3 rounded-xl font-semibold flex items-center justify-center gap-3 shadow-lg hover:-translate-y-1 hover:shadow-xl transition-all active:scale-95 ${selectedClient && (selectedClient.paid || serverPaidTodayMap[selectedClient._id] || paidTodayMap[selectedClient._id]) ? 'bg-gray-300 text-gray-600 cursor-not-allowed' : 'bg-gradient-to-r from-[#6A9C89] to-[#16423C] text-white'}`}
-              >
-                <i className="fas fa-check"></i>
-                {selectedClient && (selectedClient.paid || serverPaidTodayMap[selectedClient._id] || paidTodayMap[selectedClient._id]) ? 'Paid' : 'Mark as Paid'}
-              </button>
-
-              <button
-                onClick={() => handleNotPaid(selectedClient)}
-                disabled={!selectedClient || notPaidTodayMap[selectedClient._id] || serverPaidTodayMap[selectedClient._id] || paidTodayMap[selectedClient._id]}
-                className={`w-full py-4 mb-3 ${notPaidTodayMap[selectedClient._id] || serverPaidTodayMap[selectedClient._id] || paidTodayMap[selectedClient._id] ? 'bg-gray-300 text-gray-600 cursor-not-allowed' : 'bg-yellow-500 text-white'} rounded-xl font-semibold flex items-center justify-center gap-3 shadow-lg hover:-translate-y-1 hover:shadow-xl transition-all active:scale-95`}
-              >
-                <i className="fas fa-forward"></i>
-                {serverPaidTodayMap[selectedClient._id] || paidTodayMap[selectedClient._id] ? 'Already Paid Today' : notPaidTodayMap[selectedClient._id] ? 'Already Pushed Today' : 'CANCEL (Push to next week)'}
-              </button>
-              
-              <button
-                onClick={closeModal}
-                className="w-full py-4 bg-gradient-to-r from-[#16423C] to-[#6A9C89] text-white rounded-xl font-semibold flex items-center justify-center gap-3 shadow-lg hover:-translate-y-1 hover:shadow-xl transition-all active:scale-95"
-              >
-                <i className="fas fa-times"></i>
-                Close
-              </button>
+              ) }
             </div>
           </div>
         </div>
-      )}
 
-      {/* Export Modal */}
-      {showExportModal && (
-        <div 
-          className="fixed inset-0 bg-[#16423C]/70 backdrop-blur-sm z-[1000] flex items-center justify-center p-4"
-          onClick={() => setShowExportModal(false)}
-        >
-          <div 
-            className="bg-white rounded-xl max-w-[500px] w-full shadow-2xl border-2 border-[#C4DAD2] animate-[modalFade_0.3s_ease]"
-            onClick={(e) => e.stopPropagation()}
+        {/* Client Details Modal */}
+        {showClientModal && selectedClient && (
+          <div
+            className="fixed inset-0 bg-[#16423C]/70 backdrop-blur-sm z-[1000] flex items-center justify-center p-4"
+            onClick={closeModal}
           >
-            <div className="bg-gradient-to-r from-[#16423C] to-[#6A9C89] text-white p-6 rounded-t-xl flex justify-between items-center">
-              <h3 className="text-xl font-bold">Export Format</h3>
-              <button 
-                onClick={() => setShowExportModal(false)}
-                className="w-10 h-10 bg-white/20 rounded-lg hover:bg-white/30 transition-all flex items-center justify-center text-2xl hover:rotate-90"
-              >
-                ×
-              </button>
-            </div>
-            
-            <div className="p-6">
-              <p className="text-center text-[#16423C] mb-8">
-                Choose export format for unpaid clients
-              </p>
-              
-              <div className="flex flex-col md:flex-row gap-4">
+            <div
+              className="bg-white rounded-xl max-w-[380px] w-full max-h-[90vh] overflow-y-auto shadow-2xl border-2 border-[#C4DAD2] animate-[modalFade_0.3s_ease] md:animate-[modalSlideUp_0.3s_ease] md:rounded-t-2xl md:rounded-b-none md:fixed md:inset-x-0 md:bottom-0 md:top-auto md:max-w-full"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="bg-gradient-to-r from-[#16423C] to-[#6A9C89] text-white p-6 sticky top-0 z-10 flex justify-between items-center">
+                <h3 className="text-xl font-bold break-words pr-4">{selectedClient.name}</h3>
                 <button
-                  onClick={handleExportPDF}
-                  className="flex-1 py-4 bg-gradient-to-r from-[#16423C] to-[#6A9C89] text-white rounded-xl font-semibold flex items-center justify-center gap-3 shadow-lg hover:-translate-y-1 hover:shadow-xl transition-all active:scale-95"
+                  onClick={closeModal}
+                  className="w-10 h-10 bg-white/20 rounded-lg hover:bg-white/30 transition-all flex items-center justify-center text-2xl hover:rotate-90"
                 >
-                  <i className="fas fa-file-pdf"></i>
-                  PDF
+                  ×
+                </button>
+              </div>
+
+              <div className="p-6">
+                <div className="mb-5 pb-4 border-b-2 border-[#C4DAD2]">
+                  <div className="text-sm font-semibold text-[#6A9C89] uppercase tracking-wide mb-2">
+                    Client Type
+                  </div>
+                  <div className="text-base font-semibold text-[#16423C]">
+                    {selectedClient.type.charAt(0).toUpperCase() + selectedClient.type.slice(1)}
+                  </div>
+                </div>
+
+                <div className="mb-5 pb-4 border-b-2 border-[#C4DAD2]">
+                  <div className="text-sm font-semibold text-[#6A9C89] uppercase tracking-wide mb-2">
+                    Phone Number
+                  </div>
+                  <div className="text-base font-semibold text-[#16423C] break-words">
+                    {selectedClient.phone}
+                  </div>
+                </div>
+
+                <div className="mb-5 pb-4 border-b-2 border-[#C4DAD2]">
+                  <div className="text-sm font-semibold text-[#6A9C89] uppercase tracking-wide mb-2">
+                    Address
+                  </div>
+                  <div className="text-base font-semibold text-[#16423C] break-words">
+                    {selectedClient.address || 'Address not provided'}
+                  </div>
+                </div>
+
+                <div className="mb-5 pb-4 border-b-2 border-[#C4DAD2]">
+                  <div className="text-sm font-semibold text-[#6A9C89] uppercase tracking-wide mb-2">
+                    Due Date
+                  </div>
+                  <div className="text-base font-semibold text-[#16423C]">
+                    {selectedClient.dueDate}
+                  </div>
+                </div>
+
+                <div className="text-4xl font-bold text-[#16423C] text-center my-8 p-8 bg-gradient-to-r from-[#E9EFEC] to-[#C4DAD2] rounded-xl border-2 border-[#C4DAD2] break-words">
+                  {selectedClient.daily_amount}
+                </div>
+
+                <button
+                  onClick={() => handleMarkPaid(selectedClient)}
+                  disabled={
+                    !selectedClient ||
+                    selectedClient.paidDates.has(currentDate) ||
+                    paidTodayMap[selectedClient._id]
+                  }
+                  className={`w-full py-4 mb-3 rounded-xl font-semibold flex items-center justify-center gap-3 shadow-lg hover:-translate-y-1 hover:shadow-xl transition-all active:scale-95 ${selectedClient && (selectedClient.paidDates.has(currentDate) || paidTodayMap[selectedClient._id]) ? 'bg-gray-300 text-gray-600 cursor-not-allowed' : 'bg-gradient-to-r from-[#6A9C89] to-[#16423C] text-white'}`}
+                >
+                  <i className="fas fa-check"></i>
+                  {selectedClient && (selectedClient.paidDates.has(currentDate) || paidTodayMap[selectedClient._id]) ? 'Paid' : 'Mark as Paid'}
+                </button>
+
+                <button
+                  onClick={() => handleNotPaid(selectedClient)}
+                  disabled={!selectedClient || notPaidTodayMap[selectedClient._id] || selectedClient.paidDates.has(currentDate) || paidTodayMap[selectedClient._id]}
+                  className={`w-full py-4 mb-3 ${notPaidTodayMap[selectedClient._id] || selectedClient.paidDates.has(currentDate) || paidTodayMap[selectedClient._id] ? 'bg-gray-300 text-gray-600 cursor-not-allowed' : 'bg-yellow-500 text-white'} rounded-xl font-semibold flex items-center justify-center gap-3 shadow-lg hover:-translate-y-1 hover:shadow-xl transition-all active:scale-95`}
+                >
+                  <i className="fas fa-forward"></i>
+                  {selectedClient.paidDates.has(currentDate) || paidTodayMap[selectedClient._id] ? 'Already Paid Today' : notPaidTodayMap[selectedClient._id] ? 'Already Pushed Today' : 'CANCEL (Push to next week)'}
+                </button>
+
+                <button
+                  onClick={closeModal}
+                  className="w-full py-4 bg-gradient-to-r from-[#16423C] to-[#6A9C89] text-white rounded-xl font-semibold flex items-center justify-center gap-3 shadow-lg hover:-translate-y-1 hover:shadow-xl transition-all active:scale-95"
+                >
+                  <i className="fas fa-times"></i>
+                  Close
                 </button>
               </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Add required Font Awesome */}
-      <link 
-        rel="stylesheet" 
-        href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" 
-      />
+        {/* Export Modal */}
+        {showExportModal && (
+          <div
+            className="fixed inset-0 bg-[#16423C]/70 backdrop-blur-sm z-[1000] flex items-center justify-center p-4"
+            onClick={() => setShowExportModal(false)}
+          >
+            <div
+              className="bg-white rounded-xl max-w-[500px] w-full shadow-2xl border-2 border-[#C4DAD2] animate-[modalFade_0.3s_ease]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="bg-gradient-to-r from-[#16423C] to-[#6A9C89] text-white p-6 rounded-t-xl flex justify-between items-center">
+                <h3 className="text-xl font-bold">Export Format</h3>
+                <button
+                  onClick={() => setShowExportModal(false)}
+                  className="w-10 h-10 bg-white/20 rounded-lg hover:bg-white/30 transition-all flex items-center justify-center text-2xl hover:rotate-90"
+                >
+                  ×
+                </button>
+              </div>
 
-      {/* Add custom animations */}
-      <style>{`
+              <div className="p-6">
+                <p className="text-center text-[#16423C] mb-8">
+                  Choose export format for unpaid clients
+                </p>
+
+                <div className="flex flex-col md:flex-row gap-4">
+                  <button
+                    onClick={handleExportPDF}
+                    className="flex-1 py-4 bg-gradient-to-r from-[#16423C] to-[#6A9C89] text-white rounded-xl font-semibold flex items-center justify-center gap-3 shadow-lg hover:-translate-y-1 hover:shadow-xl transition-all active:scale-95"
+                  >
+                    <i className="fas fa-file-pdf"></i>
+                    PDF
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Add required Font Awesome */}
+        <link
+          rel="stylesheet"
+          href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+        />
+
+        {/* Add custom animations */}
+        <style>{`
         @keyframes modalFade {
           from { opacity: 0; transform: translateY(-20px) scale(0.95); }
           to { opacity: 1; transform: translateY(0) scale(1); }
@@ -1280,7 +1640,7 @@ const MDailyDues = () => {
           display: none;
         }
       `}</style>
-    </div>
+      </div>
     </>
   );
 };

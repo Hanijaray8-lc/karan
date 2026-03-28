@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { 
-  FiBarChart2, 
-  FiUsers, 
-  FiFileText, 
-  FiDollarSign, 
-  FiMenu, 
+import {
+  FiBarChart2,
+  FiUsers,
+  FiFileText,
+  FiDollarSign,
+  FiMenu,
   FiX,
   FiLogOut,
   FiUser
@@ -14,6 +14,7 @@ import {
 const Navbar = () => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isLogoutModalOpen, setIsLogoutModalOpen] = useState(false);
+  
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -37,7 +38,7 @@ const Navbar = () => {
       setAgentData({
         name: user.name || user.username || "Staff",
         role: user.role ? user.role.charAt(0).toUpperCase() + user.role.slice(1) : "Loan Officer",
-        profilePhoto: user.profilePhoto || null 
+        profilePhoto: user.profilePhoto || null
       });
     }
   }, [navigate]);
@@ -58,21 +59,22 @@ const Navbar = () => {
     { path: '/AgentDashboard', label: 'Dashboard', icon: FiBarChart2 },
     { path: '/DailyDues', label: 'Weekly Dues', icon: FiFileText },
     { path: '/ClientDetails', label: 'Client Profile', icon: FiUser },
-    // { path: '/payment', label: 'Payment', icon: FiDollarSign },
+    { path: '/ApaymentHistory', label: 'Payment', icon: FiDollarSign },
   ];
 
-  const isActive = (path) => location.pathname === path;
+  const isActive = (path) => {
+    return location.pathname === path;
+  };
 
   return (
     <>
       {/* Navbar - Full Width Maatrapattullathu */}
-      <nav className="fixed top-0 left-0 right-0 z-50 bg-[#16423C] backdrop-blur-sm border-b border-white/10 shadow-lg w-full">
+      <nav className="sticky top-0 z-50 bg-[#16423C] backdrop-blur-sm border-b border-white/10 shadow-lg w-full">
         <div className="w-full px-6 h-16 flex items-center justify-between">
-          
+
           {/* Brand Logo */}
           <Link to="/dashboard" className="flex items-center gap-2 text-white font-bold text-xl min-w-fit">
-            {/* logo placed in public/logo.png */}
-            <img src="/KaranLogo.jpeg" alt="Karan Finance" className="h-11 w-11 rounded-full object-cover" />
+            <img src="/karanLogo.jpeg" alt="Karan Finance" className="h-11 w-11 rounded-full object-cover" />
             <span>Karan Finance</span>
           </Link>
 
@@ -83,15 +85,13 @@ const Navbar = () => {
                 <li key={item.path}>
                   <Link
                     to={item.path}
-                    className={`group relative flex items-center gap-3 px-5 py-2 rounded-lg transition-all duration-300 min-w-[145px] ${
-                      isActive(item.path)
+                    className={`group relative flex items-center gap-3 px-5 py-2 rounded-lg transition-all duration-300 min-w-[145px] ${isActive(item.path)
                         ? 'bg-white/20 border border-white/30 text-white shadow-md'
                         : 'bg-white/5 text-white/85 border border-white/5 hover:bg-white/15'
-                    }`}
+                      }`}
                   >
-                    <div className={`w-9 h-9 rounded-lg flex items-center justify-center text-lg ${
-                      isActive(item.path) ? 'bg-white/20' : 'bg-white/10'
-                    }`}>
+                    <div className={`w-9 h-9 rounded-lg flex items-center justify-center text-lg ${isActive(item.path) ? 'bg-white/20' : 'bg-white/10'
+                      }`}>
                       <item.icon />
                     </div>
                     <h6 className="font-semibold text-sm tracking-wide">{item.label}</h6>
@@ -117,7 +117,7 @@ const Navbar = () => {
               </div>
             </div>
 
-            <button 
+            <button
               onClick={() => setIsLogoutModalOpen(true)}
               className="p-2.5 rounded-xl bg-red-500/10 hover:bg-red-500 text-red-400 hover:text-white transition-all duration-300 border border-red-500/20 shadow-lg"
               title="Sign Out"
@@ -133,18 +133,16 @@ const Navbar = () => {
         </div>
 
         {/* Mobile Sidebar/Menu */}
-        <div className={`lg:hidden absolute top-16 left-0 right-0 bg-[#16423C] border-b border-white/10 transition-all duration-300 ${
-          isMobileMenuOpen ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-5 pointer-events-none'
-        }`}>
+        <div className={`lg:hidden absolute top-16 left-0 right-0 bg-[#16423C] border-b border-white/10 transition-all duration-300 ${isMobileMenuOpen ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-5 pointer-events-none'
+          }`}>
           <ul className="p-4 space-y-2">
             {navItems.map((item) => (
               <li key={item.path}>
                 <Link
                   to={item.path}
                   onClick={() => setIsMobileMenuOpen(false)}
-                  className={`flex items-center gap-3 px-4 py-3 rounded-lg ${
-                    isActive(item.path) ? 'bg-white/20 text-white border border-white/20' : 'bg-white/5 text-white/85'
-                  }`}
+                  className={`flex items-center gap-3 px-4 py-3 rounded-lg ${isActive(item.path) ? 'bg-white/20 text-white border border-white/20' : 'bg-white/5 text-white/85'
+                    }`}
                 >
                   <item.icon /> <span className="font-medium">{item.label}</span>
                 </Link>

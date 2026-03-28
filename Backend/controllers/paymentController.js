@@ -124,14 +124,19 @@ const getPayments = async (req, res) => {
 
     // Get all clients assigned to this agent with pending amounts
     const clients = await Client.find({ 
-      agent: agentId,
+      assigned_agent: agentId,
       pending: { $gt: 0 } // Only clients with pending amount
-    }).populate('agent', 'name username');
+    }).populate('assigned_agent', 'name username');
 
-    // Get payment history for these clients
-    let payments = await Payment.find({ agent: agentId })
-      .populate('client', 'name phone pending amount')
-      .sort({ paymentDate: -1 });
+    // Get payment history for these clients (by client IDs)
+    const clientIds = clients.map(c => c._id);
+    let payments = [];
+    if (clientIds.length > 0) {
+      payments = await Payment.find({ client: { $in: clientIds } })
+        .populate('client', 'name phone pending amount')
+        .populate('agent', 'name username')
+        .sort({ paymentDate: -1 });
+    }
 
     // Populate collected staff names from IDs
     payments = await populateCollectedStaffName(payments);
@@ -179,8 +184,8 @@ const getClientDue = async (req, res) => {
 
     const client = await Client.findOne({ 
       _id: clientId, 
-      agent: agentId 
-    }).populate('agent', 'name username');
+      assigned_agent: agentId 
+    }).populate('assigned_agent', 'name username');
 
     if (!client) {
       return res.status(404).json({
@@ -191,8 +196,7 @@ const getClientDue = async (req, res) => {
 
     // Get payment history for this client
     let paymentHistory = await Payment.find({ 
-      client: clientId,
-      agent: agentId 
+      client: clientId
     }).populate('agent', 'name username').sort({ paymentDate: -1 });
 
     // Populate collected staff names from IDs
@@ -257,7 +261,7 @@ const processPayment = async (req, res) => {
       });
     }
 
-    if (client.agent && client.agent.toString() !== agentId) {
+    if (client.assigned_agent && client.assigned_agent.toString() !== agentId) {
       return res.status(404).json({
         success: false,
         message: 'Client not assigned to you'
@@ -438,7 +442,7 @@ const getDashboardStats = async (req, res) => {
     const agentId = req.user.id;
 
     // Get all clients assigned to agent
-    const clients = await Client.find({ agent: agentId });
+    const clients = await Client.find({ assigned_agent: agentId });
 
     // Calculate stats
     const totalClients = clients.length;

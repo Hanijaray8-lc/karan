@@ -4,13 +4,14 @@ import { ArrowRightOnRectangleIcon, Bars3Icon, XMarkIcon } from '@heroicons/reac
 
 const navItems = [
   { label: 'Dashboard', path: '/Admin/AdminDashboard' },
-    { label: 'Add Manager', path: '/Admin/AddManager' },
+  { label: 'Add Manager', path: '/Admin/AddManager' },
 
   { label: 'Add Agent', path: '/Admin/AddAgent' },
-    { label: 'Add Client', path: '/Admin/AddClient' },
-
+  // { label: 'Add Client', path: '/Admin/AddClient' },
+   
   { label: 'Client Details', path: '/Admin/AClientDetails' },
   { label: 'Payment History', path: '/Admin/PaymentHistory' },
+
 ];
 
 const AdminNavbar = () => {
@@ -50,7 +51,7 @@ const AdminNavbar = () => {
             {/* Logo + Brand */}
             <div className="flex items-center space-x-3">
               {/* Logo image; put your PNG at public/logo.png */}
-              <img src="/KaranLogo.jpeg" alt="Karan Finance" className="h-11 w-11 rounded-full object-cover" />
+              <img src="/karanLogo.jpeg" alt="Karan Finance" className="h-11 w-11 rounded-full object-cover" />
               <span className="text-2xl font-bold tracking-tight">
                 Karan Finance
               </span>
@@ -62,11 +63,10 @@ const AdminNavbar = () => {
                 <Link
                   key={item.path}
                   to={item.path}
-                  className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
-                    location.pathname === item.path
+                  className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${location.pathname === item.path
                       ? 'bg-emerald-700 text-white'
                       : 'hover:bg-emerald-800'
-                  }`}
+                    }`}
                 >
                   {item.label}
                 </Link>
@@ -117,11 +117,10 @@ const AdminNavbar = () => {
                   key={item.path}
                   to={item.path}
                   onClick={() => setIsMobileMenuOpen(false)}
-                  className={`block px-4 py-3 rounded-md text-base font-medium ${
-                    location.pathname === item.path
+                  className={`block px-4 py-3 rounded-md text-base font-medium ${location.pathname === item.path
                       ? 'bg-emerald-700 text-white'
                       : 'text-white hover:bg-emerald-700'
-                  }`}
+                    }`}
                 >
                   {item.label}
                 </Link>
@@ -139,7 +138,7 @@ const AdminNavbar = () => {
                   </div>
                 </div>
 
-                <button 
+                <button
                   onClick={() => setIsLogoutModalOpen(true)}
                   className="p-2 rounded-full hover:bg-emerald-700 text-white"
                 >

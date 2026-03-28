@@ -1,5 +1,6 @@
 // MClientDetails.js
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { CheckCircle, XCircle } from 'lucide-react';
 import ManagerNavbar from './ManagerNavbar';
 
 const MClientDetails = () => {
@@ -18,12 +19,33 @@ const MClientDetails = () => {
   const [paymentsLoading, setPaymentsLoading] = useState(false);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
 
+  // Popup and confirmation state
+  const [popup, setPopup] = useState({ visible: false, type: 'success', title: '', message: '' });
+  const [showCancelConfirmModal, setShowCancelConfirmModal] = useState(false);
+  const [cancelPaymentData, setCancelPaymentData] = useState(null);
+  const popupTimeoutRef = useRef(null);
+
+  const showPopup = (type, title, message, duration = 4000) => {
+    if (popupTimeoutRef.current) clearTimeout(popupTimeoutRef.current);
+    setPopup({ visible: true, type, title, message });
+    popupTimeoutRef.current = setTimeout(() => {
+      setPopup(prev => ({ ...prev, visible: false }));
+      popupTimeoutRef.current = null;
+    }, duration);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (popupTimeoutRef.current) clearTimeout(popupTimeoutRef.current);
+    };
+  }, []);
+
   // Fetch clients from API using manager-accessible endpoint
   useEffect(() => {
     const fetchClients = async () => {
       try {
         setLoading(true);
-        
+
         // Use test endpoint (no auth required)
         const response = await fetch('http://localhost:5000/api/clients/test/all', {
           method: 'GET',
@@ -39,11 +61,11 @@ const MClientDetails = () => {
         const data = await response.json();
         const clientsList = data.clients || [];
         setClients(clientsList);
-        
+
         // Extract unique districts
         const uniqueDistricts = [...new Set(clientsList.map(c => c.district))].filter(d => d).sort();
         setDistricts(uniqueDistricts);
-        
+
         setError(null);
       } catch (err) {
         console.error('Error fetching clients:', err);
@@ -72,19 +94,19 @@ const MClientDetails = () => {
   // Filter clients based on search, district, and landmark
   const filteredClients = clients.filter(client => {
     const matchesSearch = (client.name && client.name.toLowerCase().includes(searchQuery.toLowerCase())) ||
-                         (client.phone && client.phone.includes(searchQuery)) ||
-                         (client.clientId && client.clientId.includes(searchQuery));
-    
+      (client.phone && client.phone.toLowerCase().includes(searchQuery.toLowerCase())) ||
+      (client.clientId && client.clientId.toLowerCase().includes(searchQuery.toLowerCase()));
+
     const matchesDistrict = !selectedDistrict || client.district === selectedDistrict;
     const matchesLandmark = !selectedLandmark || client.landmark === selectedLandmark;
-    
+
     return matchesSearch && matchesDistrict && matchesLandmark;
   });
 
   // Fetch payment history from backend
   const fetchPaymentHistory = async (clientId, clientData = null) => {
     if (!clientId) return [];
-    
+
     try {
       setPaymentsLoading(true);
       const token = localStorage.getItem('token');
@@ -106,7 +128,7 @@ const MClientDetails = () => {
 
       // Use clientData if provided, otherwise find client from clients list
       const clientForCalculation = clientData || clients.find(c => c._id === clientId);
-      
+
       if (!clientForCalculation) {
         console.error('No client data available for payment calculation');
         return [];
@@ -149,7 +171,7 @@ const MClientDetails = () => {
 
       // Sort payments by date (oldest first to maintain week order)
       transformedPayments.sort((a, b) => new Date(a.fullDate) - new Date(b.fullDate));
-      
+
       // Re-assign sequential IDs based on sorted order
       transformedPayments.forEach((payment, index) => {
         payment.id = index + 1;
@@ -165,11 +187,19 @@ const MClientDetails = () => {
     }
   };
 
+  // Open cancel confirmation modal
+  const openCancelConfirmModal = (paymentId, paymentAmount, clientId) => {
+    setCancelPaymentData({ paymentId, paymentAmount, clientId });
+    setShowCancelConfirmModal(true);
+  };
+
   // Handle cancel payment - reverse the payment and update client record
-  const handleCancelPayment = async (paymentId, paymentAmount, clientId) => {
+  const handleConfirmCancelPayment = async () => {
+    const { paymentId, paymentAmount, clientId } = cancelPaymentData;
+    setShowCancelConfirmModal(false);
     try {
       const token = localStorage.getItem('token');
-      
+
       // Call backend to delete payment and update client
       const res = await fetch(`http://localhost:5000/api/payments/${paymentId}`, {
         method: 'DELETE',
@@ -181,7 +211,7 @@ const MClientDetails = () => {
       });
 
       const data = await res.json();
-      
+
       if (!res.ok) {
         throw new Error(data.message || 'Failed to cancel payment');
       }
@@ -220,29 +250,42 @@ const MClientDetails = () => {
         }
       }
 
-      // Update client in local state
+      // Update client in local state preserving weekly_amount and bumping total_weeks
       const updatedReceived = (selectedClient.received || 0) - paymentAmount;
       const updatedPending = (selectedClient.amount || 0) - updatedReceived;
-      
+
+      // compute new total weeks locally to keep UI in sync (loan_end_date extended by 7 days)
+      let updatedTotalWeeks = selectedClient.total_weeks || 0;
+      if (newEndDate && selectedClient.loan_start_date) {
+        const start = new Date(selectedClient.loan_start_date);
+        const end = new Date(newEndDate);
+        const durationDays = Math.round((end - start) / (1000 * 60 * 60 * 24));
+        updatedTotalWeeks = Math.max(1, Math.round(durationDays / 7));
+      }
+
       setSelectedClient(prev => ({
         ...prev,
         received: updatedReceived,
         pending: updatedPending,
         loan_end_date: newEndDate ? newEndDate.toISOString() : prev.loan_end_date,
+        total_weeks: updatedTotalWeeks,
+        // leave weekly_amount unchanged so amount isn't redistributed
         status: updatedPending <= 0 ? 'paid' : updatedReceived > 0 ? 'partial' : 'pending'
       }));
 
       // Also update in clients list
-      setClients(prevClients => 
-        prevClients.map(client => 
-          client._id === clientId 
-            ? { 
-                ...client, 
-                received: updatedReceived,
-                pending: updatedPending,
-                loan_end_date: newEndDate ? newEndDate.toISOString() : client.loan_end_date,
-                status: updatedPending <= 0 ? 'paid' : updatedReceived > 0 ? 'partial' : 'pending'
-              }
+      setClients(prevClients =>
+        prevClients.map(client =>
+          client._id === clientId
+            ? {
+              ...client,
+              received: updatedReceived,
+              pending: updatedPending,
+              loan_end_date: newEndDate ? newEndDate.toISOString() : client.loan_end_date,
+              total_weeks: updatedTotalWeeks,
+              // keep weekly_amount the same
+              status: updatedPending <= 0 ? 'paid' : updatedReceived > 0 ? 'partial' : 'pending'
+            }
             : client
         )
       );
@@ -253,10 +296,10 @@ const MClientDetails = () => {
       setRefreshTrigger(prev => prev + 1);
 
       // Show success message
-      alert('Payment cancelled successfully. Due extended by 1 week and buttons re-enabled');
+      showPopup('success', 'Cancelled', 'Payment cancelled successfully. Due extended by 1 week and buttons re-enabled');
     } catch (error) {
       console.error('Error cancelling payment:', error);
-      alert(`Failed to cancel payment: ${error.message}`);
+      showPopup('error', 'Error', `Failed to cancel payment: ${error.message}`);
     }
   };
 
@@ -268,7 +311,7 @@ const MClientDetails = () => {
         setDuePayments(payments);
       }
     };
-    
+
     loadPayments();
   }, [selectedClient?._id, activeTab, refreshTrigger]); // Added refreshTrigger dependency
 
@@ -296,6 +339,23 @@ const MClientDetails = () => {
     });
   };
 
+  const getWeeklyDue = (client) => {
+    if (!client) return 0;
+    const wa = Number(client.weekly_amount || 0);
+    if (wa > 0) return wa;
+    const wd = Number(client.weekly_due || 0);
+    if (wd > 0) return wd;
+
+    const pending = Number(client.pending || 0);
+    const weeks = Number(client.total_weeks || 0);
+    if (weeks > 0) {
+      return Math.round((pending / weeks) * 100) / 100;
+    }
+
+    if (client.amount === 5000) return 575;
+    return (Number(client.amount) || 0) / 12;
+  };
+
   // Handle client selection
   const handleClientSelect = (client) => {
     setSelectedClientId(client._id);
@@ -317,7 +377,7 @@ const MClientDetails = () => {
       <ManagerNavbar />
 
       <div className="pt-2 pb-8 w-full px-3">
-        
+
         {/* Client List View */}
         {!selectedClientId && (
           <div>
@@ -327,59 +387,59 @@ const MClientDetails = () => {
                 <h1 className="text-2xl font-bold text-white mb-1">Clients</h1>
                 <p className="text-sm text-emerald-100">View and manage client details</p>
               </div>
-              
-            {/* Search and Filters Section */}
-            <div className="bg-white/90 backdrop-blur-lg rounded-lg p-3 mt-4">
 
-              {/* Search and Filters */}
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
-                <div className="md:col-span-2">
-                  <input
-                    type="text"
-                    placeholder="Search by name, phone, ID..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full px-3 py-2 rounded-lg border-2 border-[#16423C]/20 focus:outline-none focus:ring-2 focus:ring-[#16423C] text-sm"
-                  />
+              {/* Search and Filters Section */}
+              <div className="bg-white/90 backdrop-blur-lg rounded-lg p-3 mt-4">
+
+                {/* Search and Filters */}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                  <div className="md:col-span-2">
+                    <input
+                      type="text"
+                      placeholder="Search by name, phone, ID..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full px-3 py-2 rounded-lg border-2 border-[#16423C]/20 focus:outline-none focus:ring-2 focus:ring-[#16423C] text-sm"
+                    />
+                  </div>
+
+                  <div>
+                    <select
+                      value={selectedDistrict}
+                      onChange={(e) => setSelectedDistrict(e.target.value)}
+                      className="w-full px-3 py-2 rounded-lg border-2 border-[#16423C]/20 focus:outline-none focus:ring-2 focus:ring-[#16423C] bg-white cursor-pointer text-sm"
+                    >
+                      <option value="">All Districts</option>
+                      {districts.map((district) => (
+                        <option key={district} value={district}>
+                          {district}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <select
+                      value={selectedLandmark}
+                      onChange={(e) => setSelectedLandmark(e.target.value)}
+                      disabled={!selectedDistrict}
+                      className="w-full px-3 py-2 rounded-lg border-2 border-[#16423C]/20 focus:outline-none focus:ring-2 focus:ring-[#16423C] bg-white cursor-pointer text-sm disabled:bg-gray-100 disabled:cursor-not-allowed"
+                    >
+                      <option value="">All Landmarks</option>
+                      {landmarks.map((landmark) => (
+                        <option key={landmark} value={landmark}>
+                          {landmark}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
 
-                <div>
-                  <select
-                    value={selectedDistrict}
-                    onChange={(e) => setSelectedDistrict(e.target.value)}
-                    className="w-full px-3 py-2 rounded-lg border-2 border-[#16423C]/20 focus:outline-none focus:ring-2 focus:ring-[#16423C] bg-white cursor-pointer text-sm"
-                  >
-                    <option value="">All Districts</option>
-                    {districts.map((district) => (
-                      <option key={district} value={district}>
-                        {district}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <select
-                    value={selectedLandmark}
-                    onChange={(e) => setSelectedLandmark(e.target.value)}
-                    disabled={!selectedDistrict}
-                    className="w-full px-3 py-2 rounded-lg border-2 border-[#16423C]/20 focus:outline-none focus:ring-2 focus:ring-[#16423C] bg-white cursor-pointer text-sm disabled:bg-gray-100 disabled:cursor-not-allowed"
-                  >
-                    <option value="">All Landmarks</option>
-                    {landmarks.map((landmark) => (
-                      <option key={landmark} value={landmark}>
-                        {landmark}
-                      </option>
-                    ))}
-                  </select>
+                <div className="mt-2 text-xs text-[#16423C]">
+                  <i className="fas fa-list text-[#16423C] mr-1"></i>
+                  Showing {filteredClients.length} of {clients.length} clients
                 </div>
               </div>
-
-              <div className="mt-2 text-xs text-[#16423C]">
-                <i className="fas fa-list text-[#16423C] mr-1"></i>
-                Showing {filteredClients.length} of {clients.length} clients
-              </div>
-            </div>
             </div>
 
             {/* Loading State */}
@@ -415,11 +475,10 @@ const MClientDetails = () => {
                       <h4 className="text-md font-bold text-[#16423C] mb-1 line-clamp-2 leading-tight">{client.name}</h4>
                       <p className="text-md text-gray-500 mb-1 truncate">ID: {client.clientId || 'N/A'}</p>
                       <p className="text-md text-gray-400 truncate">{client.phone}</p>
-                      <div className={`mt-2 text-xs px-2 py-1 rounded-full ${
-                        client.status === 'paid' ? 'bg-green-100 text-green-800' :
-                        client.status === 'partial' ? 'bg-yellow-100 text-yellow-800' :
-                        'bg-red-100 text-red-800'
-                      }`}>
+                      <div className={`mt-2 text-xs px-2 py-1 rounded-full ${client.status === 'paid' ? 'bg-green-100 text-green-800' :
+                          client.status === 'partial' ? 'bg-yellow-100 text-yellow-800' :
+                            'bg-red-100 text-red-800'
+                        }`}>
                         {client.status || 'pending'}
                       </div>
                     </div>
@@ -433,8 +492,8 @@ const MClientDetails = () => {
               <div className="bg-white rounded-lg p-8 shadow text-center">
                 <i className="fas fa-search text-gray-300 text-3xl mb-3 block"></i>
                 <p className="text-gray-600 text-sm">
-                  {searchQuery || selectedDistrict || selectedLandmark 
-                    ? 'No clients found matching your filters' 
+                  {searchQuery || selectedDistrict || selectedLandmark
+                    ? 'No clients found matching your filters'
                     : 'No clients found'}
                 </p>
               </div>
@@ -445,8 +504,8 @@ const MClientDetails = () => {
         {/* Client Details View */}
         {selectedClientId && selectedClient && (
           <div className="bg-white rounded-lg p-5 md:p-6 shadow-md">
-            
-            <button 
+
+            <button
               onClick={handleBack}
               className="flex items-center gap-2 text-[#16423C] font-semibold mb-4 hover:text-[#6A9C89] transition-colors group text-base"
             >
@@ -458,7 +517,7 @@ const MClientDetails = () => {
               <div className="w-16 h-16 rounded-full flex items-center justify-center text-white font-bold text-lg bg-[#6A9C89] border-4 border-[#C4DAD2]">
                 {selectedClient.name ? selectedClient.name.substring(0, 2).toUpperCase() : 'CL'}
               </div>
-              
+
               <div className="flex-1 w-full">
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
                   <div>
@@ -474,14 +533,13 @@ const MClientDetails = () => {
                       Client ID: {selectedClient.clientId || 'N/A'}
                     </p>
                   </div>
-                  <span className={`inline-block px-3 py-1 rounded text-base font-semibold text-white ${
-                    selectedClient.status === 'paid' ? 'bg-green-500' :
-                    selectedClient.status === 'partial' ? 'bg-amber-500' :
-                    'bg-red-500'
-                  }`}>
+                  <span className={`inline-block px-3 py-1 rounded text-base font-semibold text-white ${selectedClient.status === 'paid' ? 'bg-green-500' :
+                      selectedClient.status === 'partial' ? 'bg-amber-500' :
+                        'bg-red-500'
+                    }`}>
                     {selectedClient.status === 'paid' ? '✅ Paid' :
-                     selectedClient.status === 'partial' ? '⚠️ Partial' :
-                     '⏳ Pending'}
+                      selectedClient.status === 'partial' ? '⚠️ Partial' :
+                        '⏳ Pending'}
                   </span>
                 </div>
               </div>
@@ -491,21 +549,19 @@ const MClientDetails = () => {
               <div className="flex gap-1">
                 <button
                   onClick={() => setActiveTab('overview')}
-                  className={`px-4 py-2 font-semibold text-base capitalize transition-all relative ${
-                    activeTab === 'overview' 
-                      ? 'text-[#16423C] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-[#16423C]' 
+                  className={`px-4 py-2 font-semibold text-base capitalize transition-all relative ${activeTab === 'overview'
+                      ? 'text-[#16423C] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-[#16423C]'
                       : 'text-gray-500 hover:text-[#6A9C89]'
-                  }`}
+                    }`}
                 >
                   Overview
                 </button>
                 <button
                   onClick={() => setActiveTab('dues')}
-                  className={`px-4 py-2 font-semibold text-base capitalize transition-all relative ${
-                    activeTab === 'dues' 
-                      ? 'text-[#16423C] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-[#16423C]' 
+                  className={`px-4 py-2 font-semibold text-base capitalize transition-all relative ${activeTab === 'dues'
+                      ? 'text-[#16423C] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-[#16423C]'
                       : 'text-gray-500 hover:text-[#6A9C89]'
-                  }`}
+                    }`}
                 >
                   Payment History {duePayments.length > 0 && `(${duePayments.length})`}
                 </button>
@@ -581,7 +637,7 @@ const MClientDetails = () => {
                         <p className="font-bold text-base text-red-500">{formatCurrency((selectedClient.amount || 0) - (selectedClient.received || 0))}</p>
                       </div>
                     </div>
-                    
+
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-3 border-t border-[#C4DAD2]">
                       <div>
                         <p className="text-sm text-gray-600 mb-1">Start Date</p>
@@ -593,18 +649,17 @@ const MClientDetails = () => {
                       </div>
                       <div>
                         <p className="text-sm text-gray-600 mb-1">Weekly Due</p>
-                        <p className="font-semibold text-base text-[#16423C]">{formatCurrency(selectedClient.weekly_amount || selectedClient.weekly_due || (selectedClient.amount === 5000 ? 575 : ((selectedClient.amount || 0) / 12)))}</p>
+                        <p className="font-semibold text-base text-[#16423C]">{formatCurrency(getWeeklyDue(selectedClient))}</p>
                       </div>
                       <div>
                         <p className="text-sm text-gray-600 mb-1">Status</p>
-                        <span className={`inline-block px-2 py-0.5 rounded text-sm font-semibold text-white ${
-                          selectedClient.status === 'paid' ? 'bg-green-500' :
-                          selectedClient.status === 'partial' ? 'bg-amber-500' :
-                          'bg-red-500'
-                        }`}>
+                        <span className={`inline-block px-2 py-0.5 rounded text-sm font-semibold text-white ${selectedClient.status === 'paid' ? 'bg-green-500' :
+                            selectedClient.status === 'partial' ? 'bg-amber-500' :
+                              'bg-red-500'
+                          }`}>
                           {selectedClient.status === 'paid' ? '✅ Paid' :
-                           selectedClient.status === 'partial' ? '⚠️ Partial' :
-                           '⏳ Pending'}
+                            selectedClient.status === 'partial' ? '⚠️ Partial' :
+                              '⏳ Pending'}
                         </span>
                       </div>
                     </div>
@@ -643,7 +698,7 @@ const MClientDetails = () => {
                     </div>
                     <div className="bg-[#E9EFEC] p-3 rounded border border-[#C4DAD2] text-center">
                       <p className="text-sm text-gray-600 mb-1">Weekly Due</p>
-                      <p className="font-bold text-base text-[#16423C]">{formatCurrency(selectedClient.weekly_amount || selectedClient.weekly_due || (selectedClient.amount === 5000 ? 575 : ((selectedClient.amount || 0) / 12)))}</p>
+                      <p className="font-bold text-base text-[#16423C]">{formatCurrency(getWeeklyDue(selectedClient))}</p>
                     </div>
                     <div className="bg-[#E9EFEC] p-3 rounded border border-[#C4DAD2] text-center">
                       <p className="text-sm text-gray-600 mb-1">Paid Weeks</p>
@@ -661,7 +716,7 @@ const MClientDetails = () => {
                       <span className="text-sm text-[#6A9C89]">{duePayments.length}/12 weeks</span>
                     </div>
                     <div className="h-2 bg-[#C4DAD2] rounded-full overflow-hidden">
-                      <div 
+                      <div
                         className="h-full bg-[#6A9C89] transition-all duration-500"
                         style={{ width: `${(duePayments.length / 12) * 100}%` }}
                       ></div>
@@ -670,7 +725,7 @@ const MClientDetails = () => {
 
                   <div className="mt-4">
                     <h3 className="text-base font-bold text-[#16423C] mb-2">Payment History</h3>
-                    
+
                     {paymentsLoading ? (
                       <div className="flex justify-center items-center py-8">
                         <div className="text-center">
@@ -700,11 +755,10 @@ const MClientDetails = () => {
                           </thead>
                           <tbody>
                             {duePayments.map((payment, index) => (
-                              <tr 
-                                key={payment.paymentId || payment.id || index} 
-                                className={`border-b border-[#C4DAD2] ${
-                                  index % 2 === 0 ? 'bg-white' : 'bg-[#F5F9F7]'
-                                } hover:bg-[#E9EFEC] transition-colors`}
+                              <tr
+                                key={payment.paymentId || payment.id || index}
+                                className={`border-b border-[#C4DAD2] ${index % 2 === 0 ? 'bg-white' : 'bg-[#F5F9F7]'
+                                  } hover:bg-[#E9EFEC] transition-colors`}
                               >
                                 <td className="p-2 font-medium text-[#16423C]">{payment.id}</td>
                                 <td className="p-2">
@@ -726,26 +780,22 @@ const MClientDetails = () => {
                                 </td>
                                 <td className="p-2">
                                   <div className="text-sm">
-                                    {new Date(payment.fullDate).toLocaleDateString('en-IN', { 
-                                      day: 'numeric', 
-                                      month: 'short', 
-                                      year: 'numeric' 
+                                    {new Date(payment.fullDate).toLocaleDateString('en-IN', {
+                                      day: 'numeric',
+                                      month: 'short',
+                                      year: 'numeric'
                                     })}
                                   </div>
                                   <div className="text-xs text-gray-500">
-                                    {new Date(payment.fullDate).toLocaleTimeString('en-IN', { 
-                                      hour: '2-digit', 
-                                      minute: '2-digit' 
+                                    {new Date(payment.fullDate).toLocaleTimeString('en-IN', {
+                                      hour: '2-digit',
+                                      minute: '2-digit'
                                     })}
                                   </div>
                                 </td>
                                 <td className="p-2 text-center">
                                   <button
-                                    onClick={() => {
-                                      if (window.confirm('Are you sure you want to cancel this payment? This will reverse the transaction and extend the loan by 1 week.')) {
-                                        handleCancelPayment(payment.paymentId, payment.dueAmount, selectedClient._id);
-                                      }
-                                    }}
+                                    onClick={() => openCancelConfirmModal(payment.paymentId, payment.dueAmount, selectedClient._id)}
                                     className="bg-red-500 hover:bg-red-600 text-white px-3 py-1.5 rounded text-xs font-semibold transition-all active:scale-95 shadow-sm hover:shadow"
                                   >
                                     Cancel
@@ -789,9 +839,53 @@ const MClientDetails = () => {
         )}
       </div>
 
-      <link 
-        rel="stylesheet" 
-        href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" 
+      {/* Cancel Payment Confirmation Modal */}
+      {showCancelConfirmModal && cancelPaymentData && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white/95 backdrop-blur-lg rounded-2xl p-6 w-full max-w-sm shadow-2xl border border-white/50">
+            <div className="text-center">
+              <div className="w-16 h-16 bg-yellow-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <XCircle size={32} className="text-yellow-600" />
+              </div>
+              <h2 className="text-2xl font-bold text-[#16423C] mb-4">Confirm Cancel Payment</h2>
+              <p className="text-gray-600 mb-6">
+                Are you sure you want to cancel this payment? This will reverse the transaction and extend the loan by 1 week.
+              </p>
+            </div>
+            <div className="flex gap-4">
+              <button
+                onClick={handleConfirmCancelPayment}
+                className="flex-1 bg-red-600 text-white py-3 rounded-lg font-medium hover:bg-red-700 transition-all duration-300 shadow-lg"
+              >
+                Yes, Cancel Payment
+              </button>
+              <button
+                onClick={() => setShowCancelConfirmModal(false)}
+                className="flex-1 bg-gray-200/80 backdrop-blur-lg text-gray-800 py-3 rounded-lg font-medium hover:bg-gray-300 transition-all duration-300"
+              >
+                No, Keep Payment
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Popup notification (success / error) */}
+      {popup.visible && (
+        <div className={`fixed top-5 right-5 z-[1001] p-4 rounded-lg shadow-xl flex items-start gap-3 max-w-xs font-medium ${popup.type === 'success' ? 'bg-green-600 text-white border border-green-700' : 'bg-red-600 text-white border border-red-700'}`}>
+          <div className="flex-shrink-0 mt-0.5">
+            {popup.type === 'success' ? <CheckCircle size={28} /> : <XCircle size={28} />}
+          </div>
+          <div className="leading-snug">
+            <div className="font-bold">{popup.title}</div>
+            <div className="text-sm mt-1">{popup.message}</div>
+          </div>
+        </div>
+      )}
+
+      <link
+        rel="stylesheet"
+        href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
       />
     </div>
   );

@@ -250,7 +250,7 @@ function StaffDashboard() {
 
         {/* Footer */}
         <Box sx={{ mt: 4, textAlign: 'center', color: 'text.secondary', typography: 'body2' }}>
-          © 2023 LoanFlow Dashboard. All rights reserved. | Last updated: Today, 11:45 AM
+          © 2026 LoanFlow Dashboard. All rights reserved. | Last updated: Today, 11:45 AM
         </Box>
       </Container>
     </Box>

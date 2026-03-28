@@ -18,9 +18,9 @@ const upload = require('../middleware/upload');
 // All agent routes require authentication
 router.use(protect);
 
-// Admin only routes
+// Admin and manager can view agents, only admin can create/modify
 router.route('/')
-  .get(authorize('admin'), getAgents)
+  .get(authorize('admin', 'manager'), getAgents)
   .post(authorize('admin'), upload.single('profilePhoto'), createAgent);
 
 router.get('/stats', authorize('admin'), getAgentStats);

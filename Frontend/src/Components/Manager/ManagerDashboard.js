@@ -127,7 +127,7 @@ const ManagerDashboard = () => {
             const pendingTotal = Number(client.pending || 0);
             if (pendingTotal <= 0) return 0;
             if (!client.loan_start_date) return 0;
-            
+
             // For ₹5000 loans, default to 575
             if (Number(client.amount) === 5000) return 575;
 
@@ -158,10 +158,10 @@ const ManagerDashboard = () => {
 
             // normalize to date-only
             const target = new Date(dateObj);
-            target.setHours(0,0,0,0);
+            target.setHours(0, 0, 0, 0);
 
             let due = new Date(start);
-            due.setHours(0,0,0,0);
+            due.setHours(0, 0, 0, 0);
 
             while (due <= end) {
               if (due.getTime() === target.getTime()) return true;
@@ -175,7 +175,7 @@ const ManagerDashboard = () => {
 
         // Calculate today's due based on clients schedule
         const todayDate = new Date();
-        todayDate.setHours(0,0,0,0);
+        todayDate.setHours(0, 0, 0, 0);
         const dueTodayTotal = clients.reduce((sum, c) => {
           const pendingNum = Number(c.pending || 0);
           if (pendingNum <= 0) return sum;
@@ -215,7 +215,9 @@ const ManagerDashboard = () => {
   }, []);
   return (
     <div className="min-h-screen bg-gray-50">
-      <ManagerNavbar />
+      <div className="sticky top-0 z-50">
+        <ManagerNavbar />
+      </div>
 
       {/* Main content – full width with reasonable padding */}
       <div className="w-full px-4 sm:px-6 lg:px-10 xl:px-16 py-8 lg:py-10">
@@ -256,7 +258,7 @@ const ManagerDashboard = () => {
             <div className="bg-gradient-to-r from-[#16423C] to-[#1f5a52] text-white px-4 py-3 rounded-lg mb-6">
               <h3 className="text-xl font-semibold">Today Status</h3>
             </div>
-            
+
             <div className="space-y-5">
               {/* Today Due Amount */}
               <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg p-4 border-l-4 border-blue-500 hover:shadow-md transition-shadow">
@@ -344,7 +346,7 @@ const ManagerDashboard = () => {
               <h4 className="text-lg font-semibold">Recent Payments</h4>
             </div>
             <div className="divide-y">
-              {recentActivities.slice(0,3).map((r, idx) => (
+              {recentActivities.slice(0, 3).map((r, idx) => (
                 <div key={idx} className="py-3 flex items-start gap-3">
                   <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center text-sm font-semibold text-gray-700">{r.by ? r.by.charAt(0) : 'U'}</div>
                   <div className="flex-1">
@@ -377,13 +379,13 @@ const ManagerDashboard = () => {
               const filtered = searchStaff
                 ? todayData.filter(d => d.name.toLowerCase().includes(searchStaff.toLowerCase()))
                 : todayData;
-              
+
               const topPerformer = filtered.length > 0 ? filtered.reduce((max, current) => current.today > max.today ? current : max) : null;
               const totalAmount = filtered.reduce((sum, d) => sum + (d.today || 0), 0);
 
               return (
                 <>
-                  
+
                   {/* {topPerformer && (
                     <div className="bg-gradient-to-r from-amber-50 to-orange-50 border-2 border-amber-300 rounded-lg p-4 mb-4">
                       <div className="flex items-center gap-2 mb-2">
@@ -405,18 +407,16 @@ const ManagerDashboard = () => {
                   <div className="space-y-2 max-h-45 overflow-y-auto">
                     {filtered.length > 0 ? (
                       [...filtered].sort((a, b) => b.today - a.today).map((item, idx) => (
-                        <div 
-                          key={item.name} 
-                          className={`flex items-center justify-between p-3 rounded-lg border-2 transition-all ${
-                            idx === 0 
-                              ? 'bg-gradient-to-r from-amber-100 to-orange-100 border-amber-300 shadow-md' 
+                        <div
+                          key={item.name}
+                          className={`flex items-center justify-between p-3 rounded-lg border-2 transition-all ${idx === 0
+                              ? 'bg-gradient-to-r from-amber-100 to-orange-100 border-amber-300 shadow-md'
                               : 'bg-white border-gray-200 hover:border-emerald-300'
-                          }`}
+                            }`}
                         >
                           <div className="flex items-center gap-3 flex-1">
-                            <div className={`w-7 h-7 rounded-full flex items-center justify-center font-bold text-white text-sm ${
-                              idx === 0 ? 'bg-gradient-to-r from-amber-500 to-orange-500' : 'bg-emerald-600'
-                            }`}>
+                            <div className={`w-7 h-7 rounded-full flex items-center justify-center font-bold text-white text-sm ${idx === 0 ? 'bg-gradient-to-r from-amber-500 to-orange-500' : 'bg-emerald-600'
+                              }`}>
                               {idx + 1}
                             </div>
                             <span className="font-medium text-sm text-gray-900">{item.name}</span>
@@ -456,7 +456,7 @@ const ManagerDashboard = () => {
           </div>
         </div>
 
-        
+
       </div>
     </div>
   );

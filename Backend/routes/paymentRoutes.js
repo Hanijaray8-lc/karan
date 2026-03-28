@@ -55,7 +55,42 @@ router.get('/admin/all', authorize('admin'), getAllPayments);
 // (managers/admins might need to mark payments manually during support/maintenance).
 router.get('/', authorize('agent'), getPayments);
 router.get('/dashboard', authorize('agent'), getDashboardStats);
-// Allow agents, managers and admins to query payment history (useful for admin/manager debugging)
+
+// Get payment history for a specific client (path parameter) - MUST come before /history
+router.get('/history/:clientId', authorize('agent', 'manager', 'admin'), async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    let query = { client: clientId };
+    
+    // Agents can only see payments they collected, managers/admins see all
+    if (req.user.role === 'agent') {
+      query.agent = req.user.id;
+    }
+
+    let payments = await Payment.find(query)
+      .populate('client', 'name phone')
+      .populate('agent', 'name username email')
+      .sort({ paymentDate: -1 });
+
+    // Populate collected staff names
+    const { populateCollectedStaffName } = require('../controllers/paymentController');
+    payments = await populateCollectedStaffName(payments);
+
+    const totalCollected = payments.reduce((sum, p) => sum + p.amount, 0);
+
+    res.json({
+      success: true,
+      payments,
+      total: payments.length,
+      totalCollected
+    });
+  } catch (err) {
+    console.error('Error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Allow agents, managers and admins to query payment history with query params
 router.get('/history', authorize('agent', 'manager', 'admin'), getPaymentHistory);
 router.get('/client/:clientId', authorize('agent', 'admin', 'manager'), getClientDue);
 // allow agents, managers, and admins to post payments

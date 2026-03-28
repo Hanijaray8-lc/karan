@@ -87,12 +87,12 @@ const AClientDetails = () => {
   // Filter clients based on search, district, and landmark
   const filteredClients = clients.filter(client => {
     const matchesSearch = client.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                         client.phone.includes(searchQuery) ||
-                         (client.clientId && client.clientId.includes(searchQuery));
-    
+      client.phone.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (client.clientId && client.clientId.toLowerCase().includes(searchQuery.toLowerCase()));
+
     const matchesDistrict = !selectedDistrict || client.district === selectedDistrict;
     const matchesLandmark = !selectedLandmark || client.landmark === selectedLandmark;
-    
+
     return matchesSearch && matchesDistrict && matchesLandmark;
   });
 
@@ -271,7 +271,7 @@ const AClientDetails = () => {
       <AgentNavbar />
 
       <div className="pt-2 pb-8 w-full px-3">
-        
+
         {/* Client List View */}
         {!selectedClientId && (
           <div>
@@ -281,63 +281,63 @@ const AClientDetails = () => {
                 <h1 className="text-2xl font-bold text-white mb-1">Clients</h1>
                 <p className="text-sm text-emerald-100">Manage and view client details</p>
               </div>
-              
-            {/* Search and Filters Section */}
-            <div className="bg-white/90 backdrop-blur-lg rounded-lg p-3 mt-4">
 
-              {/* Search and Filters in Single Row */}
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
-                {/* Search Bar */}
-                <div className="md:col-span-2">
-                  <input
-                    type="text"
-                    placeholder="Search by name, phone, ID..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full px-3 py-2 rounded-lg border-2 border-[#16423C]/20 focus:outline-none focus:ring-2 focus:ring-[#16423C] text-sm"
-                  />
+              {/* Search and Filters Section */}
+              <div className="bg-white/90 backdrop-blur-lg rounded-lg p-3 mt-4">
+
+                {/* Search and Filters in Single Row */}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                  {/* Search Bar */}
+                  <div className="md:col-span-2">
+                    <input
+                      type="text"
+                      placeholder="Search by name, phone, ID..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full px-3 py-2 rounded-lg border-2 border-[#16423C]/20 focus:outline-none focus:ring-2 focus:ring-[#16423C] text-sm"
+                    />
+                  </div>
+
+                  {/* District Filter */}
+                  <div>
+                    <select
+                      value={selectedDistrict}
+                      onChange={(e) => setSelectedDistrict(e.target.value)}
+                      className="w-full px-3 py-2 rounded-lg border-2 border-[#16423C]/20 focus:outline-none focus:ring-2 focus:ring-[#16423C] bg-white cursor-pointer text-sm"
+                    >
+                      <option value="">All Districts</option>
+                      {districts.map((district) => (
+                        <option key={district} value={district}>
+                          {district}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Landmark Filter */}
+                  <div>
+                    <select
+                      value={selectedLandmark}
+                      onChange={(e) => setSelectedLandmark(e.target.value)}
+                      disabled={!selectedDistrict}
+                      className="w-full px-3 py-2 rounded-lg border-2 border-[#16423C]/20 focus:outline-none focus:ring-2 focus:ring-[#16423C] bg-white cursor-pointer text-sm disabled:bg-gray-100 disabled:cursor-not-allowed"
+                    >
+                      <option value="">All Landmarks</option>
+                      {landmarks.map((landmark) => (
+                        <option key={landmark} value={landmark}>
+                          {landmark}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
 
-                {/* District Filter */}
-                <div>
-                  <select
-                    value={selectedDistrict}
-                    onChange={(e) => setSelectedDistrict(e.target.value)}
-                    className="w-full px-3 py-2 rounded-lg border-2 border-[#16423C]/20 focus:outline-none focus:ring-2 focus:ring-[#16423C] bg-white cursor-pointer text-sm"
-                  >
-                    <option value="">All Districts</option>
-                    {districts.map((district) => (
-                      <option key={district} value={district}>
-                        {district}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Landmark Filter */}
-                <div>
-                  <select
-                    value={selectedLandmark}
-                    onChange={(e) => setSelectedLandmark(e.target.value)}
-                    disabled={!selectedDistrict}
-                    className="w-full px-3 py-2 rounded-lg border-2 border-[#16423C]/20 focus:outline-none focus:ring-2 focus:ring-[#16423C] bg-white cursor-pointer text-sm disabled:bg-gray-100 disabled:cursor-not-allowed"
-                  >
-                    <option value="">All Landmarks</option>
-                    {landmarks.map((landmark) => (
-                      <option key={landmark} value={landmark}>
-                        {landmark}
-                      </option>
-                    ))}
-                  </select>
+                {/* Results Count */}
+                <div className="mt-2 text-xs text-[#16423C]">
+                  <i className="fas fa-list text-[#16423C] mr-1"></i>
+                  Showing {filteredClients.length} of {clients.length} clients
                 </div>
               </div>
-
-              {/* Results Count */}
-              <div className="mt-2 text-xs text-[#16423C]">
-                <i className="fas fa-list text-[#16423C] mr-1"></i>
-                Showing {filteredClients.length} of {clients.length} clients
-              </div>
-            </div>
             </div>
 
             {/* Loading State */}
@@ -398,8 +398,8 @@ const AClientDetails = () => {
               <div className="bg-white rounded-lg p-8 shadow text-center">
                 <i className="fas fa-search text-gray-300 text-3xl mb-3 block"></i>
                 <p className="text-gray-600 text-sm">
-                  {searchQuery || selectedDistrict || selectedLandmark 
-                    ? 'No clients found matching your filters' 
+                  {searchQuery || selectedDistrict || selectedLandmark
+                    ? 'No clients found matching your filters'
                     : 'No clients found'}
                 </p>
               </div>
@@ -410,9 +410,9 @@ const AClientDetails = () => {
         {/* Client Details View */}
         {selectedClientId && selectedClient && (
           <div className="bg-white rounded-lg p-5 md:p-6 shadow-md">
-            
+
             {/* Back Button */}
-            <button 
+            <button
               onClick={() => {
                 setSelectedClientId(null);
                 setSelectedClient(null);
@@ -428,7 +428,7 @@ const AClientDetails = () => {
               <div className="w-16 h-16 rounded-full flex items-center justify-center text-white font-bold text-lg bg-[#6A9C89] border-4 border-[#C4DAD2]">
                 {selectedClient.name ? selectedClient.name.substring(0, 2).toUpperCase() : 'CL'}
               </div>
-              
+
               <div className="flex-1 w-full">
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
                   <div>
@@ -440,14 +440,13 @@ const AClientDetails = () => {
                       {selectedClient.phone}
                     </p>
                   </div>
-                  <span className={`inline-block px-3 py-1 rounded text-base font-semibold text-white ${
-                    selectedClient.status === 'paid' ? 'bg-green-500' :
-                    selectedClient.status === 'partial' ? 'bg-amber-500' :
-                    'bg-red-500'
-                  }`}>
+                  <span className={`inline-block px-3 py-1 rounded text-base font-semibold text-white ${selectedClient.status === 'paid' ? 'bg-green-500' :
+                      selectedClient.status === 'partial' ? 'bg-amber-500' :
+                        'bg-red-500'
+                    }`}>
                     {selectedClient.status === 'paid' ? '✅ Paid' :
-                     selectedClient.status === 'partial' ? '⚠️ Partial' :
-                     '⏳ Pending'}
+                      selectedClient.status === 'partial' ? '⚠️ Partial' :
+                        '⏳ Pending'}
                   </span>
                 </div>
               </div>
@@ -470,21 +469,19 @@ const AClientDetails = () => {
               <div className="flex gap-1">
                 <button
                   onClick={() => setActiveTab('overview')}
-                  className={`px-4 py-2 font-semibold text-base capitalize transition-all relative ${
-                    activeTab === 'overview' 
-                      ? 'text-[#16423C] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-[#16423C]' 
+                  className={`px-4 py-2 font-semibold text-base capitalize transition-all relative ${activeTab === 'overview'
+                      ? 'text-[#16423C] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-[#16423C]'
                       : 'text-gray-500 hover:text-[#6A9C89]'
-                  }`}
+                    }`}
                 >
                   Overview
                 </button>
                 <button
                   onClick={() => setActiveTab('dues')}
-                  className={`px-4 py-2 font-semibold text-base capitalize transition-all relative ${
-                    activeTab === 'dues' 
-                      ? 'text-[#16423C] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-[#16423C]' 
+                  className={`px-4 py-2 font-semibold text-base capitalize transition-all relative ${activeTab === 'dues'
+                      ? 'text-[#16423C] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-[#16423C]'
                       : 'text-gray-500 hover:text-[#6A9C89]'
-                  }`}
+                    }`}
                 >
                   12 Weeks
                 </button>
@@ -564,7 +561,7 @@ const AClientDetails = () => {
                         <p className="font-bold text-base text-red-500">{formatCurrency((selectedClient.amount || 0) - (selectedClient.received || 0))}</p>
                       </div>
                     </div>
-                    
+
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-3 border-t border-[#C4DAD2]">
                       <div>
                         <p className="text-sm text-gray-600 mb-1">Start Date</p>
@@ -580,14 +577,13 @@ const AClientDetails = () => {
                       </div>
                       <div>
                         <p className="text-sm text-gray-600 mb-1">Status</p>
-                        <span className={`inline-block px-2 py-0.5 rounded text-sm font-semibold text-white ${
-                          selectedClient.status === 'paid' ? 'bg-green-500' :
-                          selectedClient.status === 'partial' ? 'bg-amber-500' :
-                          'bg-red-500'
-                        }`}>
+                        <span className={`inline-block px-2 py-0.5 rounded text-sm font-semibold text-white ${selectedClient.status === 'paid' ? 'bg-green-500' :
+                            selectedClient.status === 'partial' ? 'bg-amber-500' :
+                              'bg-red-500'
+                          }`}>
                           {selectedClient.status === 'paid' ? '✅ Paid' :
-                           selectedClient.status === 'partial' ? '⚠️ Partial' :
-                           '⏳ Pending'}
+                            selectedClient.status === 'partial' ? '⚠️ Partial' :
+                              '⏳ Pending'}
                         </span>
                       </div>
                     </div>
@@ -647,7 +643,7 @@ const AClientDetails = () => {
                       <span className="text-sm text-[#6A9C89]">{duePayments.filter(p => p.status === 'paid').length}/12</span>
                     </div>
                     <div className="h-2 bg-[#C4DAD2] rounded-full overflow-hidden">
-                      <div 
+                      <div
                         className="h-full bg-[#6A9C89] transition-all duration-500"
                         style={{ width: `${(duePayments.filter(p => p.status === 'paid').length / 12) * 100}%` }}
                       ></div>
@@ -657,7 +653,7 @@ const AClientDetails = () => {
                   {/* 12 Due Payments Table */}
                   <div className="mt-4">
                     <h3 className="text-base font-bold text-[#16423C] mb-2">Payment Schedule</h3>
-                    
+
                     <div className="overflow-x-auto">
                       <table className="w-full text-sm">
                         <thead>
@@ -672,21 +668,19 @@ const AClientDetails = () => {
                         </thead>
                         <tbody>
                           {duePayments.map((payment, index) => (
-                            <tr 
-                              key={payment.id} 
-                              className={`border-b border-[#C4DAD2] ${
-                                index % 2 === 0 ? 'bg-white' : 'bg-[#F5F9F7]'
-                              }`}
+                            <tr
+                              key={payment.id}
+                              className={`border-b border-[#C4DAD2] ${index % 2 === 0 ? 'bg-white' : 'bg-[#F5F9F7]'
+                                }`}
                             >
                               <td className="p-2 font-medium text-[#16423C]">{payment.id}</td>
                               <td className="p-2">{payment.month}</td>
                               <td className="p-2 text-center font-semibold">{formatCurrency(payment.dueAmount)}</td>
                               <td className="p-2 text-center">
-                                <span className={`inline-block text-sm font-semibold px-2 py-0.5 rounded ${
-                                  payment.status === 'paid' 
-                                    ? 'bg-green-100 text-green-800' 
+                                <span className={`inline-block text-sm font-semibold px-2 py-0.5 rounded ${payment.status === 'paid'
+                                    ? 'bg-green-100 text-green-800'
                                     : 'bg-red-100 text-red-800'
-                                }`}>
+                                  }`}>
                                   {payment.status === 'paid' ? '✅' : '⏳'}
                                 </span>
                               </td>
@@ -735,9 +729,9 @@ const AClientDetails = () => {
       </div>
 
       {/* Font Awesome */}
-      <link 
-        rel="stylesheet" 
-        href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" 
+      <link
+        rel="stylesheet"
+        href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
       />
     </div>
   );
