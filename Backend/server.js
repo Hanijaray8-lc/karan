@@ -22,7 +22,7 @@ connectDB();
 
 // 1. Middlewares
 app.use(cors({
-  origin: ['http://localhost:3000', 'https://localhost', 'http://localhost', process.env.FRONTEND_URL || ''].filter(Boolean),
+  origin: ['http://localhost:3000', 'https://localhost','https://karanfinance.com','http://localhost', process.env.FRONTEND_URL || ''].filter(Boolean),
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
