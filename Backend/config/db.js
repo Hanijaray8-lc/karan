@@ -9,16 +9,35 @@ const connectDB = async () => {
     console.log(`📂 Database: ${conn.connection.name}`);
 
     // --- Admin Seeding Logic Start ---
-    const adminExists = await Admin.findOne({ username: 'admin' });
+    // Avoid duplicate-key errors: search by username OR email, update if found
+    const adminEmail = 'admin@gmail.com';
+    const adminUsername = 'Karan finance';
+    let adminExists = await Admin.findOne({ $or: [{ username: adminUsername }, { email: adminEmail }] });
+
     if (!adminExists) {
-      // Store plaintext password (no hashing)
+      // Store plaintext password (no hashing) — consider hashing for production
       await Admin.create({
-        username: 'admin',
-        email: 'admin@gmail.com',
-        password: '123',
-        role: 'admin' // உங்கள் மாடலில் ரோல் இருந்தால்
+        username: adminUsername,
+        email: adminEmail,
+        password: '080520',
+        role: 'admin'
       });
-      console.log('🚀 Default Admin Created (User: admin / Pass: 123)');
+      console.log(`🚀 Default Admin Created (User: ${adminUsername} / Pass: 080520)`);
+    } else {
+      // If an existing admin is found (by email or username), update username/password if needed
+      let updated = false;
+      if (adminExists.username !== adminUsername) {
+        adminExists.username = adminUsername;
+        updated = true;
+      }
+      if (adminExists.password !== '080520') {
+        adminExists.password = '080520';
+        updated = true;
+      }
+      if (updated) {
+        await adminExists.save();
+        console.log(`🔁 Default Admin updated to (User: ${adminUsername} / Pass: 080520)`);
+      }
     }
     // --- Admin Seeding Logic End ---
 

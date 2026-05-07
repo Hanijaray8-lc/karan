@@ -261,7 +261,9 @@ const processPayment = async (req, res) => {
       });
     }
 
-    if (client.assigned_agent && client.assigned_agent.toString() !== agentId) {
+    // Only enforce assigned-agent check for requests from agents.
+    // Managers and admins are allowed to process payments for any client.
+    if (req.user.role === 'agent' && client.assigned_agent && client.assigned_agent.toString() !== agentId) {
       return res.status(404).json({
         success: false,
         message: 'Client not assigned to you'
