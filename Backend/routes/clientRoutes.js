@@ -283,6 +283,10 @@ router.put('/:id', protect, authorize('admin', 'agent', 'manager'), async functi
       }
     }
 
+    if (req.body.is_pushed) {
+      client.last_pushed_date = new Date().toISOString().split('T')[0];
+    }
+
     client.weekly_amount = finalWeekly;
     client.total_weeks = finalWeeks;
 
