@@ -79,6 +79,7 @@ const clientSchema = new mongoose.Schema({
   assigned_agent: { type: mongoose.Schema.Types.ObjectId, ref: 'Agent' },
   assigned_agent_name: { type: String, default: '' },
 
+  last_pushed_date: { type: String, default: '' },
 }, {
   timestamps: true
 });
