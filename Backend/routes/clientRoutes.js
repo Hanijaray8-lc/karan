@@ -6,10 +6,18 @@ const Agent = require('../models/Agent');
 const { protect, authorize } = require('../middleware/auth');
 
 // Helper function to calculate weekly installment
-function calculateWeeklyInstallment(loanStartDate, loanEndDate, pendingAmount) {
+function calculateWeeklyInstallment(loanStartDate, loanEndDate, pendingAmount, totalAmount) {
   // Require at least a loan start date
   if (!loanStartDate) {
     return { weekly_amount: 0, total_weeks: 0 };
+  }
+
+  const pendingNum = Number(pendingAmount || 0);
+  const totalNum = Number(totalAmount || 0);
+
+  // Special rule: for ₹5000 (payable ₹6900) loans, use fixed weekly amount ₹575
+  if (totalNum === 5000 || totalNum === 6900 || pendingNum === 5000 || pendingNum === 6900) {
+    return { weekly_amount: 575, total_weeks: 12 };
   }
 
   const startDate = new Date(loanStartDate);
@@ -35,7 +43,7 @@ function calculateWeeklyInstallment(loanStartDate, loanEndDate, pendingAmount) {
   if (!totalWeeks || totalWeeks < 1) totalWeeks = defaultWeeks;
 
   // Calculate weekly amount (avoid division by zero)
-  const weeklyAmount = totalWeeks > 0 ? (Number(pendingAmount || 0) / totalWeeks) : 0;
+  const weeklyAmount = totalWeeks > 0 ? (pendingNum / totalWeeks) : 0;
 
   return {
     weekly_amount: Math.round(weeklyAmount * 100) / 100, // Round to 2 decimals
@@ -63,7 +71,7 @@ router.get('/', protect, authorize('admin','manager'), async function getClients
     const clients = await Client.find().sort({ createdAt: -1 });
 
     const totalClients = clients.length;
-    const totalLoanAmount = clients.reduce((sum, client) => sum + Number(client.amount || 0), 0);
+    const totalLoanAmount = clients.reduce((sum, client) => sum + Number(client.amount === 6900 ? 5000 : (client.amount || 0)), 0);
     const totalReceived = clients.reduce((sum, client) => sum + Number(client.received || 0), 0);
 
     res.json({
@@ -120,7 +128,8 @@ router.post('/', protect, authorize('admin','manager'), async function createCli
     const computed = calculateWeeklyInstallment(
       req.body.loan_start_date,
       req.body.loan_end_date,
-      pending
+      pending,
+      amount
     );
 
     // Allow frontend to supply weekly_amount/total_weeks (admin only).
@@ -156,6 +165,7 @@ router.post('/', protect, authorize('admin','manager'), async function createCli
       pending: pending,
       loan_start_date: req.body.loan_start_date,
       loan_end_date: req.body.loan_end_date,
+      distributed_amount_date: req.body.distributed_amount_date || null,
       weekly_amount: weekly_amount,
       total_weeks: total_weeks,
       status: status,
@@ -214,7 +224,7 @@ router.put('/:id', protect, authorize('admin', 'agent', 'manager'), async functi
     } else {
       // Update fields (NO agent field)
       const fields = ['name', 'husband_name', 'phone', 'password', 'landmark', 'address', 'district',
-        'amount', 'received', 'loan_start_date', 'loan_end_date',
+        'amount', 'received', 'loan_start_date', 'loan_end_date', 'distributed_amount_date',
         'notes', 'nominee_name', 'nominee_husband', 'nominee_phone', 'nominee_address'];
 
       fields.forEach(field => {
@@ -258,7 +268,8 @@ router.put('/:id', protect, authorize('admin', 'agent', 'manager'), async functi
       const computedUpdate = calculateWeeklyInstallment(
         client.loan_start_date,
         client.loan_end_date,
-        client.pending
+        client.pending,
+        client.amount
       );
       finalWeekly = computedUpdate.weekly_amount;
       finalWeeks = computedUpdate.total_weeks;
@@ -277,10 +288,19 @@ router.put('/:id', protect, authorize('admin', 'agent', 'manager'), async functi
         const computedUpdate = calculateWeeklyInstallment(
           client.loan_start_date,
           client.loan_end_date,
-          client.pending
+          client.pending,
+          client.amount
         );
         finalWeeks = computedUpdate.total_weeks;
       }
+    }
+
+    if (client.amount === 5000 || client.amount === 6900 || client.pending === 5000 || client.pending === 6900) {
+      finalWeekly = 575;
+    }
+
+    if (req.body.is_pushed) {
+      client.last_pushed_date = new Date().toISOString().split('T')[0];
     }
 
     client.weekly_amount = finalWeekly;

@@ -37,6 +37,7 @@ const createClient = async (req, res) => {
       pending: parseFloat(req.body.pending) || 0,
       loan_start_date: req.body.loan_start_date,
       loan_end_date: req.body.loan_end_date,
+      distributed_amount_date: req.body.distributed_amount_date || null,
       status: req.body.status || 'pending',
       notes: req.body.notes || '',
       nominee_name: req.body.nominee_name || '',

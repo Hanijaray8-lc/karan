@@ -58,6 +58,7 @@ const clientSchema = new mongoose.Schema({
 
   loan_start_date: { type: Date, required: true },
   loan_end_date: { type: Date, required: true },
+  distributed_amount_date: { type: Date },
 
   // Weekly installment calculation
   weekly_amount: { type: Number, default: 0, min: 0 },
@@ -79,6 +80,7 @@ const clientSchema = new mongoose.Schema({
   assigned_agent: { type: mongoose.Schema.Types.ObjectId, ref: 'Agent' },
   assigned_agent_name: { type: String, default: '' },
 
+  last_pushed_date: { type: String, default: '' },
 }, {
   timestamps: true
 });
