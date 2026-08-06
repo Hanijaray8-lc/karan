@@ -217,10 +217,12 @@ router.put('/:id', protect, authorize('admin', 'agent', 'manager'), async functi
     // (used by the 'Not Paid' action to extend the due date). Managers and
     // admins may update all standard fields.
     if (req.user.role === 'agent') {
-      if (req.body.loan_end_date === undefined) {
-        return res.status(403).json({ success: false, message: 'Agents may only update loan_end_date' });
+      if (req.body.loan_end_date === undefined && req.body.received === undefined && req.body.status === undefined) {
+        return res.status(403).json({ success: false, message: 'Agents may only update loan_end_date or foreclosure fields' });
       }
-      client.loan_end_date = req.body.loan_end_date;
+      if (req.body.loan_end_date !== undefined) client.loan_end_date = req.body.loan_end_date;
+      if (req.body.received !== undefined) client.received = req.body.received;
+      if (req.body.status !== undefined) client.status = req.body.status;
     } else {
       // Update fields (NO agent field)
       const fields = ['name', 'husband_name', 'phone', 'password', 'landmark', 'address', 'district',
