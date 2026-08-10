@@ -158,6 +158,7 @@ router.post('/', protect, authorize('admin','manager'), async function createCli
       husband_name: req.body.husband_name,
       phone: req.body.phone,
       landmark: req.body.landmark || '',
+      dispensary: req.body.dispensary || '',
       address: req.body.address,
       district: req.body.district,
       amount: amount,
@@ -225,7 +226,7 @@ router.put('/:id', protect, authorize('admin', 'agent', 'manager'), async functi
       if (req.body.status !== undefined) client.status = req.body.status;
     } else {
       // Update fields (NO agent field)
-      const fields = ['name', 'husband_name', 'phone', 'password', 'landmark', 'address', 'district',
+      const fields = ['name', 'husband_name', 'phone', 'password', 'landmark', 'dispensary', 'address', 'district',
         'amount', 'received', 'loan_start_date', 'loan_end_date', 'distributed_amount_date',
         'notes', 'nominee_name', 'nominee_husband', 'nominee_phone', 'nominee_address'];
 

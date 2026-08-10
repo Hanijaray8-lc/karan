@@ -33,6 +33,10 @@ const clientSchema = new mongoose.Schema({
   
   landmark: String,
   
+  dispensary: {
+    type: Date
+  },
+  
   address: {
     type: String,
     required: true
