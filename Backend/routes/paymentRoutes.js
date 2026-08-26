@@ -21,7 +21,7 @@ router.get('/test/all', async (req, res) => {
     let payments = await Payment.find()
       .populate('client', 'name phone district landmark')
       .populate('agent', 'name username')
-      .sort({ paymentDate: -1 });
+      .sort({ paymentDate: -1, createdAt: -1, _id: -1 });
 
     // Populate collected staff names from IDs
     payments = await populateCollectedStaffName(payments);

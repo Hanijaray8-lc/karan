@@ -135,7 +135,7 @@ const getPayments = async (req, res) => {
       payments = await Payment.find({ client: { $in: clientIds } })
         .populate('client', 'name phone pending amount')
         .populate('agent', 'name username')
-        .sort({ paymentDate: -1 });
+        .sort({ paymentDate: -1, createdAt: -1, _id: -1 });
     }
 
     // Populate collected staff names from IDs
@@ -197,7 +197,7 @@ const getClientDue = async (req, res) => {
     // Get payment history for this client
     let paymentHistory = await Payment.find({ 
       client: clientId
-    }).populate('agent', 'name username').sort({ paymentDate: -1 });
+    }).populate('agent', 'name username').sort({ paymentDate: -1, createdAt: -1, _id: -1 });
 
     // Populate collected staff names from IDs
     paymentHistory = await populateCollectedStaffName(paymentHistory);
@@ -414,7 +414,7 @@ const getPaymentHistory = async (req, res) => {
     let payments = await Payment.find(query)
       .populate('client', 'name phone')
       .populate('agent', 'name username email') // Populate agent details (collected by)
-      .sort({ paymentDate: -1 });
+      .sort({ paymentDate: -1, createdAt: -1, _id: -1 });
 
     // Populate collected staff names from IDs
     payments = await populateCollectedStaffName(payments);
@@ -522,7 +522,7 @@ const getAllPayments = async (req, res) => {
     let payments = await Payment.find()
       .populate('client', 'name phone district landmark')
       .populate('agent', 'name username')
-      .sort({ paymentDate: -1 });
+      .sort({ paymentDate: -1, createdAt: -1, _id: -1 });
 
     // Populate collected staff names from IDs
     payments = await populateCollectedStaffName(payments);
