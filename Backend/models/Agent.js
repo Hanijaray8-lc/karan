@@ -13,7 +13,17 @@ const agentSchema = new mongoose.Schema({
     enum: ['agent'], // Only agent
     default: 'agent' 
   },
-  status: { type: String, default: 'Active' },
+  status: { 
+    type: String, 
+    enum: ['Active', 'Inactive', 'Pending', 'Rejected'], 
+    default: 'Pending' 
+  },
+  department: { type: String, default: 'Field Agent' },
+  commission: { type: Number, default: 0 },
+  loginRequested: { type: Boolean, default: false },
+  lastLoginAttempt: { type: Date },
+  approvedBy: { type: String },
+  approvedAt: { type: Date },
   profilePhoto: { type: String },
   addedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
   joinDate: { type: Date, default: Date.now }

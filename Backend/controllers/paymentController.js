@@ -35,7 +35,7 @@ const populateCollectedStaffName = async (payments) => {
   // Generic try-any-collection lookup (agent -> manager -> admin)
   const tryAnyCollection = async (id) => {
     if (!id) return null;
-    const candidates = [ ['agent', id], ['manager', id], ['admin', id] ];
+    const candidates = [['agent', id], ['manager', id], ['admin', id]];
     for (let [role, rid] of candidates) {
       const name = await lookupAndCache(role, rid);
       if (name) return name;
@@ -114,7 +114,7 @@ const getPayments = async (req, res) => {
   try {
     const agentId = req.user.id;
     const agent = await Agent.findById(agentId);
-    
+
     if (!agent) {
       return res.status(404).json({
         success: false,
@@ -123,7 +123,7 @@ const getPayments = async (req, res) => {
     }
 
     // Get all clients assigned to this agent with pending amounts
-    const clients = await Client.find({ 
+    const clients = await Client.find({
       assigned_agent: agentId,
       pending: { $gt: 0 } // Only clients with pending amount
     }).populate('assigned_agent', 'name username');
@@ -182,9 +182,9 @@ const getClientDue = async (req, res) => {
     const { clientId } = req.params;
     const agentId = req.user.id;
 
-    const client = await Client.findOne({ 
-      _id: clientId, 
-      assigned_agent: agentId 
+    const client = await Client.findOne({
+      _id: clientId,
+      assigned_agent: agentId
     }).populate('assigned_agent', 'name username');
 
     if (!client) {
@@ -195,7 +195,7 @@ const getClientDue = async (req, res) => {
     }
 
     // Get payment history for this client
-    let paymentHistory = await Payment.find({ 
+    let paymentHistory = await Payment.find({
       client: clientId
     }).populate('agent', 'name username').sort({ paymentDate: -1, createdAt: -1, _id: -1 });
 
@@ -271,20 +271,24 @@ const processPayment = async (req, res) => {
     }
 
     // Check if amount exceeds pending
-    if (amount > client.pending) {
+    const effectivePending = (client.pending !== undefined && client.pending !== null)
+      ? client.pending
+      : Math.max(0, (client.amount || 6900) - (client.received || 0));
+
+    if (amount > effectivePending) {
       return res.status(400).json({
         success: false,
-        message: `Payment amount (₹${amount}) exceeds pending amount (₹${client.pending})`
+        message: `Payment amount (₹${amount}) exceeds pending amount (₹${effectivePending})`
       });
     }
 
     // Store previous due for record
-    const previousDue = client.pending;
+    const previousDue = effectivePending;
 
     // Update client
     client.received = (client.received || 0) + amount;
-    client.pending = client.amount - client.received;
-    
+    client.pending = Math.max(0, (client.amount || (client.received + effectivePending)) - client.received);
+
     // Update status
     if (client.pending <= 0) {
       client.status = 'paid';
@@ -294,56 +298,61 @@ const processPayment = async (req, res) => {
 
     await client.save();
 
-    // Create payment record
+    // Determine staff display name and role upfront
+    let displayName = '';
+    const userRole = req.user.role;
+    const userId = req.user.id;
+
+    if (userRole === 'agent') {
+      const u = await Agent.findById(userId).select('name username email');
+      displayName = u?.name || u?.username || 'Agent';
+    } else if (userRole === 'manager') {
+      const u = await Manager.findById(userId).select('name username email');
+      displayName = u?.name || u?.username || 'Manager';
+    } else if (userRole === 'admin') {
+      const u = await Admin.findById(userId).select('name username email');
+      displayName = u?.name || u?.username || 'Admin';
+    }
+
+    // Set effective agent reference (prefer assigned_agent for client if paying as admin/manager, else userId)
+    const effectiveAgentId = (userRole === 'agent') ? agentId : (client.assigned_agent || agentId);
+
+    // Compute effective payment date with current timestamp if today
+    let effectiveDate = new Date();
+    if (paymentDate) {
+      const todayStr = new Date().toISOString().split('T')[0];
+      if (typeof paymentDate === 'string' && paymentDate.startsWith(todayStr)) {
+        effectiveDate = new Date();
+      } else {
+        effectiveDate = new Date(paymentDate);
+      }
+    }
+
+    // Create payment record with complete snapshot so it always displays cleanly in payment history
     const paymentData = {
       client: clientId,
-      agent: agentId,
+      clientName: client.name,
+      clientPhone: client.phone,
+      clientAmount: client.amount,
+      agent: effectiveAgentId,
+      collectedStaff: displayName,
+      collectedStaffId: userId,
+      collectedByRole: userRole,
       amount,
       previousDue,
       remainingDue: client.pending,
       paymentMethod,
-      notes
+      notes: notes || 'Pending Client Payment',
+      paymentDate: effectiveDate
     };
-    if (paymentDate) {
-      paymentData.paymentDate = new Date(paymentDate);
-    }
 
     const payment = await Payment.create(paymentData);
 
-    // Get user details based on role and store collected staff name and role
-    let collectedByUser = null;
-    const userRole = req.user.role;
-    // middleware sets "id" not "_id"
-    const userId = req.user.id;
-
-    // lookup the collecting user so we can save a friendly name
-    if (userRole === 'agent') {
-      collectedByUser = await Agent.findById(userId).select('name username email');
-    } else if (userRole === 'manager') {
-      collectedByUser = await Manager.findById(userId).select('name username email');
-    } else if (userRole === 'admin') {
-      collectedByUser = await Admin.findById(userId).select('name username email');
-    }
-
-    if (collectedByUser) {
-      // store only the name/username; role suffix will be appended later when results
-      const displayName = collectedByUser.name || collectedByUser.username || '';
-      payment.collectedStaff = displayName;
-      payment.collectedStaffId = userId;
-    } else {
-      // fallback if lookup failed, will show role label later
-      payment.collectedStaff = '';
-    }
-
-    // store the role separately as before
-    payment.collectedByRole = userRole;
-    await payment.save();
-
     // Populate client and agent details for response
-    await payment.populate('client', 'name phone');
+    await payment.populate('client', 'name phone district landmark');
     await payment.populate('agent', 'name username email');
 
-    // make sure the returned object has the role suffix as clients expect
+    // Make sure the returned object has the role suffix as clients expect
     if (payment.collectedByRole) {
       const suffix = ` (${payment.collectedByRole})`;
       let ds = payment.collectedStaff || '';
@@ -465,7 +474,7 @@ const getDashboardStats = async (req, res) => {
     // Today's collections
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    
+
     const todayPayments = await Payment.find({
       agent: agentId,
       paymentDate: { $gte: today }

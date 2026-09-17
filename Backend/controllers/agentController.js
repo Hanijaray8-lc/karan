@@ -11,7 +11,9 @@ const getAgents = async (req, res) => {
 
     const totalAgents = await Agent.countDocuments({ role: 'agent' });
     const activeAgents = await Agent.countDocuments({ role: 'agent', status: 'Active' });
+    const pendingAgents = await Agent.countDocuments({ role: 'agent', status: 'Pending' });
     const onLeaveAgents = await Agent.countDocuments({ role: 'agent', status: 'On Leave' });
+    const inactiveAgents = await Agent.countDocuments({ role: 'agent', status: 'Inactive' });
 
     const startOfMonth = new Date();
     startOfMonth.setDate(1);
@@ -39,6 +41,8 @@ const getAgents = async (req, res) => {
       stats: {
         totalAgents,
         activeAgents,
+        pendingAgents,
+        inactiveAgents,
         onLeaveAgents,
         newThisMonth,
         departmentStats
@@ -68,16 +72,16 @@ const createAgent = async (req, res) => {
 
     // Directly store plaintext password
     const agentData = {
-      username,
-      name,
-      email,
-      phone: phone || '',
-      password,
-      status: status || 'Active',
-      department: department || 'Field Agent',
-      commission: commission ? parseInt(commission) : 0,
-      role: 'agent'
-    };
+       username,
+       name,
+       email,
+       phone: phone || '',
+       password,
+       status: status || 'Pending',
+       department: department || 'Field Agent',
+       commission: commission ? parseInt(commission) : 0,
+       role: 'agent'
+     };
 
     if (req.file) agentData.profilePhoto = `/uploads/${req.file.filename}`;
 
@@ -96,6 +100,122 @@ const createAgent = async (req, res) => {
       const field = Object.keys(error.keyPattern)[0];
       return res.status(400).json({ success: false, message: `${field} already exists` });
     }
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Approve agent
+// @route   PUT /api/agents/:id/approve
+const approveAgent = async (req, res) => {
+  try {
+    const agent = await Agent.findById(req.params.id);
+    if (!agent) return res.status(404).json({ success: false, message: 'Agent not found' });
+    
+    agent.status = 'Active';
+    agent.loginRequested = false;
+    agent.approvedAt = new Date();
+    agent.approvedBy = req.user?.role ? req.user.role.toUpperCase() : 'ADMIN';
+    await agent.save();
+
+    const agentResponse = agent.toObject();
+    delete agentResponse.password;
+
+    res.json({ success: true, data: agentResponse, message: 'Agent approved successfully' });
+  } catch (error) {
+    console.error('Approve agent error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Reject agent
+// @route   PUT /api/agents/:id/reject
+const rejectAgent = async (req, res) => {
+  try {
+    const agent = await Agent.findById(req.params.id);
+    if (!agent) return res.status(404).json({ success: false, message: 'Agent not found' });
+    
+    agent.status = 'Rejected';
+    agent.loginRequested = false;
+    agent.approvedBy = undefined;
+    agent.approvedAt = undefined;
+    await agent.save();
+
+    const agentResponse = agent.toObject();
+    delete agentResponse.password;
+
+    res.json({ success: true, data: agentResponse, message: 'Agent rejected successfully' });
+  } catch (error) {
+    console.error('Reject agent error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Update agent status (Active, Inactive, Pending, Rejected)
+// @route   PUT /api/agents/:id/status
+const updateAgentStatus = async (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!status) return res.status(400).json({ success: false, message: 'Status is required' });
+
+    const agent = await Agent.findById(req.params.id);
+    if (!agent) return res.status(404).json({ success: false, message: 'Agent not found' });
+
+    agent.status = status;
+    if (status === 'Active') {
+      agent.approvedAt = new Date();
+      agent.approvedBy = req.user?.role ? req.user.role.toUpperCase() : 'ADMIN';
+      agent.loginRequested = false;
+    } else if (status === 'Pending') {
+      agent.loginRequested = true;
+      agent.approvedBy = undefined;
+      agent.approvedAt = undefined;
+    } else if (status === 'Rejected') {
+      agent.loginRequested = false;
+      agent.approvedBy = undefined;
+      agent.approvedAt = undefined;
+    }
+    await agent.save();
+
+    const agentResponse = agent.toObject();
+    delete agentResponse.password;
+
+    res.json({ success: true, data: agentResponse, message: `Agent status updated to ${status}` });
+  } catch (error) {
+    console.error('Update agent status error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Get pending agent approvals and recent login attempts
+// @route   GET /api/agents/pending-approvals
+const getPendingApprovals = async (req, res) => {
+  try {
+    const pendingAgents = await Agent.find({ role: 'agent', status: 'Pending' })
+      .select('-password')
+      .sort({ lastLoginAttempt: -1, createdAt: -1 });
+
+    const activeAgents = await Agent.find({ role: 'agent', status: 'Active' })
+      .select('-password')
+      .sort({ approvedAt: -1, joinDate: -1 });
+
+    const rejectedAgents = await Agent.find({ role: 'agent', status: { $in: ['Rejected', 'Inactive'] } })
+      .select('-password')
+      .sort({ updatedAt: -1 });
+
+    // Recent login requests (pending agents who attempted login)
+    const recentLoginRequests = pendingAgents.filter(a => a.loginRequested || a.lastLoginAttempt);
+
+    res.json({
+      success: true,
+      pendingCount: pendingAgents.length,
+      recentLoginCount: recentLoginRequests.length,
+      pendingAgents,
+      activeAgents,
+      rejectedAgents,
+      recentLoginRequests
+    });
+  } catch (error) {
+    console.error('Get pending approvals error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -197,13 +317,14 @@ const getAgentStats = async (req, res) => {
   try {
     const totalAgents = await Agent.countDocuments({ role: 'agent' });
     const activeAgents = await Agent.countDocuments({ role: 'agent', status: 'Active' });
+    const pendingAgents = await Agent.countDocuments({ role: 'agent', status: 'Pending' });
     const onLeaveAgents = await Agent.countDocuments({ role: 'agent', status: 'On Leave' });
     const inactiveAgents = await Agent.countDocuments({ role: 'agent', status: 'Inactive' });
     const startOfMonth = new Date();
     startOfMonth.setDate(1);
     startOfMonth.setHours(0, 0, 0, 0);
     const newThisMonth = await Agent.countDocuments({ role: 'agent', joinDate: { $gte: startOfMonth } });
-    res.json({ success: true, stats: { totalAgents, activeAgents, onLeaveAgents, inactiveAgents, newThisMonth } });
+    res.json({ success: true, stats: { totalAgents, activeAgents, pendingAgents, onLeaveAgents, inactiveAgents, newThisMonth } });
   } catch (error) {
     console.error('Get agent stats error:', error);
     res.status(500).json({ success: false, message: error.message });
@@ -213,6 +334,10 @@ const getAgentStats = async (req, res) => {
 module.exports = {
   getAgents,
   createAgent,
+  approveAgent,
+  rejectAgent,
+  updateAgentStatus,
+  getPendingApprovals,
   updateAgent,
   deleteAgent,
   getAgentById,

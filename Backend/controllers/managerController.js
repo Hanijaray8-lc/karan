@@ -11,6 +11,7 @@ const getManagers = async (req, res) => {
     
     const totalManagers = await Manager.countDocuments();
     const activeManagers = await Manager.countDocuments({ status: 'Active' });
+    const pendingManagers = await Manager.countDocuments({ status: 'Pending' });
     const inactiveManagers = await Manager.countDocuments({ status: 'Inactive' });
 
     res.json({
@@ -19,6 +20,7 @@ const getManagers = async (req, res) => {
       stats: {
         totalManagers,
         activeManagers,
+        pendingManagers,
         inactiveManagers
       }
     });
@@ -35,7 +37,7 @@ const getManagers = async (req, res) => {
 // @route   POST /api/managers
 const createManager = async (req, res) => {
   try {
-    const { username, name, email, phone, password, status } = req.body;
+    const { username, name, email, phone, password, status, faceDescriptor, facePhoto } = req.body;
 
     // Validate required fields
     if (!username || !name || !email || !phone || !password) {
@@ -57,6 +59,8 @@ const createManager = async (req, res) => {
       });
     }
 
+    const hasFace = Array.isArray(faceDescriptor) && faceDescriptor.length === 128;
+
     // store plaintext password
     const manager = await Manager.create({
       username,
@@ -64,8 +68,12 @@ const createManager = async (req, res) => {
       email,
       phone,
       password,
-      status: status || 'Active',
-      addedBy: req.user.id // Admin ID who added
+      status: status || 'Pending',
+      addedBy: req.user.id, // Admin ID who added
+      faceDescriptor: hasFace ? faceDescriptor.map(Number) : [],
+      faceRegistered: hasFace,
+      faceRegisteredAt: hasFace ? new Date() : null,
+      facePhoto: hasFace ? (facePhoto || '') : ''
     });
 
     // Remove password from response
@@ -95,6 +103,39 @@ const createManager = async (req, res) => {
   }
 };
 
+// @desc    Approve manager
+// @route   PUT /api/managers/:id/approve
+const approveManager = async (req, res) => {
+  try {
+    const manager = await Manager.findById(req.params.id);
+
+    if (!manager) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Manager not found' 
+      });
+    }
+
+    manager.status = 'Active';
+    await manager.save();
+
+    const managerResponse = manager.toObject();
+    delete managerResponse.password;
+
+    res.json({
+      success: true,
+      data: managerResponse,
+      message: 'Manager approved successfully'
+    });
+  } catch (error) {
+    console.error('Approve manager error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message 
+    });
+  }
+};
+
 // @desc    Update manager
 // @route   PUT /api/managers/:id
 const updateManager = async (req, res) => {
@@ -108,7 +149,7 @@ const updateManager = async (req, res) => {
       });
     }
 
-    const { username, name, email, phone, password, status } = req.body;
+    const { username, name, email, phone, password, status, faceDescriptor, facePhoto, deleteFace } = req.body;
 
     // Update fields
     if (username) manager.username = username;
@@ -120,6 +161,21 @@ const updateManager = async (req, res) => {
     // Update password if provided (plaintext)
     if (password) {
       manager.password = password;
+    }
+
+    // Handle Face ID
+    if (deleteFace) {
+      manager.faceDescriptor = [];
+      manager.faceRegistered = false;
+      manager.faceRegisteredAt = null;
+      manager.facePhoto = '';
+    } else if (Array.isArray(faceDescriptor) && faceDescriptor.length === 128) {
+      manager.faceDescriptor = faceDescriptor.map(Number);
+      manager.faceRegistered = true;
+      manager.faceRegisteredAt = new Date();
+      if (facePhoto) {
+        manager.facePhoto = facePhoto;
+      }
     }
 
     const updatedManager = await manager.save();
@@ -203,6 +259,7 @@ const getManagerStats = async (req, res) => {
   try {
     const totalManagers = await Manager.countDocuments();
     const activeManagers = await Manager.countDocuments({ status: 'Active' });
+    const pendingManagers = await Manager.countDocuments({ status: 'Pending' });
     const inactiveManagers = await Manager.countDocuments({ status: 'Inactive' });
     
     // New managers this month
@@ -219,6 +276,7 @@ const getManagerStats = async (req, res) => {
       stats: {
         totalManagers,
         activeManagers,
+        pendingManagers,
         inactiveManagers,
         newThisMonth
       }
@@ -259,6 +317,7 @@ const resetManagerPassword = async (req, res) => {
 module.exports = {
   getManagers,
   createManager,
+  approveManager,
   updateManager,
   deleteManager,
   getManagerById,

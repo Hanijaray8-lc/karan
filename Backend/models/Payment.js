@@ -57,7 +57,7 @@ const paymentSchema = new mongoose.Schema({
   },
   paymentMethod: {
     type: String,
-    enum: ['cash', 'online', 'cheque'],
+    enum: ['cash', 'online', 'cheque', 'Foreclosure', 'foreclosure'],
     default: 'cash'
   },
   receiptNumber: {

@@ -107,6 +107,36 @@ router.get('/all', protect, authorize('admin', 'manager', 'agent'), async functi
   }
 });
 
+// GET pending clients (Admin & Manager) - clients past loan_end_date with pending > 0 OR extended weeks
+router.get('/pending', protect, authorize('admin', 'manager'), async function getPendingClients(req, res) {
+  try {
+    const today = new Date();
+    today.setHours(23, 59, 59, 999);
+
+    const filter = {
+      $and: [
+        { pending: { $gt: 0 } },
+        {
+          $or: [
+            { loan_end_date: { $lte: today } },
+            { total_weeks: { $gt: 12 } }
+          ]
+        }
+      ]
+    };
+
+    const clients = await Client.find(filter).sort({ loan_end_date: 1 });
+
+    res.json({
+      success: true,
+      count: clients.length,
+      clients
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // POST - Add new client (Admin and Manager)
 router.post('/', protect, authorize('admin','manager'), async function createClient(req, res) {
   try {

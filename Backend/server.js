@@ -21,19 +21,57 @@ const app = express();
 connectDB();
 
 // 1. Middlewares
-app.use(cors({
-  origin: [
-    'http://localhost:3000',
-    'https://localhost',
-    'http://localhost',
-    process.env.FRONTEND_URL,
-    'https://karanfinance.com',
-    'https://www.karanfinance.com'
-  ].filter(Boolean),
+const allowedOrigins = [
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'http://localhost:5173',
+  'http://127.0.0.1:3000',
+  'http://127.0.0.1:3001',
+  'http://127.0.0.1:5173',
+  'https://localhost',
+  'http://localhost',
+  'capacitor://localhost',
+  'ionic://localhost',
+  'https://karanfinance.com',
+  'https://www.karanfinance.com',
+  process.env.FRONTEND_URL
+].filter(Boolean);
+
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps, curl, Postman)
+    if (!origin) return callback(null, true);
+    
+    // Check exact matches or regex for localhost / preview URLs
+    if (
+      allowedOrigins.includes(origin) ||
+      /^http:\/\/localhost(:\d+)?$/.test(origin) ||
+      /^http:\/\/127\.0\.0\.1(:\d+)?$/.test(origin) ||
+      /\.vercel\.app$/.test(origin) ||
+      /\.onrender\.com$/.test(origin) ||
+      /\.netlify\.app$/.test(origin)
+    ) {
+      return callback(null, true);
+    }
+    // Fallback: allow all origins to prevent blocking
+    return callback(null, true);
+  },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Requested-With',
+    'Accept',
+    'Origin',
+    'Access-Control-Request-Method',
+    'Access-Control-Request-Headers'
+  ],
+  optionsSuccessStatus: 200
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));

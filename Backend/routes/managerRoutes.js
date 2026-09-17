@@ -4,6 +4,7 @@ const router = express.Router();
 const {
   getManagers,
   createManager,
+  approveManager,
   updateManager,
   deleteManager,
   getManagerById,
@@ -23,6 +24,9 @@ router.route('/')
   .post(createManager);
 
 router.get('/stats', getManagerStats);
+
+// Approve manager (admin)
+router.put('/:id/approve', approveManager);
 
 router.route('/:id')
   .get(getManagerById)
