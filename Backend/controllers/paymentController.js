@@ -182,10 +182,12 @@ const getClientDue = async (req, res) => {
     const { clientId } = req.params;
     const agentId = req.user.id;
 
-    const client = await Client.findOne({
-      _id: clientId,
-      assigned_agent: agentId
-    }).populate('assigned_agent', 'name username');
+    const query = { _id: clientId };
+    if (req.user && req.user.role === 'agent') {
+      query.assigned_agent = agentId;
+    }
+
+    const client = await Client.findOne(query).populate('assigned_agent', 'name username');
 
     if (!client) {
       return res.status(404).json({
