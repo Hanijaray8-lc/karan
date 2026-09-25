@@ -13,35 +13,35 @@ const clientSchema = new mongoose.Schema({
     required: [true, 'Client name is required'],
     trim: true
   },
-  
+
   husband_name: {
     type: String,
     trim: true
   },
-  
+
   phone: {
     type: String,
     required: [true, 'Phone number is required'],
     trim: true
   },
-  
+
   password: {
     type: String,
     default: '',
     trim: true
   },
-  
+
   landmark: String,
-  
+
   dispensary: {
     type: Date
   },
-  
+
   address: {
     type: String,
     required: true
   },
-  
+
   district: {
     type: String,
     required: true,
@@ -79,5 +79,11 @@ const clientSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+// Performance Indexes
+clientSchema.index({ phone: 1 });
+clientSchema.index({ assigned_agent: 1 });
+clientSchema.index({ district: 1 });
+clientSchema.index({ createdAt: -1 });
 
 module.exports = mongoose.model('Client', clientSchema);

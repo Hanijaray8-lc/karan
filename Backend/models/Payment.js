@@ -147,4 +147,9 @@ paymentSchema.pre('save', async function() {
   }
 });
 
+// Performance Indexes
+paymentSchema.index({ client: 1, paymentDate: -1 });
+paymentSchema.index({ agent: 1, paymentDate: -1 });
+paymentSchema.index({ paymentDate: -1 });
+
 module.exports = mongoose.model('Payment', paymentSchema);

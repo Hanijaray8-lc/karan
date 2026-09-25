@@ -54,7 +54,7 @@ function calculateWeeklyInstallment(loanStartDate, loanEndDate, pendingAmount, t
 // Test endpoint - Get all clients without auth
 router.get('/test/all', async (req, res) => {
   try {
-    const clients = await Client.find().sort({ createdAt: -1 });
+    const clients = await Client.find().sort({ createdAt: -1 }).lean();
     
     res.json({
       success: true,
@@ -68,7 +68,7 @@ router.get('/test/all', async (req, res) => {
 // GET all clients (Admin and Manager)
 router.get('/', protect, authorize('admin','manager'), async function getClients(req, res) {
   try {
-    const clients = await Client.find().sort({ createdAt: -1 });
+    const clients = await Client.find().sort({ createdAt: -1 }).lean();
 
     const totalClients = clients.length;
     const totalLoanAmount = clients.reduce((sum, client) => sum + Number(client.amount === 6900 ? 5000 : (client.amount || 0)), 0);
