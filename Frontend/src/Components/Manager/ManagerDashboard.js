@@ -36,6 +36,8 @@ const ManagerDashboard = () => {
   const [todayDueTotal, setTodayDueTotal] = useState(0);
   const [todayCollectedTotal, setTodayCollectedTotal] = useState(0);
   const [todayPendingTotal, setTodayPendingTotal] = useState(0);
+  const [pendingApprovalCount, setPendingApprovalCount] = useState(0);
+  const [pendingAgentsList, setPendingAgentsList] = useState([]);
   // Pie chart colors
   const PIE_COLORS = ['#10b981', '#f59e0b', '#ef4444', '#3b82f6', '#8b5cf6'];
 
@@ -55,8 +57,8 @@ const ManagerDashboard = () => {
     const user = JSON.parse(localStorage.getItem('user'));
     const token = localStorage.getItem('token');
 
-    // If no token or role is not manager, kick them back to login
-    if (!token || !user || user.role !== 'manager') {
+    // If no token, wrong role, or pending approval, kick them back to login/waiting screen
+    if (!token || !user || user.role !== 'manager' || user.status === 'Pending') {
       navigate('/');
     }
   }, [navigate]);
@@ -66,9 +68,33 @@ const ManagerDashboard = () => {
     const fetchData = async () => {
       try {
         setLoadingData(true);
-        const res = await axios.get('http://localhost:5000/api/payments/test/all');
+        const res = await axios.get('https://karan-e26t.onrender.com/api/payments/test/all');
         const payments = (res.data && res.data.data && res.data.data.payments) || [];
         const totalCollected = (res.data && res.data.data && res.data.data.stats && res.data.data.stats.totalCollected) || 0;
+
+        // Helper to resolve who actually collected the payment
+        const getCollectorName = (p) => {
+          const rawStaff = p.collectedStaff?.trim();
+          if (rawStaff && rawStaff.toLowerCase() !== 'unknown') {
+            return rawStaff;
+          }
+          return p.agent?.name || p.agent?.username || rawStaff || 'Staff';
+        };
+
+        // Helper to check if payment happened today
+        const isTodayPayment = (p) => {
+          if (!p) return false;
+          const today = new Date();
+          const checkDate = (dInput) => {
+            if (!dInput) return false;
+            const d = new Date(dInput);
+            return !isNaN(d.getTime()) &&
+              d.getFullYear() === today.getFullYear() &&
+              d.getMonth() === today.getMonth() &&
+              d.getDate() === today.getDate();
+          };
+          return checkDate(p.paymentDate) || checkDate(p.createdAt);
+        };
 
         // Recent activities (most recent 4)
         const recent = payments.slice(0, 4).map(p => ({
@@ -77,27 +103,31 @@ const ManagerDashboard = () => {
           amount: `₹${(p.amount || 0).toLocaleString()}`,
           time: new Date(p.paymentDate).toLocaleString('en-IN'),
           status: 'PAID',
-          by: p.collectedStaff || p.agent?.name || 'Staff'
+          by: getCollectorName(p)
         }));
 
-        // Staff totals (group by agent or collectedStaff)
+        // Staff totals (group by actual collector staff)
         const staffMap = {};
         payments.forEach(p => {
-          const name = p.agent?.name || p.collectedStaff || 'Unknown';
+          const name = getCollectorName(p);
           staffMap[name] = (staffMap[name] || 0) + (p.amount || 0);
         });
         const staffArr = Object.keys(staffMap).map(name => ({ name, collected: staffMap[name] }));
 
-        // Today's collections grouped by staff
-        const todayStart = new Date();
-        todayStart.setHours(0, 0, 0, 0);
-        const todayPayments = payments.filter(p => new Date(p.paymentDate) >= todayStart);
+        // Today's collections grouped by collector staff
+        const todayPayments = payments.filter(isTodayPayment);
         const todayMap = {};
         todayPayments.forEach(p => {
-          const name = p.agent?.name || p.collectedStaff || 'Unknown';
-          todayMap[name] = (todayMap[name] || 0) + (p.amount || 0);
+          const name = getCollectorName(p);
+          const role = p.collectedByRole || (name.toLowerCase().includes('manager') ? 'manager' : (name.toLowerCase().includes('admin') ? 'admin' : 'agent'));
+          if (!todayMap[name]) {
+            todayMap[name] = { name, today: 0, role };
+          } else if (p.collectedByRole) {
+            todayMap[name].role = p.collectedByRole;
+          }
+          todayMap[name].today += (p.amount || 0);
         });
-        const todayArr = Object.keys(todayMap).map(name => ({ name, today: todayMap[name] }));
+        const todayArr = Object.values(todayMap);
 
         // Monthly collection (last 12 months)
         const monthBuckets = {};
@@ -115,7 +145,7 @@ const ManagerDashboard = () => {
         const monthly = Object.keys(monthBuckets).map(m => ({ month: m, amount: monthBuckets[m] }));
 
         // Fetch clients to compute total lent amount and outstanding dues
-        const clientsRes = await axios.get('http://localhost:5000/api/clients/test/all');
+        const clientsRes = await axios.get('https://karan-e26t.onrender.com/api/clients/test/all');
         const clients = (clientsRes.data && clientsRes.data.clients) || [];
         const totalLent = clients.reduce((sum, c) => sum + (Number(c.amount) || 0), 0);
         const totalPending = clients.reduce((sum, c) => sum + (Number(c.pending) || 0), 0);
@@ -128,8 +158,8 @@ const ManagerDashboard = () => {
             if (pendingTotal <= 0) return 0;
             if (!client.loan_start_date) return 0;
 
-            // For ₹5000 loans, default to 575
-            if (Number(client.amount) === 5000) return 575;
+            // For ₹5000 (payable ₹6900) loans, default to 575
+            if (Number(client.amount) === 5000 || Number(client.amount) === 6900 || Number(client.pending) === 5000 || Number(client.pending) === 6900) return 575;
 
             const start = new Date(client.loan_start_date);
             const defaultWeeks = 12;
@@ -191,12 +221,29 @@ const ManagerDashboard = () => {
         setTodayCollectedTotal(collectedTodayTotal);
         setTodayPendingTotal(pendingToday);
 
+        // Compute active and inactive client counts (12 week completed = inactive)
+        let activeClientsCount = 0;
+        let inactiveClientsCount = 0;
+        clients.forEach(c => {
+          const weeklyAmount = c.weekly_amount && Number(c.weekly_amount) > 0 ? Number(c.weekly_amount) : 575;
+          const totalWeeks = c.total_weeks && Number(c.total_weeks) > 0 ? Number(c.total_weeks) : 12;
+          const received = Number(c.received || 0);
+          const weeksPaid = weeklyAmount > 0 ? Math.min(Math.floor(received / weeklyAmount), totalWeeks) : 0;
+
+          if (weeksPaid >= totalWeeks) {
+            inactiveClientsCount++;
+          } else {
+            activeClientsCount++;
+          }
+        });
+
         // Stats cards
         const statsArr = [
-          { title: 'TOTAL LENT AMOUNT', value: `₹${totalLent.toLocaleString()}`, change: '', color: 'text-green-600', icon: '💰' },
-          { title: 'AMOUNT COLLECTED', value: `₹${totalCollected.toLocaleString()}`, change: '', color: 'text-green-600', icon: '💳' },
-          { title: 'OUTSTANDING DUES', value: `₹${totalPending.toLocaleString()}`, change: '', color: 'text-red-600', icon: '📋' },
-          { title: 'ACTIVE CLIENTS', value: `${totalClients}`, change: '', color: 'text-green-600', icon: '👤' }
+          { title: 'TOTAL LENT AMOUNT', value: `₹${totalLent.toLocaleString()}`, subtitle: 'Total Loans', color: 'text-emerald-600', icon: '💰' },
+          { title: 'AMOUNT COLLECTED', value: `₹${totalCollected.toLocaleString()}`, subtitle: 'Total Paid', color: 'text-emerald-600', icon: '💳' },
+          { title: 'OUTSTANDING DUES', value: `₹${totalPending.toLocaleString()}`, subtitle: 'Pending', color: 'text-red-600', icon: '📋' },
+          { title: 'ACTIVE CLIENTS', value: `${activeClientsCount}`, subtitle: 'Ongoing Dues', color: 'text-emerald-600', icon: '👤', path: '/Manager/Acive-Inactive' },
+          { title: 'INACTIVE CLIENTS', value: `${inactiveClientsCount}`, subtitle: '12 Wk Done', color: 'text-purple-600', icon: '🏆', path: '/Manager/Acive-Inactive' }
         ];
 
         setRecentActivities(recent);
@@ -212,7 +259,29 @@ const ManagerDashboard = () => {
     };
 
     fetchData();
+
+    // Poll for pending agent login requests (Manager)
+    const checkPendingApprovals = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        if (!token) return;
+        const res = await axios.get('https://karan-e26t.onrender.com/api/agents/pending-approvals', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (res.data && res.data.success) {
+          setPendingApprovalCount(res.data.pendingCount || 0);
+          setPendingAgentsList(res.data.pendingAgents || []);
+        }
+      } catch (e) {
+        // silent fail
+      }
+    };
+
+    checkPendingApprovals();
+    const pollId = setInterval(checkPendingApprovals, 4000);
+    return () => clearInterval(pollId);
   }, []);
+
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="sticky top-0 z-50">
@@ -221,6 +290,32 @@ const ManagerDashboard = () => {
 
       {/* Main content – full width with reasonable padding */}
       <div className="w-full px-4 sm:px-6 lg:px-10 xl:px-16 py-8 lg:py-10">
+        {/* Real-time Agent Approval Alert Banner */}
+        {pendingApprovalCount > 0 && (
+          <div className="mb-6 bg-gradient-to-r from-amber-500 via-amber-600 to-amber-700 text-white p-4 sm:p-5 rounded-2xl shadow-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border border-amber-300 animate-fadeIn">
+            <div className="flex items-center gap-3.5">
+              <div className="w-11 h-11 rounded-2xl bg-white/20 flex items-center justify-center font-bold text-xl shrink-0 shadow-inner">
+                🔔
+              </div>
+              <div>
+                <h4 className="font-black text-base text-white leading-tight">
+                  {pendingApprovalCount} Agent{pendingApprovalCount > 1 ? 's' : ''} Awaiting Login Approval
+                </h4>
+                <p className="text-amber-100 text-xs mt-0.5 font-medium">
+                  {pendingAgentsList[0]?.name || pendingAgentsList[0]?.username || 'An agent'} attempted to log in. Please review and grant system access.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => navigate('/Manager/ManagerAproval')}
+              className="bg-white text-amber-900 font-extrabold text-xs px-5 py-2.5 rounded-xl hover:bg-amber-50 active:scale-95 transition shadow-md shrink-0 flex items-center gap-1.5"
+            >
+              <span>Review & Approve Now</span>
+              <span>→</span>
+            </button>
+          </div>
+        )}
+
         {/* Header */}
         <div className="bg-gradient-to-r from-[#16423C] to-[#1f5a52] rounded-xl shadow-lg p-6 mb-8 md:mb-10">
           <h1 className="text-3xl md:text-4xl font-bold text-white tracking-tight">
@@ -232,21 +327,23 @@ const ManagerDashboard = () => {
         </div>
 
         {/* Stats Cards */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-5 md:gap-6 mb-10 lg:mb-12">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 md:gap-5 mb-10 lg:mb-12">
           {stats.map((stat, i) => (
             <div
               key={i}
-              className="bg-white rounded-xl shadow-md border border-gray-200 p-6 hover:shadow-lg transition-shadow duration-200"
+              onClick={() => stat.path && navigate(stat.path)}
+              className={`bg-white rounded-xl shadow-md border border-gray-200 p-5 hover:shadow-lg transition-all duration-200 ${stat.path ? 'cursor-pointer hover:border-emerald-500 hover:-translate-y-0.5' : ''
+                }`}
             >
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-4xl">{stat.icon}</span>
-                <span className={`text-base font-semibold ${stat.color}`}>
-                  {stat.change}
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-3xl">{stat.icon}</span>
+                <span className={`text-[11px] font-extrabold px-2 py-0.5 rounded-full ${stat.title.includes('INACTIVE') ? 'bg-purple-100 text-purple-700' : 'bg-emerald-100 text-emerald-700'
+                  }`}>
+                  {stat.subtitle || 'System'}
                 </span>
               </div>
-              <p className="text-3xl font-extrabold text-gray-900 mb-1">{stat.value}</p>
-              <p className="text-sm text-gray-600 font-medium">{stat.title}</p>
-              <p className="text-xs text-gray-500 mt-1">from last month</p>
+              <p className="text-2xl md:text-3xl font-extrabold text-gray-900 mb-1">{stat.value}</p>
+              <p className="text-xs font-bold text-gray-600 uppercase tracking-wider">{stat.title}</p>
             </div>
           ))}
         </div>
@@ -377,7 +474,10 @@ const ManagerDashboard = () => {
             {/* Filtered Staff Data */}
             {(() => {
               const filtered = searchStaff
-                ? todayData.filter(d => d.name.toLowerCase().includes(searchStaff.toLowerCase()))
+                ? todayData.filter(d =>
+                  d.name.toLowerCase().includes(searchStaff.toLowerCase()) ||
+                  (d.role && d.role.toLowerCase().includes(searchStaff.toLowerCase()))
+                )
                 : todayData;
 
               const topPerformer = filtered.length > 0 ? filtered.reduce((max, current) => current.today > max.today ? current : max) : null;
@@ -410,8 +510,8 @@ const ManagerDashboard = () => {
                         <div
                           key={item.name}
                           className={`flex items-center justify-between p-3 rounded-lg border-2 transition-all ${idx === 0
-                              ? 'bg-gradient-to-r from-amber-100 to-orange-100 border-amber-300 shadow-md'
-                              : 'bg-white border-gray-200 hover:border-emerald-300'
+                            ? 'bg-gradient-to-r from-amber-100 to-orange-100 border-amber-300 shadow-md'
+                            : 'bg-white border-gray-200 hover:border-emerald-300'
                             }`}
                         >
                           <div className="flex items-center gap-3 flex-1">
@@ -419,7 +519,19 @@ const ManagerDashboard = () => {
                               }`}>
                               {idx + 1}
                             </div>
-                            <span className="font-medium text-sm text-gray-900">{item.name}</span>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-medium text-sm text-gray-900">{item.name}</span>
+                              {item.role && (
+                                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider ${item.role === 'manager'
+                                  ? 'bg-blue-100 text-blue-700'
+                                  : item.role === 'admin'
+                                    ? 'bg-purple-100 text-purple-700'
+                                    : 'bg-emerald-100 text-emerald-700'
+                                  }`}>
+                                  {item.role}
+                                </span>
+                              )}
+                            </div>
                           </div>
                           <span className={`text-sm font-bold ${idx === 0 ? 'text-amber-700' : 'text-emerald-700'}`}>
                             ₹{item.today.toLocaleString()}

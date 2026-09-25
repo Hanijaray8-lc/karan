@@ -61,7 +61,7 @@ export default function ClientManage() {
       let storedUser = null;
       try {
         storedUser = JSON.parse(localStorage.getItem('user')) || null;
-      } catch {}
+      } catch { }
 
       // If the logged-in user is an agent, fetch only that agent (agents list is admin/manager only)
       if (storedUser && (storedUser.role || '').toLowerCase() === 'agent') {
@@ -298,29 +298,28 @@ export default function ClientManage() {
                   (agent.phone || '').includes(agentSearchTerm)
                 )
                 .map(agent => (
-                <button
-                  key={agent._id}
-                  onClick={() => handleAgentSelect(agent)}
-                  className={`w-full text-left px-4 py-3 border-b border-gray-100 transition-all duration-200 flex items-center gap-3 ${
-                    selectedAgent?._id === agent._id
+                  <button
+                    key={agent._id}
+                    onClick={() => handleAgentSelect(agent)}
+                    className={`w-full text-left px-4 py-3 border-b border-gray-100 transition-all duration-200 flex items-center gap-3 ${selectedAgent?._id === agent._id
                       ? 'bg-[#16423C]/10 border-l-4 border-[#16423C]'
                       : 'hover:bg-gray-50'
-                  }`}
-                >
-                  <div className="w-10 h-10 rounded-full bg-[#16423C]/20 flex items-center justify-center flex-shrink-0">
-                    <Users size={18} className="text-[#16423C]" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-gray-800 truncate">
-                      {agent.name || agent.username}
-                    </p>
-                    <p className="text-xs text-gray-500">{agent.phone || 'N/A'}</p>
-                  </div>
-                  {selectedAgent?._id === agent._id && (
-                    <ChevronDown size={18} className="text-[#16423C] flex-shrink-0" />
-                  )}
-                </button>
-              ))}
+                      }`}
+                  >
+                    <div className="w-10 h-10 rounded-full bg-[#16423C]/20 flex items-center justify-center flex-shrink-0">
+                      <Users size={18} className="text-[#16423C]" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-semibold text-gray-800 truncate">
+                        {agent.name || agent.username}
+                      </p>
+                      <p className="text-xs text-gray-500">{agent.phone || 'N/A'}</p>
+                    </div>
+                    {selectedAgent?._id === agent._id && (
+                      <ChevronDown size={18} className="text-[#16423C] flex-shrink-0" />
+                    )}
+                  </button>
+                ))}
             </div>
           </div>
 
@@ -390,10 +389,11 @@ export default function ClientManage() {
                               </button>
                               <button
                                 onClick={() => openTransferModal(client)}
-                                className="p-2 bg-green-100 text-green-700 rounded-lg hover:bg-green-200 transition-colors"
+                                className="flex items-center gap-2 px-3 py-1 bg-green-100 text-green-700 rounded-lg hover:bg-green-200 transition-colors"
                                 title="Transfer Client"
                               >
                                 <ArrowRight size={16} />
+                                <span className="text-sm font-medium">Move</span>
                               </button>
                             </div>
                           </div>
@@ -413,12 +413,11 @@ export default function ClientManage() {
                             </div>
                             <div>
                               <p className="text-gray-500">Status</p>
-                              <p className={`font-semibold text-xs ${
-                                client.status === 'paid' ? 'text-green-600' :
+                              <p className={`font-semibold text-xs ${client.status === 'paid' ? 'text-green-600' :
                                 client.status === 'partial' ? 'text-yellow-600' : 'text-red-600'
-                              }`}>
+                                }`}>
                                 {client.status === 'paid' ? '✅ Paid' :
-                                 client.status === 'partial' ? '⚠️ Partial' : '⏳ Pending'}
+                                  client.status === 'partial' ? '⚠️ Partial' : '⏳ Pending'}
                               </p>
                             </div>
                           </div>
@@ -451,7 +450,7 @@ export default function ClientManage() {
           <div className="bg-white/95 backdrop-blur-lg rounded-2xl shadow-2xl w-full max-w-md border border-white/50">
             <div className="bg-gradient-to-r from-[#16423C] to-[#1f5a52] text-white px-6 py-4 flex items-center justify-between">
               <h2 className="text-xl font-bold flex items-center gap-2">
-                <ArrowRight size={22} /> Transfer Client
+                <Plus size={22} /> Transfer Client
               </h2>
               <button
                 onClick={() => setShowTransferModal(false)}
@@ -603,9 +602,8 @@ export default function ClientManage() {
 
       {/* Popup Notification */}
       {popup.visible && (
-        <div className={`fixed top-5 right-5 z-[1001] p-4 rounded-lg shadow-xl flex items-start gap-3 max-w-xs font-medium ${
-          popup.type === 'success' ? 'bg-green-600 text-white border border-green-700' : 'bg-red-600 text-white border border-red-700'
-        }`}>
+        <div className={`fixed top-5 right-5 z-[1001] p-4 rounded-lg shadow-xl flex items-start gap-3 max-w-xs font-medium ${popup.type === 'success' ? 'bg-green-600 text-white border border-green-700' : 'bg-red-600 text-white border border-red-700'
+          }`}>
           <div className="flex-shrink-0 mt-0.5">
             {popup.type === 'success' ? <CheckCircle size={28} /> : <AlertCircle size={28} />}
           </div>

@@ -66,6 +66,7 @@ export default function MClientManagement() {
     pending: '5000',
     loan_start_date: '',
     loan_end_date: '',
+    distributed_amount_date: '',
     status: 'pending',
     notes: '',
     nominee_name: '',
@@ -92,7 +93,7 @@ export default function MClientManagement() {
   const fetchAgents = async () => {
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch('http://localhost:5000/api/agents', {
+      const res = await fetch('https://karan-e26t.onrender.com/api/agents', {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (res.status === 401) return handleAuthError();
@@ -171,21 +172,19 @@ export default function MClientManagement() {
   // When editing an existing client we prefer the stored value so the user
   // sees the server's current schedule instead of a fresh computation.
   const calculateWeeklyAmount = () => {
-    // if we're editing an existing client, return the stored weekly amount
-    // unless the admin is trying to explicitly change it elsewhere (there's
-    // no UI for that at the moment)
-    if (currentClient && currentClient.weekly_amount != null) {
+    const pending = Number(parseFloat(formData.pending) || 0);
+    const amount = Number(parseFloat(formData.amount) || 0);
+
+    // Special rule: for ₹5000 (payable ₹6900) loans, use fixed weekly amount ₹575
+    if (amount === 5000 || amount === 6900 || pending === 5000 || pending === 6900) return 575;
+
+    if (currentClient && currentClient.weekly_amount != null && currentClient.weekly_amount > 0) {
       return Number(currentClient.weekly_amount);
     }
 
-    const pending = Number(parseFloat(formData.pending) || 0);
-    const amount = Number(parseFloat(formData.amount) || 0);
     const totalWeeks = calculateTotalWeeks();
 
     if (totalWeeks <= 0) return 0;
-
-    // Special rule: for ₹5000 loans, use fixed weekly amount ₹575 (non-dividable)
-    if (amount === 5000) return 575;
 
     // Default: divide pending across weeks, rounded to 2 decimals
     return Number((pending / totalWeeks).toFixed(2));
@@ -195,7 +194,7 @@ export default function MClientManagement() {
     try {
       setLoading(true);
       const token = localStorage.getItem('token');
-      const res = await fetch('http://localhost:5000/api/clients', {
+      const res = await fetch('https://karan-e26t.onrender.com/api/clients', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
@@ -232,8 +231,11 @@ export default function MClientManagement() {
       setLoading(true);
       const token = localStorage.getItem('token');
 
-      const amount = parseFloat(formData.amount) || 5000;
+      let amount = parseFloat(formData.amount) || 5000;
       const received = parseFloat(formData.received) || 0;
+      if (amount === 5000) {
+        amount = 6900;
+      }
 
       const formattedData = {
         name: formData.name,
@@ -247,6 +249,7 @@ export default function MClientManagement() {
         received: received,
         loan_start_date: formData.loan_start_date,
         loan_end_date: formData.loan_end_date,
+        distributed_amount_date: formData.distributed_amount_date || '',
         status: formData.status,
         notes: formData.notes || '',
         nominee_name: formData.nominee_name || '',
@@ -259,7 +262,7 @@ export default function MClientManagement() {
       formattedData.total_weeks = calculateTotalWeeks();
       formattedData.weekly_amount = calculateWeeklyAmount();
 
-      const res = await fetch('http://localhost:5000/api/clients', {
+      const res = await fetch('https://karan-e26t.onrender.com/api/clients', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -360,6 +363,7 @@ export default function MClientManagement() {
       pending: '5000',
       loan_start_date: '',
       loan_end_date: '',
+      distributed_amount_date: '',
       status: 'pending',
       notes: '',
       nominee_name: '',
@@ -374,8 +378,11 @@ export default function MClientManagement() {
     if (!currentClient?._id) return;
 
     try {
-      const amount = parseFloat(formData.amount) || 0;
+      let amount = parseFloat(formData.amount) || 0;
       const received = parseFloat(formData.received) || 0;
+      if (amount === 5000) {
+        amount = 6900;
+      }
       const pending = amount - received;
 
       const updatedData = {
@@ -390,7 +397,7 @@ export default function MClientManagement() {
       updatedData.total_weeks = calculateTotalWeeks();
       updatedData.weekly_amount = calculateWeeklyAmount();
 
-      const res = await fetch(`http://localhost:5000/api/clients/${currentClient._id}`, {
+      const res = await fetch(`https://karan-e26t.onrender.com/api/clients/${currentClient._id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -415,7 +422,7 @@ export default function MClientManagement() {
   const handleDeleteClient = async () => {
     if (!currentClient?._id) return;
     try {
-      const res = await fetch(`http://localhost:5000/api/clients/${currentClient._id}`, {
+      const res = await fetch(`https://karan-e26t.onrender.com/api/clients/${currentClient._id}`, {
         method: 'DELETE',
         headers: {
           Authorization: `Bearer ${localStorage.getItem('token')}`,
@@ -451,18 +458,19 @@ export default function MClientManagement() {
       landmark: client.landmark || '',
       address: client.address || '',
       district: client.district || '',
-      amount: client.amount?.toString() || '5000',
+      amount: client.amount === 6900 ? '5000' : client.amount?.toString() || '5000',
       received: client.received?.toString() || '0',
-      pending: client.pending?.toString() || '5000',
+      pending: client.amount === 6900 ? (5000 - (client.received || 0)).toString() : client.pending?.toString() || '5000',
       loan_start_date: client.loan_start_date?.split('T')[0] || '',
       loan_end_date: client.loan_end_date?.split('T')[0] || '',
+      distributed_amount_date: client.distributed_amount_date?.split('T')[0] || client.distributed_date?.split('T')[0] || '',
       status: client.status || 'pending',
       notes: client.notes || '',
       nominee_name: client.nominee_name || '',
       nominee_husband: client.nominee_husband || '',
       nominee_address: client.nominee_address || '',
       nominee_phone: client.nominee_phone || '',
-        assigned_agent: client.assigned_agent || '',
+      assigned_agent: client.assigned_agent || '',
     });
     setShowEditModal(true);
   };
@@ -641,6 +649,7 @@ export default function MClientManagement() {
                   <th className="px-3 py-4 font-semibold whitespace-nowrap">Pending</th>
                   <th className="px-3 py-4 font-semibold whitespace-nowrap">Weekly Amount</th>
                   {/* <th className="px-3 py-4 font-semibold whitespace-nowrap">Weeks</th> */}
+                  <th className="px-3 py-4 font-semibold whitespace-nowrap">Distribute Date</th>
                   <th className="px-3 py-4 font-semibold whitespace-nowrap">Start Date</th>
                   <th className="px-3 py-4 font-semibold whitespace-nowrap">End Date</th>
                   <th className="px-3 py-4 font-semibold whitespace-nowrap">Status</th>
@@ -684,11 +693,12 @@ export default function MClientManagement() {
                       <td className="px-3 py-4 whitespace-nowrap">{client.landmark || '—'}</td>
                       <td className="px-3 py-4 whitespace-nowrap">{client.address || '—'}</td>
                       <td className="px-3 py-4 whitespace-nowrap">{client.district || '—'}</td>
-                      <td className="px-3 py-4 whitespace-nowrap font-medium">₹{(client.amount || 0).toLocaleString('en-IN')}</td>
+                      <td className="px-3 py-4 whitespace-nowrap font-medium">₹{(client.amount === 6900 ? 5000 : (client.amount || 0)).toLocaleString('en-IN')}</td>
                       <td className="px-3 py-4 whitespace-nowrap text-green-700 font-medium">₹{(client.received || 0).toLocaleString('en-IN')}</td>
                       <td className="px-3 py-4 whitespace-nowrap text-red-700 font-medium">₹{(client.pending || 0).toLocaleString('en-IN')}</td>
-                      <td className="px-3 py-4 whitespace-nowrap font-medium text-blue-600">₹{(client.weekly_amount || 0).toFixed(2)}</td>
+                      <td className="px-3 py-4 whitespace-nowrap font-medium text-blue-600">₹{(client.amount === 5000 || client.amount === 6900 || client.weekly_amount === 627.27 || !client.weekly_amount ? 575 : client.weekly_amount).toFixed(2)}</td>
                       {/* <td className="px-3 py-4 whitespace-nowrap font-medium">{client.total_weeks || 0} weeks</td> */}
+                      <td className="px-3 py-4 whitespace-nowrap">{formatDate(client.distributed_amount_date || client.distributed_date)}</td>
                       <td className="px-3 py-4 whitespace-nowrap">{formatDate(client.loan_start_date)}</td>
                       <td className="px-3 py-4 whitespace-nowrap">{formatDate(client.loan_end_date)}</td>
                       <td className="px-3 py-4 whitespace-nowrap">
@@ -776,7 +786,7 @@ export default function MClientManagement() {
 
                   />
                 </div>
-               <div>
+                <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Assigned Agent</label>
                   <select
                     name="assigned_agent"
@@ -933,7 +943,19 @@ export default function MClientManagement() {
               </div>
 
               {/* Date Fields */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Distribute Amount Date
+                  </label>
+                  <input
+                    name="distributed_amount_date"
+                    type="date"
+                    value={formData.distributed_amount_date}
+                    onChange={handleInputChange}
+                    className="w-full px-4 py-2 border-2 border-[#16423C]/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#16423C]"
+                  />
+                </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
                     Loan Start Date <span className="text-red-600">*</span>
@@ -1114,7 +1136,7 @@ export default function MClientManagement() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Husband Name *</label>
-                  <input name="husband_name" value={formData.husband_name} onChange={handleInputChange} className="w-full px-4 py-2 border-2 border-[#16423C]/20 rounded-lg"  />
+                  <input name="husband_name" value={formData.husband_name} onChange={handleInputChange} className="w-full px-4 py-2 border-2 border-[#16423C]/20 rounded-lg" />
                 </div>
               </div>
 
@@ -1195,7 +1217,17 @@ export default function MClientManagement() {
                 </select>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Distribute Amount Date</label>
+                  <input
+                    name="distributed_amount_date"
+                    type="date"
+                    value={formData.distributed_amount_date}
+                    onChange={handleInputChange}
+                    className="w-full px-4 py-2 border-2 border-[#16423C]/20 rounded-lg"
+                  />
+                </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Start Date *</label>
                   <input name="loan_start_date" type="date" value={formData.loan_start_date} onChange={handleInputChange} className="w-full px-4 py-2 border-2 border-[#16423C]/20 rounded-lg" required />

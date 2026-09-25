@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'; // Added for redirection
 import AdminNavbar from './AdminNavbar';
 import axios from 'axios';
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+const API_URL = process.env.REACT_APP_API_URL || 'https://karan-e26t.onrender.com/api';
 
 const AgentManagement = () => {
   const navigate = useNavigate();
@@ -13,6 +13,8 @@ const AgentManagement = () => {
   const [stats, setStats] = useState({
     totalAgents: 0,
     activeAgents: 0,
+    pendingAgents: 0,
+    inactiveAgents: 0,
     onLeaveAgents: 0,
     newThisMonth: 0
   });
@@ -26,7 +28,7 @@ const AgentManagement = () => {
     email: '',
     phone: '',
     password: '',
-    status: 'Active',
+    status: 'Pending',
     profilePhoto: null
   });
   const [tempPassword, setTempPassword] = useState('');
@@ -80,6 +82,8 @@ const AgentManagement = () => {
         setStats({
           totalAgents: response.data.stats?.totalAgents || 0,
           activeAgents: response.data.stats?.activeAgents || 0,
+          pendingAgents: response.data.stats?.pendingAgents || 0,
+          inactiveAgents: response.data.stats?.inactiveAgents || 0,
           onLeaveAgents: response.data.stats?.onLeaveAgents || 0,
           newThisMonth: response.data.stats?.newThisMonth || 0
         });
@@ -204,6 +208,25 @@ const AgentManagement = () => {
     }
   };
 
+  const handleApproveAgent = async (agentId, agentName) => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await axios.put(`${API_URL}/agents/${agentId}/approve`, {}, {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      });
+
+      if (response.data && response.data.success) {
+        showPopup('success', 'Approved', `Agent ${agentName} approved successfully!`);
+        await fetchAgents();
+      }
+    } catch (error) {
+      console.error('Approve error:', error);
+      showPopup('error', 'Error', error.response?.data?.message || 'Failed to approve agent');
+    }
+  };
+
   const handleEdit = (agent) => {
     setSelectedAgent(agent);
     setFormData({
@@ -212,7 +235,7 @@ const AgentManagement = () => {
       email: agent.email,
       phone: agent.phone || '',
       password: agent.password || '',
-      status: agent.status,
+      status: agent.status || 'Pending',
       profilePhoto: null
     });
     setIsModalOpen(true);
@@ -226,7 +249,7 @@ const AgentManagement = () => {
       email: '',
       phone: '',
       password: '',
-      status: 'Active',
+      status: 'Pending',
       profilePhoto: null
     });
   };
@@ -240,8 +263,8 @@ const AgentManagement = () => {
   const statCards = [
     { title: 'TOTAL AGENTS', value: stats.totalAgents, color: 'text-emerald-700' },
     { title: 'ACTIVE AGENTS', value: stats.activeAgents, color: 'text-emerald-700' },
+    { title: 'PENDING APPROVAL', value: stats.pendingAgents || 0, color: 'text-amber-600' },
     { title: 'NEW THIS MONTH', value: stats.newThisMonth, color: 'text-emerald-700' },
-    // { title: 'ON LEAVE', value: stats.onLeaveAgents, color: 'text-red-600' },
   ];
 
   return (
@@ -254,12 +277,12 @@ const AgentManagement = () => {
           <div className="absolute inset-0 bg-black/20"></div>
           <div className="relative px-6 py-8 text-white">
             <h1 className="text-3xl md:text-4xl font-bold tracking-tight">Agent Management</h1>
-            <p className="text-emerald-100 mt-2 text-lg">Manage your agents and their accounts</p>
+            <p className="text-emerald-100 mt-2 text-lg">Manage your agents and approve their accounts</p>
           </div>
         </header>
 
-        {/* Stats Cards - Green Theme - Single Row on Mobile */}
-        <div className="grid grid-cols-3 gap-2 sm:gap-4 lg:gap-5 mb-10">
+        {/* Stats Cards - Green Theme */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-4 lg:gap-5 mb-10">
           {statCards.map((stat, i) => (
             <div key={i} className="backdrop-blur-lg bg-white/80 rounded-xl shadow border border-white/20 p-2 sm:p-4 lg:p-6 text-center hover:shadow-md transition-all duration-300 flex flex-col justify-center">
               <p className={`text-lg sm:text-2xl lg:text-4xl font-bold ${stat.color}`}>{loading ? '...' : stat.value}</p>
@@ -334,14 +357,34 @@ const AgentManagement = () => {
                       <td className="px-6 py-5 whitespace-nowrap text-sm text-gray-600">{agent.email}</td>
                       <td className="px-6 py-5 whitespace-nowrap text-sm text-gray-600">{agent.phone || 'N/A'}</td>
                       <td className="px-6 py-5 whitespace-nowrap">
-                        <span className={`px-3 py-1 inline-flex text-xs font-semibold rounded-full ${agent.status === 'Active' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
-                          {agent.status}
-                        </span>
+                        {agent.status === 'Active' ? (
+                          <span className="px-3 py-1 inline-flex text-xs font-semibold rounded-full bg-green-100 text-green-800 border border-green-200">
+                            Active
+                          </span>
+                        ) : agent.status === 'Pending' ? (
+                          <span className="px-3 py-1 inline-flex items-center gap-1.5 text-xs font-semibold rounded-full bg-amber-100 text-amber-800 border border-amber-300 shadow-sm">
+                            <span className="w-2 h-2 rounded-full bg-amber-500 animate-ping"></span>
+                            Waiting Approval
+                          </span>
+                        ) : (
+                          <span className="px-3 py-1 inline-flex text-xs font-semibold rounded-full bg-red-100 text-red-800 border border-red-200">
+                            {agent.status || 'Inactive'}
+                          </span>
+                        )}
                       </td>
                       <td className="px-6 py-5 whitespace-nowrap text-sm font-medium">
-                        <div className="flex gap-3">
-                          <button onClick={() => handleEdit(agent)} className="text-emerald-600 hover:text-emerald-800">✏️</button>
-                          <button onClick={() => handleDelete(agent._id)} className="text-red-600 hover:text-red-800">🗑️</button>
+                        <div className="flex items-center gap-2">
+                          {agent.status === 'Pending' && (
+                            <button
+                              onClick={() => handleApproveAgent(agent._id, agent.name || agent.username)}
+                              className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 shadow-md hover:shadow-lg transition-all"
+                              title="Approve Agent Account"
+                            >
+                              <CheckCircle size={14} /> Approve
+                            </button>
+                          )}
+                          <button onClick={() => handleEdit(agent)} className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg transition" title="Edit">✏️</button>
+                          <button onClick={() => handleDelete(agent._id)} className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition" title="Delete">🗑️</button>
                         </div>
                       </td>
                     </tr>
@@ -424,10 +467,14 @@ const AgentManagement = () => {
                     </div>
                   )}
 
-                  <select name="status" value={formData.status} onChange={handleInputChange} className="w-full px-4 py-2 border rounded-lg">
-                    <option value="Active">Active</option>
-                    <option value="Inactive">Inactive</option>
-                  </select>
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 mb-1">Status</label>
+                    <select name="status" value={formData.status} onChange={handleInputChange} className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-emerald-500">
+                      <option value="Pending">Pending (Waiting for Approval)</option>
+                      <option value="Active">Active</option>
+                      <option value="Inactive">Inactive</option>
+                    </select>
+                  </div>
                 </div>
               </div>
 

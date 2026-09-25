@@ -1,9 +1,11 @@
 // MClientDetails.js
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { CheckCircle, XCircle } from 'lucide-react';
 import ManagerNavbar from './ManagerNavbar';
 
 const MClientDetails = () => {
+  const [searchParams] = useSearchParams();
   const [selectedClientId, setSelectedClientId] = useState(null);
   const [activeTab, setActiveTab] = useState('overview');
   const [clients, setClients] = useState([]);
@@ -13,11 +15,139 @@ const MClientDetails = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedDistrict, setSelectedDistrict] = useState('');
   const [selectedLandmark, setSelectedLandmark] = useState('');
+  const [selectedStatus, setSelectedStatus] = useState('');
+  const [weekDateFilter, setWeekDateFilter] = useState(''); // date filter: show clients due in that date's week
   const [districts, setDistricts] = useState([]);
   const [landmarks, setLandmarks] = useState([]);
+  const FORCED_WEEKLY = 575;
   const [duePayments, setDuePayments] = useState([]);
-  const [paymentsLoading, setPaymentsLoading] = useState(false);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+
+  // Reloan modal & history state
+  const [showReloanModal, setShowReloanModal] = useState(false);
+  const [reloanStartDate, setReloanStartDate] = useState(new Date().toISOString().split('T')[0]);
+  const [reloanDispensary, setReloanDispensary] = useState('');
+  const [reloanLandmark, setReloanLandmark] = useState('');
+  const [reloanDistrict, setReloanDistrict] = useState('');
+  const [reloanLoading, setReloanLoading] = useState(false);
+  const [historyViewMode, setHistoryViewMode] = useState('current');
+
+  // Foreclose modal state
+  const [showForecloseModal, setShowForecloseModal] = useState(false);
+  const [forecloseGivenAmount, setForecloseGivenAmount] = useState('');
+  const [forecloseLoading, setForecloseLoading] = useState(false);
+
+  // Cancel Foreclose modal state
+  const [showCancelForecloseModal, setShowCancelForecloseModal] = useState(false);
+  const [cancelForecloseLoading, setCancelForecloseLoading] = useState(false);
+
+  // Custom Pay modal state
+  const [showPayModal, setShowPayModal] = useState(false);
+  const [payAmount, setPayAmount] = useState('');
+  const [payMethod, setPayMethod] = useState('cash');
+  const [payDate, setPayDate] = useState(new Date().toISOString().split('T')[0]);
+  const [payNotes, setPayNotes] = useState('');
+  const [payLoading, setPayLoading] = useState(false);
+  const [payErrorMsg, setPayErrorMsg] = useState('');
+
+  const openPayModal = () => {
+    if (!selectedClient) return;
+    const totalAmount = selectedClient.amount || 6900;
+    const currentReceived = selectedClient.received || 0;
+    const balAmount = selectedClient.pending !== undefined && selectedClient.pending !== null
+      ? selectedClient.pending
+      : Math.max(0, totalAmount - currentReceived);
+
+    setPayAmount(balAmount > 0 ? String(balAmount) : '');
+    setPayMethod('cash');
+    setPayDate(new Date().toISOString().split('T')[0]);
+    setPayNotes('Payment from Client Details');
+    setPayErrorMsg('');
+    setShowPayModal(true);
+  };
+
+  const handleConfirmPayDue = async () => {
+    if (!selectedClient) return;
+    const numAmount = Number(payAmount);
+    const totalAmount = selectedClient.amount || 6900;
+    const currentReceived = selectedClient.received || 0;
+    const balAmount = selectedClient.pending !== undefined && selectedClient.pending !== null
+      ? selectedClient.pending
+      : Math.max(0, totalAmount - currentReceived);
+
+    if (!numAmount || numAmount <= 0) {
+      setPayErrorMsg('Please enter a valid amount greater than 0.');
+      return;
+    }
+
+    if (numAmount > balAmount) {
+      setPayErrorMsg(`Payment amount (₹${numAmount.toLocaleString('en-IN')}) cannot exceed outstanding balance (₹${balAmount.toLocaleString('en-IN')}).`);
+      return;
+    }
+
+    try {
+      setPayLoading(true);
+      setPayErrorMsg('');
+      const token = localStorage.getItem('token');
+
+      const response = await fetch('https://karan-e26t.onrender.com/api/payments/process', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({
+          clientId: selectedClient._id,
+          amount: numAmount,
+          paymentMethod: payMethod,
+          notes: payNotes,
+          paymentDate: payDate
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || 'Failed to process payment');
+      }
+
+      const updatedClientData = data.data?.client;
+      const newReceived = currentReceived + numAmount;
+      const newPending = Math.max(0, totalAmount - newReceived);
+      const newStatus = newPending <= 0 ? 'paid' : (newReceived > 0 ? 'partial' : selectedClient.status);
+
+      const updatedClient = {
+        ...selectedClient,
+        received: updatedClientData?.received ?? newReceived,
+        pending: updatedClientData?.pending ?? newPending,
+        status: updatedClientData?.status ?? newStatus
+      };
+
+      setSelectedClient(updatedClient);
+      setClients(prev => prev.map(c => c._id === selectedClient._id ? updatedClient : c));
+
+      setRefreshTrigger(prev => prev + 1);
+      setShowPayModal(false);
+
+      // Dispatch event to sync with other components like MDailyDues
+      window.dispatchEvent(new CustomEvent('clientPaid', { detail: { clientId: selectedClient._id, amount: numAmount } }));
+
+      const isPaid = (updatedClientData?.pending ?? newPending) <= 0;
+      showPopup(
+        'success',
+        isPaid ? 'Loan Fully Paid' : 'Payment Recorded',
+        isPaid
+          ? `Payment of ₹${numAmount.toLocaleString('en-IN')} recorded. Loan is now marked as FULLY PAID!`
+          : `Payment of ₹${numAmount.toLocaleString('en-IN')} recorded successfully. Remaining balance: ₹${newPending.toLocaleString('en-IN')}.`
+      );
+
+    } catch (err) {
+      console.error('Error processing payment:', err);
+      setPayErrorMsg(err.message || 'Failed to process payment');
+    } finally {
+      setPayLoading(false);
+    }
+  };
 
   // Popup and confirmation state
   const [popup, setPopup] = useState({ visible: false, type: 'success', title: '', message: '' });
@@ -41,151 +171,149 @@ const MClientDetails = () => {
   }, []);
 
   // Fetch clients from API using manager-accessible endpoint
-  useEffect(() => {
-    const fetchClients = async () => {
-      try {
-        setLoading(true);
+  const fetchClients = useCallback(async (silent = false) => {
+    try {
+      if (!silent) setLoading(true);
 
-        // Use test endpoint (no auth required)
-        const response = await fetch('http://localhost:5000/api/clients/test/all', {
-          method: 'GET',
-          headers: {
-            'Content-Type': 'application/json',
-          }
-        });
-
-        if (!response.ok) {
-          throw new Error(`Failed to fetch clients (${response.status})`);
+      // Use test endpoint (no auth required)
+      const response = await fetch('https://karan-e26t.onrender.com/api/clients/test/all', {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
         }
+      });
 
-        const data = await response.json();
-        const clientsList = data.clients || [];
-        setClients(clientsList);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch clients (${response.status})`);
+      }
 
-        // Extract unique districts
-        const uniqueDistricts = [...new Set(clientsList.map(c => c.district))].filter(d => d).sort();
-        setDistricts(uniqueDistricts);
+      const data = await response.json();
+      const clientsList = data.clients || [];
+      setClients(clientsList);
 
-        setError(null);
-      } catch (err) {
-        console.error('Error fetching clients:', err);
-        setError(err.message);
-      } finally {
-        setLoading(false);
+      // Keep selectedClient in sync with fresh balances
+      setSelectedClient(prev => {
+        if (!prev) return prev;
+        const fresh = clientsList.find(c => String(c._id) === String(prev._id) || (prev.clientId && String(c.clientId) === String(prev.clientId)));
+        return fresh ? { ...prev, ...fresh } : prev;
+      });
+
+      // Check if a clientId was provided via URL query parameter
+      const targetId = searchParams.get('clientId');
+      if (targetId) {
+        const found = clientsList.find(c => String(c._id) === targetId || String(c.clientId) === targetId);
+        if (found) {
+          handleClientSelect(found);
+        }
+      }
+
+      // Extract unique districts
+      const uniqueDistricts = [...new Set(clientsList.map(c => c.district))].filter(d => d).sort();
+      setDistricts(uniqueDistricts);
+
+      // Extract unique landmarks from all clients
+      const uniqueLandmarks = [...new Set(clientsList.map(c => c.landmark?.trim()).filter(l => l))].sort();
+      setLandmarks(uniqueLandmarks);
+
+      setError(null);
+    } catch (err) {
+      console.error('Error fetching clients:', err);
+      if (!silent) setError(err.message);
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }, [searchParams]);
+
+  useEffect(() => {
+    fetchClients();
+  }, [fetchClients]);
+
+  // Listen for clientPaid event (e.g. from Daily Dues) to sync in real-time
+  useEffect(() => {
+    const handleClientPaid = (e) => {
+      fetchClients(true);
+      if (e.detail?.clientId && selectedClient && (String(selectedClient._id) === String(e.detail.clientId) || String(selectedClient.clientId) === String(e.detail.clientId))) {
+        setRefreshTrigger(prev => prev + 1);
       }
     };
-
-    fetchClients();
-  }, []);
+    window.addEventListener('clientPaid', handleClientPaid);
+    return () => window.removeEventListener('clientPaid', handleClientPaid);
+  }, [selectedClient, fetchClients]);
 
   // Update landmarks when district changes
   useEffect(() => {
     if (selectedDistrict) {
       const filteredByDistrict = clients.filter(c => c.district === selectedDistrict);
-      const uniqueLandmarks = [...new Set(filteredByDistrict.map(c => c.landmark))].filter(l => l).sort();
+      const uniqueLandmarks = [...new Set(filteredByDistrict.map(c => c.landmark?.trim()).filter(l => l))].sort();
       setLandmarks(uniqueLandmarks);
       setSelectedLandmark('');
     } else {
-      setLandmarks([]);
+      // Show all landmarks from all districts when no district is selected
+      const allLandmarks = [...new Set(clients.map(c => c.landmark?.trim()).filter(l => l))].sort();
+      setLandmarks(allLandmarks);
       setSelectedLandmark('');
     }
   }, [selectedDistrict, clients]);
 
-  // Filter clients based on search, district, and landmark
+  // Helper: check if a client has a weekly due that falls exactly on the selected date
+  const isClientDueOnDate = (client, selectedDateStr) => {
+    if (!client.loan_start_date) return false;
+    const loanStart = new Date(client.loan_start_date);
+    loanStart.setHours(0, 0, 0, 0);
+    const loanEnd = client.loan_end_date ? new Date(client.loan_end_date) : null;
+    const totalWeeks = client.total_weeks || 12;
+
+    for (let w = 0; w < totalWeeks; w++) {
+      const dueDate = new Date(loanStart);
+      dueDate.setDate(loanStart.getDate() + w * 7);
+      const dueDateStr = dueDate.toISOString().split('T')[0];
+
+      // Stop if past loan end date
+      if (loanEnd && dueDate > loanEnd) break;
+
+      if (dueDateStr === selectedDateStr) return true;
+    }
+    return false;
+  };
+
+  // Helper to check if a client's loan end date has arrived or passed and has unpaid balance
+  const isClientOverdue = (client) => {
+    if (!client || !client.loan_end_date) return false;
+    const balance = Number(client.pending ?? ((client.amount || 6900) - (client.received || 0)));
+    if (balance <= 0) return false;
+    const end = new Date(client.loan_end_date);
+    if (isNaN(end.getTime())) return false;
+    const today = new Date();
+    today.setHours(23, 59, 59, 999);
+    return end <= today;
+  };
+
+  // Filter clients based on search, district, landmark, status, and optional weekly-due date
   const filteredClients = clients.filter(client => {
     const matchesSearch = (client.name && client.name.toLowerCase().includes(searchQuery.toLowerCase())) ||
       (client.phone && client.phone.toLowerCase().includes(searchQuery.toLowerCase())) ||
       (client.clientId && client.clientId.toLowerCase().includes(searchQuery.toLowerCase()));
 
     const matchesDistrict = !selectedDistrict || client.district === selectedDistrict;
-    const matchesLandmark = !selectedLandmark || client.landmark === selectedLandmark;
+    const matchesLandmark = !selectedLandmark || (client.landmark?.trim() === selectedLandmark);
 
-    return matchesSearch && matchesDistrict && matchesLandmark;
-  });
-
-  // Fetch payment history from backend
-  const fetchPaymentHistory = async (clientId, clientData = null) => {
-    if (!clientId) return [];
-
-    try {
-      setPaymentsLoading(true);
-      const token = localStorage.getItem('token');
-      const res = await fetch(`http://localhost:5000/api/payments/history?clientId=${clientId}`, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        }
-      });
-
-      if (!res.ok) {
-        console.error('Failed to fetch payment history');
-        return [];
-      }
-
-      const data = await res.json();
-      const paymentRecords = data.data?.payments || [];
-
-      // Use clientData if provided, otherwise find client from clients list
-      const clientForCalculation = clientData || clients.find(c => c._id === clientId);
-
-      if (!clientForCalculation) {
-        console.error('No client data available for payment calculation');
-        return [];
-      }
-
-      // Transform payment records to table format
-      const transformedPayments = paymentRecords.map((payment, index) => {
-        // Calculate week number based on loan start date
-        let weekNumber = index + 1; // Default to index-based
-        if (clientForCalculation.loan_start_date) {
-          const loanStartDate = new Date(clientForCalculation.loan_start_date);
-          const paymentDate = new Date(payment.paymentDate || payment.createdAt || payment.date);
-          const diffTime = Math.abs(paymentDate - loanStartDate);
-          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-          weekNumber = Math.ceil(diffDays / 7) || index + 1;
-        }
-
-        // Calculate next due date (7 days after payment)
-        const paymentDate = new Date(payment.paymentDate || payment.createdAt || payment.date);
-        const nextDueDate = new Date(paymentDate);
-        nextDueDate.setDate(nextDueDate.getDate() + 7);
-
-        return {
-          id: index + 1,
-          month: new Date(payment.paymentDate || payment.createdAt || payment.date).toLocaleString('en-IN', { month: 'short' }),
-          year: new Date(payment.paymentDate || payment.createdAt || payment.date).getFullYear(),
-          dueAmount: payment.amount || payment.dueAmount || 0,
-          status: 'paid',
-          paidDate: new Date(payment.paymentDate || payment.createdAt || payment.date).toISOString().split('T')[0],
-          paymentId: payment._id,
-          fullDate: payment.paymentDate || payment.createdAt || payment.date,
-          weekNumber: weekNumber,
-          nextDueDate: nextDueDate.toISOString(),
-          collectedBy: payment.collectedStaff || payment.agent?.name || payment.agent?.username || payment.collectedBy || 'N/A',
-          agentId: payment.agent?._id || payment.agentId,
-          paymentMethod: payment.paymentMethod || 'Cash',
-          transactionId: payment.transactionId || 'N/A'
-        };
-      });
-
-      // Sort payments by date (oldest first to maintain week order)
-      transformedPayments.sort((a, b) => new Date(a.fullDate) - new Date(b.fullDate));
-
-      // Re-assign sequential IDs based on sorted order
-      transformedPayments.forEach((payment, index) => {
-        payment.id = index + 1;
-        payment.weekNumber = index + 1; // Ensure week numbers are sequential
-      });
-
-      return transformedPayments;
-    } catch (error) {
-      console.error('Error fetching payment history:', error);
-      return [];
-    } finally {
-      setPaymentsLoading(false);
+    let matchesStatus = true;
+    if (selectedStatus === 'pending') {
+      matchesStatus = client.status === 'pending' || isClientOverdue(client);
+    } else if (selectedStatus === 'partial') {
+      matchesStatus = client.status === 'partial' && !isClientOverdue(client);
+    } else if (selectedStatus === 'paid') {
+      matchesStatus = client.status === 'paid';
     }
-  };
+
+    // Date filter: show only clients whose weekly due date is exactly the selected date
+    let matchesWeekDate = true;
+    if (weekDateFilter) {
+      matchesWeekDate = isClientDueOnDate(client, weekDateFilter);
+    }
+
+    return matchesSearch && matchesDistrict && matchesLandmark && matchesStatus && matchesWeekDate;
+  });
 
   // Open cancel confirmation modal
   const openCancelConfirmModal = (paymentId, paymentAmount, clientId) => {
@@ -200,8 +328,8 @@ const MClientDetails = () => {
     try {
       const token = localStorage.getItem('token');
 
-      // Call backend to delete payment and update client
-      const res = await fetch(`http://localhost:5000/api/payments/${paymentId}`, {
+      // Call backend to delete payment
+      const res = await fetch(`https://karan-e26t.onrender.com/api/payments/${paymentId}`, {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
@@ -216,7 +344,7 @@ const MClientDetails = () => {
         throw new Error(data.message || 'Failed to cancel payment');
       }
 
-      // Clear localStorage markers so buttons re-enable in MDailyDues
+      // Clear localStorage markers so buttons re-enable in DailyDues / MDailyDues
       try {
         localStorage.removeItem(`markedPaid_${clientId}`);
         localStorage.removeItem(`pushedNotPaid_${clientId}`);
@@ -224,37 +352,56 @@ const MClientDetails = () => {
         console.error('Error clearing localStorage:', e);
       }
 
+      // Look up client details
+      const client = clients.find(c => c._id === clientId);
+      if (!client) {
+        throw new Error('Client details not found. Please refresh the page and try again.');
+      }
+
+      const clientLoanStart = client.loan_start_date;
+      const clientLoanEnd = client.loan_end_date;
+
       // Extend loan_end_date by 7 days since payment is cancelled
-      const currentEndDate = selectedClient.loan_end_date ? new Date(selectedClient.loan_end_date) : null;
+      const currentEndDate = clientLoanEnd ? new Date(clientLoanEnd) : null;
       let newEndDate;
+
       if (currentEndDate && !isNaN(currentEndDate)) {
         newEndDate = new Date(currentEndDate.getTime() + 7 * 24 * 60 * 60 * 1000);
-      } else if (selectedClient.loan_start_date) {
-        const start = new Date(selectedClient.loan_start_date);
+      } else if (clientLoanStart) {
+        const start = new Date(clientLoanStart);
         newEndDate = new Date(start.getTime() + 13 * 7 * 24 * 60 * 60 * 1000); // push to 13 weeks
+      } else {
+        throw new Error('Unable to calculate new loan end date');
       }
 
       // Update client loan_end_date in backend
-      if (newEndDate) {
-        const updateRes = await fetch(`http://localhost:5000/api/clients/${clientId}`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify({ loan_end_date: newEndDate.toISOString() })
-        });
+      const updateRes = await fetch(`https://karan-e26t.onrender.com/api/clients/${clientId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ loan_end_date: newEndDate.toISOString() })
+      });
 
-        if (!updateRes.ok) {
-          console.error('Failed to update loan end date');
-        }
+      const updateData = await updateRes.json();
+
+      if (!updateRes.ok) {
+        throw new Error(updateData.message || 'Failed to update loan end date');
       }
+
+      console.log('Successfully extended loan end date');
+
+      // Dispatch custom event to notify other components about the change
+      window.dispatchEvent(new CustomEvent('clientUpdated', {
+        detail: { clientId, loan_end_date: newEndDate.toISOString() }
+      }));
 
       // Update client in local state preserving weekly_amount and bumping total_weeks
       const updatedReceived = (selectedClient.received || 0) - paymentAmount;
       const updatedPending = (selectedClient.amount || 0) - updatedReceived;
 
-      // compute new total weeks locally to keep UI in sync (loan_end_date extended by 7 days)
+      // compute new total weeks locally to keep UI in sync
       let updatedTotalWeeks = selectedClient.total_weeks || 0;
       if (newEndDate && selectedClient.loan_start_date) {
         const start = new Date(selectedClient.loan_start_date);
@@ -269,51 +416,626 @@ const MClientDetails = () => {
         pending: updatedPending,
         loan_end_date: newEndDate ? newEndDate.toISOString() : prev.loan_end_date,
         total_weeks: updatedTotalWeeks,
-        // leave weekly_amount unchanged so amount isn't redistributed
         status: updatedPending <= 0 ? 'paid' : updatedReceived > 0 ? 'partial' : 'pending'
       }));
 
       // Also update in clients list
       setClients(prevClients =>
-        prevClients.map(client =>
-          client._id === clientId
+        prevClients.map(c =>
+          c._id === clientId
             ? {
-              ...client,
+              ...c,
               received: updatedReceived,
               pending: updatedPending,
-              loan_end_date: newEndDate ? newEndDate.toISOString() : client.loan_end_date,
+              loan_end_date: newEndDate ? newEndDate.toISOString() : c.loan_end_date,
               total_weeks: updatedTotalWeeks,
-              // keep weekly_amount the same
               status: updatedPending <= 0 ? 'paid' : updatedReceived > 0 ? 'partial' : 'pending'
             }
-            : client
+            : c
         )
       );
 
-      // Refresh payment history
-      const updatedPayments = await fetchPaymentHistory(clientId, selectedClient);
-      setDuePayments(updatedPayments);
+      // Refresh payments list
       setRefreshTrigger(prev => prev + 1);
 
       // Show success message
-      showPopup('success', 'Cancelled', 'Payment cancelled successfully. Due extended by 1 week and buttons re-enabled');
+      showPopup('success', 'Cancelled', 'Payment cancelled successfully. Due extended by 1 week.');
     } catch (error) {
       console.error('Error cancelling payment:', error);
       showPopup('error', 'Error', `Failed to cancel payment: ${error.message}`);
     }
   };
 
-  // Update due payments when selected client changes or tab changes to dues
+  // Generate 12 weekly due payments based on loan dates (12 weeks)
+  const generateDuePayments = (client) => {
+    if (!client) return [];
+
+    const payments = [];
+    const startDate = new Date(client.loan_start_date);
+    const endDate = new Date(client.loan_end_date);
+
+    let currentDate = new Date(startDate);
+    let paymentId = 1;
+
+    // weekly amount (default to FORCED_WEEKLY 575)
+    const weeklyDue = (client.weekly_amount && Number(client.weekly_amount) > 0) ? Number(client.weekly_amount) : FORCED_WEEKLY;
+
+    while (currentDate <= endDate && paymentId <= 12) {
+      // Calculate week start and end (ISO date strings) to match payments
+      const weekStart = new Date(currentDate);
+      const weekEnd = new Date(currentDate);
+      weekEnd.setDate(weekEnd.getDate() + 7);
+
+      payments.push({
+        id: paymentId,
+        month: `Week ${paymentId} - ${currentDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`,
+        dueAmount: weeklyDue,
+        displayAmount: weeklyDue,
+        paidAmount: 0,
+        status: 'pending',
+        paidDate: null,
+        weekStartISO: weekStart.toISOString().split('T')[0],
+        weekEndISO: weekEnd.toISOString().split('T')[0],
+        collectedStaff: null,
+        collectedByRole: null
+      });
+
+      // move to next week
+      currentDate.setDate(currentDate.getDate() + 7);
+      paymentId++;
+    }
+
+    // Fill remaining weeks if less than 12 using startDate as anchor
+    while (paymentId <= 12) {
+      const weekStart = new Date(startDate);
+      weekStart.setDate(startDate.getDate() + (paymentId - 1) * 7);
+
+      const weekEnd = new Date(weekStart);
+      weekEnd.setDate(weekEnd.getDate() + 7);
+
+      payments.push({
+        id: paymentId,
+        month: `Week ${paymentId} - ${weekStart.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`,
+        dueAmount: weeklyDue,
+        displayAmount: weeklyDue,
+        paidAmount: 0,
+        status: 'pending',
+        paidDate: null,
+        weekStartISO: weekStart.toISOString().split('T')[0],
+        weekEndISO: weekEnd.toISOString().split('T')[0],
+        collectedStaff: null,
+        collectedByRole: null
+      });
+      paymentId++;
+    }
+
+    return payments;
+  };
+
+  // Apply rolling weekly adjustment logic to schedule of weeks
+  // (e.g. week 1 pays 600 -> week 2 due becomes 550; week 2 pays 550 -> week 3 returns to 575)
+  const applyWeeklyAdjustment = (weeks, client) => {
+    if (!weeks || weeks.length === 0) return [];
+    const baseWeekly = (client?.weekly_amount && Number(client.weekly_amount) > 0)
+      ? Number(client.weekly_amount)
+      : FORCED_WEEKLY;
+
+    let runningDue = baseWeekly;
+
+    return weeks.map(week => {
+      const w = { ...week };
+      w.dueAmount = runningDue;
+
+      if (w.status === 'paid') {
+        if (w.isForeclosed) {
+          w.displayAmount = w.dueAmount;
+        } else {
+          const actualPaid = (w.paidAmount !== undefined && w.paidAmount > 0) ? w.paidAmount : w.dueAmount;
+          w.paidAmount = actualPaid;
+          w.displayAmount = actualPaid;
+          const diff = actualPaid - runningDue;
+          runningDue = Math.max(0, baseWeekly - diff);
+        }
+      } else {
+        w.displayAmount = runningDue;
+        runningDue = baseWeekly;
+      }
+      return w;
+    });
+  };
+
+  // Helper to compute active/current weekly due amount for selected client
+  const getCurrentWeeklyDue = (client, paymentsList) => {
+    if (!client) return FORCED_WEEKLY;
+    const pendingCap = Number(client.pending ?? ((client.amount || 6900) - (client.received || 0)));
+    if (pendingCap <= 0) return 0;
+
+    const firstPending = (paymentsList || []).find(p => p.status === 'pending');
+    if (firstPending && firstPending.dueAmount !== undefined) {
+      return Math.min(pendingCap, firstPending.dueAmount);
+    }
+    const baseWeekly = (client?.weekly_amount && Number(client.weekly_amount) > 0)
+      ? Number(client.weekly_amount)
+      : FORCED_WEEKLY;
+    return Math.min(pendingCap, baseWeekly);
+  };
+
+  // Update due payments when selected client changes
   useEffect(() => {
-    const loadPayments = async () => {
-      if (selectedClient && selectedClient._id && activeTab === 'dues') {
-        const payments = await fetchPaymentHistory(selectedClient._id, selectedClient);
-        setDuePayments(payments);
+    const attachPayments = async () => {
+      if (!selectedClient) return;
+
+      // Generate the base schedule
+      const baseWeeks = generateDuePayments(selectedClient);
+
+      try {
+        const token = localStorage.getItem('token');
+        let res = await fetch(`https://karan-e26t.onrender.com/api/payments/client/${selectedClient._id}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+
+        let paymentHistory = [];
+
+        if (!res.ok) {
+          const historyRes = await fetch(`https://karan-e26t.onrender.com/api/payments/history?clientId=${selectedClient._id}`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+
+          if (!historyRes.ok) {
+            setDuePayments(applyWeeklyAdjustment(baseWeeks, selectedClient));
+            return;
+          }
+
+          const historyJson = await historyRes.json();
+          paymentHistory = (historyJson.data && historyJson.data.payments) || historyJson.payments || [];
+        } else {
+          const json = await res.json();
+          paymentHistory = (json.data && json.data.paymentHistory) || json.paymentHistory || [];
+        }
+
+        // Deduplicate paymentHistory by _id
+        const uniquePayments = [];
+        const seenIds = new Set();
+        paymentHistory.forEach(p => {
+          const pId = p._id || p.id;
+          if (pId) {
+            if (!seenIds.has(pId)) {
+              seenIds.add(pId);
+              uniquePayments.push(p);
+            }
+          } else {
+            uniquePayments.push(p);
+          }
+        });
+
+        // Sort chronologically (oldest payment first)
+        uniquePayments.sort((a, b) => {
+          const dateA = new Date(a.paymentDate || a.createdAt || a.date || 0);
+          const dateB = new Date(b.paymentDate || b.createdAt || b.date || 0);
+          return dateA - dateB;
+        });
+
+        const merged = baseWeeks.map(week => ({ ...week }));
+        const usedPaymentIds = new Set();
+
+        // Pass 1: Exact date range match (pISO between weekStartISO and weekEndISO)
+        uniquePayments.forEach(p => {
+          const pDateStr = p.paymentDate || p.createdAt || p.date;
+          if (!pDateStr) return;
+          const pISO = new Date(pDateStr).toISOString().split('T')[0];
+          const pId = p._id || p.id || pDateStr;
+
+          const idx = merged.findIndex(w => pISO >= w.weekStartISO && pISO < w.weekEndISO && w.status !== 'paid');
+          if (idx !== -1) {
+            merged[idx].status = 'paid';
+            merged[idx].paidDate = pISO;
+            merged[idx].paidAmount = (merged[idx].paidAmount || 0) + Number(p.amount || 0);
+            merged[idx].collectedStaff = p.collectedStaff || (p.agent && (p.agent.name || p.agent.username)) || 'Unknown';
+            merged[idx].collectedByRole = p.collectedByRole || (p.agent ? 'agent' : null);
+            merged[idx].paymentId = p._id || p.id;
+            usedPaymentIds.add(pId);
+          }
+        });
+
+        // Pass 2: Unassigned payments fill remaining unpaid weeks only if payment date >= week start date
+        uniquePayments.forEach(p => {
+          const pDateStr = p.paymentDate || p.createdAt || p.date;
+          if (!pDateStr) return;
+          const pId = p._id || p.id || pDateStr;
+          if (usedPaymentIds.has(pId)) return;
+
+          const pISO = new Date(pDateStr).toISOString().split('T')[0];
+          const idx = merged.findIndex(w => w.status !== 'paid' && w.weekStartISO <= pISO);
+          if (idx !== -1) {
+            merged[idx].status = 'paid';
+            merged[idx].paidDate = pISO;
+            merged[idx].paidAmount = (merged[idx].paidAmount || 0) + Number(p.amount || 0);
+            merged[idx].collectedStaff = p.collectedStaff || (p.agent && (p.agent.name || p.agent.username)) || 'Unknown';
+            merged[idx].collectedByRole = p.collectedByRole || (p.agent ? 'agent' : null);
+            merged[idx].paymentId = p._id || p.id;
+            usedPaymentIds.add(pId);
+          }
+        });
+
+        // Pass 3: If loan was foreclosed, mark remaining unpaid weeks as paid
+        const currentLoanStart = selectedClient?.loan_start_date ? new Date(selectedClient.loan_start_date) : null;
+        const currentForeclosurePayment = uniquePayments.find(p => {
+          const method = (p.paymentMethod || '').toLowerCase();
+          const notes = (p.notes || '').toLowerCase();
+          const isFp = method === 'foreclosure' || notes.includes('foreclose');
+          if (!isFp) return false;
+          if (!currentLoanStart) return true;
+          const pDate = new Date(p.paymentDate || p.createdAt || p.date || 0);
+          return pDate >= currentLoanStart;
+        });
+
+        const isForeclosed = !!currentForeclosurePayment || (
+          selectedClient?.status === 'paid' &&
+          ((selectedClient?.notes || '').toLowerCase().includes('foreclose') || selectedClient?.isForeclosed === true)
+        );
+
+        if (isForeclosed) {
+          const fp = currentForeclosurePayment;
+          const fpDateStr = fp ? (fp.paymentDate || fp.createdAt || fp.date) : (selectedClient?.updatedAt || new Date().toISOString());
+          const fpISO = fpDateStr ? new Date(fpDateStr).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
+          const fpStaff = fp ? (fp.collectedStaff || (fp.agent && (fp.agent.name || fp.agent.username)) || 'Foreclosed') : 'Foreclosed';
+          const fpRole = fp ? (fp.collectedByRole || (fp.agent ? 'agent' : null)) : null;
+          const fpId = fp ? (fp._id || fp.id) : null;
+
+          merged.forEach(week => {
+            if (week.status !== 'paid') {
+              week.status = 'paid';
+              week.paidDate = fpISO;
+              week.collectedStaff = fpStaff;
+              week.collectedByRole = fpRole;
+              week.paymentId = fpId;
+              week.isForeclosed = true;
+            } else if (fpId && week.paymentId === fpId) {
+              week.isForeclosed = true;
+            }
+          });
+        }
+
+        setDuePayments(applyWeeklyAdjustment(merged, selectedClient));
+      } catch (err) {
+        console.error('Error fetching client payments:', err);
+        setDuePayments(applyWeeklyAdjustment(baseWeeks, selectedClient));
       }
     };
 
-    loadPayments();
-  }, [selectedClient?._id, activeTab, refreshTrigger]); // Added refreshTrigger dependency
+    attachPayments();
+  }, [selectedClient, refreshTrigger]);
+
+  const openReloanModal = () => {
+    const todayStr = new Date().toISOString().split('T')[0];
+    setReloanStartDate(todayStr);
+    setReloanDispensary(selectedClient?.dispensary ? selectedClient.dispensary.split('T')[0] : '');
+    // Pre-fill new landmark and district with the client's current values
+    setReloanLandmark(selectedClient?.landmark?.trim() || '');
+    setReloanDistrict(selectedClient?.district?.trim() || '');
+    setShowReloanModal(true);
+  };
+
+  const openForecloseModal = () => {
+    if (!selectedClient) return;
+    const totalLoanFull = selectedClient.amount || 6900;
+    const currentReceived = selectedClient.received || 0;
+    const balAmount = selectedClient.pending !== undefined && selectedClient.pending !== null
+      ? selectedClient.pending
+      : Math.max(0, totalLoanFull - currentReceived);
+    setForecloseGivenAmount(balAmount.toString());
+    setShowForecloseModal(true);
+  };
+
+  const handleConfirmForeclose = async () => {
+    if (!selectedClient) return;
+    const totalLoanAmount = selectedClient.amount || 6900;
+    const currentReceived = selectedClient.received || 0;
+    const balAmount = selectedClient.pending !== undefined && selectedClient.pending !== null
+      ? selectedClient.pending
+      : Math.max(0, totalLoanAmount - currentReceived);
+    const givenNum = Number(forecloseGivenAmount || 0);
+
+    if (givenNum !== balAmount) {
+      showPopup('error', 'Mismatch', 'Given amount must match total balance amount to foreclose.');
+      return;
+    }
+
+    try {
+      setForecloseLoading(true);
+      const token = localStorage.getItem('token');
+
+      // 1. Process payment for foreclosure balance
+      let paymentSuccess = false;
+      if (givenNum > 0) {
+        try {
+          const payRes = await fetch('https://karan-e26t.onrender.com/api/payments/process', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+            },
+            body: JSON.stringify({
+              clientId: selectedClient._id,
+              amount: givenNum,
+              paymentMethod: 'Foreclosure',
+              notes: 'Loan Foreclosure Payment',
+              paymentDate: new Date().toISOString()
+            })
+          });
+          if (payRes.ok) {
+            paymentSuccess = true;
+          } else {
+            const errData = await payRes.json().catch(() => ({}));
+            console.error('Payment process error during foreclosure:', errData);
+          }
+        } catch (e) {
+          console.warn('Payment process endpoint error, falling back to client update:', e);
+        }
+      }
+
+      // 2. Always update client status to paid and pending to 0
+      const updateRes = await fetch(`https://karan-e26t.onrender.com/api/clients/${selectedClient._id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({
+          received: totalLoanAmount,
+          pending: 0,
+          status: 'paid',
+          notes: 'Loan Foreclosed'
+        })
+      });
+
+      if (!updateRes.ok && !paymentSuccess) {
+        const data = await updateRes.json().catch(() => ({}));
+        throw new Error(data.message || 'Failed to foreclose loan');
+      }
+
+      try {
+        localStorage.removeItem(`markedPaid_${selectedClient._id}`);
+        localStorage.removeItem(`pushedNotPaid_${selectedClient._id}`);
+      } catch (e) {
+        console.error('Error clearing localStorage:', e);
+      }
+
+      const updatedClient = {
+        ...selectedClient,
+        received: totalLoanAmount,
+        pending: 0,
+        status: 'paid',
+        notes: 'Loan Foreclosed',
+        isForeclosed: true
+      };
+
+      setSelectedClient(updatedClient);
+      setClients(prev => prev.map(c => c._id === selectedClient._id ? updatedClient : c));
+
+      // Immediately mark all unpaid weeks as paid in duePayments state
+      const nowISO = new Date().toISOString().split('T')[0];
+      const user = JSON.parse(localStorage.getItem('user') || '{}');
+      const staffName = user?.name || user?.username || 'Foreclosed';
+      const staffRole = user?.role || 'manager';
+
+      setDuePayments(prev => prev.map(w => {
+        if (w.status !== 'paid') {
+          return {
+            ...w,
+            status: 'paid',
+            paidDate: nowISO,
+            collectedStaff: staffName,
+            collectedByRole: staffRole,
+            isForeclosed: true
+          };
+        }
+        return w;
+      }));
+
+      // Dispatch global events so Payment History and other components update immediately
+      window.dispatchEvent(new CustomEvent('paymentRecorded', {
+        detail: {
+          clientId: selectedClient._id,
+          amount: givenNum,
+          paymentMethod: 'Foreclosure',
+          paymentDate: new Date().toISOString()
+        }
+      }));
+      window.dispatchEvent(new CustomEvent('clientUpdated', {
+        detail: { clientId: selectedClient._id, status: 'paid' }
+      }));
+
+      setRefreshTrigger(prev => prev + 1);
+      setShowForecloseModal(false);
+      showPopup('success', 'Loan Foreclosed', 'Loan has been foreclosed and marked as fully paid.');
+    } catch (error) {
+      console.error('Error foreclosing loan:', error);
+      showPopup('error', 'Foreclose Failed', error.message || 'Failed to foreclose loan');
+    } finally {
+      setForecloseLoading(false);
+    }
+  };
+
+  const openCancelForecloseModal = () => {
+    setShowCancelForecloseModal(true);
+  };
+
+  const handleConfirmCancelForeclose = async () => {
+    if (!selectedClient) return;
+    try {
+      setCancelForecloseLoading(true);
+      const token = localStorage.getItem('token');
+
+      // 1. Fetch current payment records to identify foreclosure payment(s)
+      const historyRes = await fetch(`https://karan-e26t.onrender.com/api/payments/history?clientId=${selectedClient._id}`, {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        }
+      });
+
+      let payments = [];
+      if (historyRes.ok) {
+        const historyData = await historyRes.json();
+        payments = historyData.data?.payments || [];
+      }
+
+      // Delete any foreclosure payment records
+      const foreclosurePayments = payments.filter(p => p.paymentMethod === 'Foreclosure');
+      for (const fp of foreclosurePayments) {
+        try {
+          await fetch(`https://karan-e26t.onrender.com/api/payments/${fp._id}`, {
+            method: 'DELETE',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+            },
+            body: JSON.stringify({ clientId: selectedClient._id, amount: fp.amount })
+          });
+        } catch (e) {
+          console.warn('Error deleting foreclosure payment record:', e);
+        }
+      }
+
+      // Calculate restored received from standard payments
+      const standardPayments = payments.filter(p => p.paymentMethod !== 'Foreclosure');
+      const restoredReceived = standardPayments.reduce((sum, p) => sum + (p.dueAmount || p.amount || 0), 0);
+      const totalAmount = selectedClient.amount || 6900;
+      const restoredPending = Math.max(0, totalAmount - restoredReceived);
+      const restoredStatus = restoredPending <= 0 ? 'paid' : (restoredReceived > 0 ? 'partial' : 'pending');
+
+      // Update client in backend
+      const updateRes = await fetch(`https://karan-e26t.onrender.com/api/clients/${selectedClient._id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({
+          received: restoredReceived,
+          pending: restoredPending,
+          status: restoredStatus,
+          notes: ''
+        })
+      });
+
+      if (!updateRes.ok) {
+        const errData = await updateRes.json().catch(() => ({}));
+        throw new Error(errData.message || 'Failed to cancel foreclosure');
+      }
+
+      const updatedClient = {
+        ...selectedClient,
+        received: restoredReceived,
+        pending: restoredPending,
+        status: restoredStatus,
+        notes: '',
+        isForeclosed: false
+      };
+
+      setSelectedClient(updatedClient);
+      setClients(prev => prev.map(c => c._id === selectedClient._id ? updatedClient : c));
+
+      // Revert foreclosed weeks in duePayments state
+      setDuePayments(prev => prev.map(w => w.isForeclosed ? {
+        ...w,
+        status: 'pending',
+        paidDate: null,
+        collectedStaff: null,
+        collectedByRole: null,
+        paymentId: null,
+        isForeclosed: false
+      } : w));
+
+      // Dispatch global events so Payment History updates
+      window.dispatchEvent(new CustomEvent('paymentRecorded', {
+        detail: { clientId: selectedClient._id }
+      }));
+      window.dispatchEvent(new CustomEvent('clientUpdated', {
+        detail: { clientId: selectedClient._id, status: restoredStatus }
+      }));
+
+      setRefreshTrigger(prev => prev + 1);
+      setShowCancelForecloseModal(false);
+      showPopup('success', 'Foreclosure Cancelled', 'Foreclosure has been cancelled. Loan reopened and week set restored.');
+    } catch (error) {
+      console.error('Error cancelling foreclosure:', error);
+      showPopup('error', 'Cancel Failed', error.message || 'Failed to cancel foreclosure');
+    } finally {
+      setCancelForecloseLoading(false);
+    }
+  };
+
+  const handleConfirmReloan = async () => {
+    if (!selectedClient || !reloanStartDate) return;
+    try {
+      setReloanLoading(true);
+      const token = localStorage.getItem('token');
+      const start = new Date(reloanStartDate);
+      const end = new Date(start.getTime() + 12 * 7 * 24 * 60 * 60 * 1000);
+      const loanAmount = selectedClient.amount || 6900;
+      const weeklyAmount = 575;
+
+      const payload = {
+        loan_start_date: start.toISOString(),
+        loan_end_date: end.toISOString(),
+        received: 0,
+        pending: loanAmount,
+        weekly_amount: weeklyAmount,
+        total_weeks: 12,
+        status: 'pending',
+        dispensary: reloanDispensary ? new Date(reloanDispensary).toISOString() : null,
+        // Update landmark and district for new loan cycle — used by DailyDues landmark filtering
+        ...(reloanLandmark ? { landmark: reloanLandmark } : {}),
+        ...(reloanDistrict ? { district: reloanDistrict } : {})
+      };
+
+      const res = await fetch(`https://karan-e26t.onrender.com/api/clients/${selectedClient._id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.message || 'Failed to submit reloan');
+      }
+
+      try {
+        localStorage.removeItem(`markedPaid_${selectedClient._id}`);
+        localStorage.removeItem(`pushedNotPaid_${selectedClient._id}`);
+      } catch (e) {
+        console.error('Error clearing localStorage:', e);
+      }
+
+      const updatedClient = {
+        ...selectedClient,
+        ...payload,
+        loan_start_date: start.toISOString(),
+        loan_end_date: end.toISOString(),
+        received: 0,
+        pending: loanAmount,
+        status: 'pending'
+      };
+
+      setSelectedClient(updatedClient);
+      setClients(prev => prev.map(c => c._id === selectedClient._id ? updatedClient : c));
+
+      setRefreshTrigger(prev => prev + 1);
+      setHistoryViewMode('current');
+      setShowReloanModal(false);
+      showPopup('success', 'Reloan Successful', 'New loan cycle has been started for this client.');
+    } catch (error) {
+      console.error('Error initiating reloan:', error);
+      showPopup('error', 'Reloan Failed', error.message || 'Failed to reloan client');
+    } finally {
+      setReloanLoading(false);
+    }
+  };
 
   const formatCurrency = (amount) => {
     return `₹${Number(amount || 0).toLocaleString('en-IN')}`;
@@ -339,20 +1061,27 @@ const MClientDetails = () => {
     });
   };
 
+  const capitalize = (s) => {
+    if (!s) return '';
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  };
+
   const getWeeklyDue = (client) => {
     if (!client) return 0;
+    const amount = Number(client.amount || 0);
+    const pending = Number(client.pending || 0);
+    if (amount === 5000 || amount === 6900 || pending === 5000 || pending === 6900) return 575;
+
     const wa = Number(client.weekly_amount || 0);
     if (wa > 0) return wa;
     const wd = Number(client.weekly_due || 0);
     if (wd > 0) return wd;
 
-    const pending = Number(client.pending || 0);
     const weeks = Number(client.total_weeks || 0);
     if (weeks > 0) {
       return Math.round((pending / weeks) * 100) / 100;
     }
 
-    if (client.amount === 5000) return 575;
     return (Number(client.amount) || 0) / 12;
   };
 
@@ -360,7 +1089,6 @@ const MClientDetails = () => {
   const handleClientSelect = (client) => {
     setSelectedClientId(client._id);
     setSelectedClient(client);
-    setDuePayments([]); // Clear previous payments
     setActiveTab('overview'); // Reset to overview tab
   };
 
@@ -368,7 +1096,6 @@ const MClientDetails = () => {
   const handleBack = () => {
     setSelectedClientId(null);
     setSelectedClient(null);
-    setDuePayments([]);
     setActiveTab('overview');
   };
 
@@ -422,8 +1149,7 @@ const MClientDetails = () => {
                     <select
                       value={selectedLandmark}
                       onChange={(e) => setSelectedLandmark(e.target.value)}
-                      disabled={!selectedDistrict}
-                      className="w-full px-3 py-2 rounded-lg border-2 border-[#16423C]/20 focus:outline-none focus:ring-2 focus:ring-[#16423C] bg-white cursor-pointer text-sm disabled:bg-gray-100 disabled:cursor-not-allowed"
+                      className="w-full px-3 py-2 rounded-lg border-2 border-[#16423C]/20 focus:outline-none focus:ring-2 focus:ring-[#16423C] bg-white cursor-pointer text-sm"
                     >
                       <option value="">All Landmarks</option>
                       {landmarks.map((landmark) => (
@@ -433,11 +1159,57 @@ const MClientDetails = () => {
                       ))}
                     </select>
                   </div>
+
+                  {/* Status Filter */}
+                  <div>
+                    <select
+                      value={selectedStatus}
+                      onChange={(e) => setSelectedStatus(e.target.value)}
+                      className="w-full px-3 py-2 rounded-lg border-2 border-[#16423C]/20 focus:outline-none focus:ring-2 focus:ring-[#16423C] bg-white cursor-pointer text-sm font-medium"
+                    >
+                      <option value="">All Status</option>
+                      <option value="pending">⏳ Pending (Unpaid / Overdue)</option>
+                      <option value="partial">⚠️ Partial</option>
+                      <option value="paid">✅ Paid</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Exact Due Date Filter */}
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <div className="flex items-center gap-1.5 flex-1 min-w-[220px]">
+                    <label className="text-xs font-semibold text-[#16423C] whitespace-nowrap flex items-center gap-1">
+                      <i className="fas fa-calendar-day text-[#6A9C89]"></i>
+                      Due Date:
+                    </label>
+                    <input
+                      type="date"
+                      value={weekDateFilter}
+                      onChange={(e) => setWeekDateFilter(e.target.value)}
+                      className="flex-1 px-2 py-1.5 rounded-lg border-2 border-[#16423C]/20 focus:outline-none focus:ring-2 focus:ring-[#16423C] text-xs bg-white cursor-pointer"
+                      title="Show only clients whose weekly due date falls exactly on this date"
+                    />
+                    {weekDateFilter && (
+                      <button
+                        onClick={() => setWeekDateFilter('')}
+                        className="text-xs text-red-500 hover:text-red-700 font-semibold px-1.5 py-1 rounded border border-red-200 hover:border-red-400 transition-colors whitespace-nowrap"
+                        title="Clear date filter"
+                      >
+                        ✕ Clear
+                      </button>
+                    )}
+                  </div>
+                  {weekDateFilter && (
+                    <span className="text-xs text-[#6A9C89] font-medium bg-emerald-50 border border-emerald-200 px-2 py-1 rounded-lg">
+                      Due on: {new Date(weekDateFilter).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                    </span>
+                  )}
                 </div>
 
                 <div className="mt-2 text-xs text-[#16423C]">
                   <i className="fas fa-list text-[#16423C] mr-1"></i>
                   Showing {filteredClients.length} of {clients.length} clients
+                  {weekDateFilter && <span className="ml-1 text-[#6A9C89] font-medium">(weekly due filter active)</span>}
                 </div>
               </div>
             </div>
@@ -475,11 +1247,15 @@ const MClientDetails = () => {
                       <h4 className="text-md font-bold text-[#16423C] mb-1 line-clamp-2 leading-tight">{client.name}</h4>
                       <p className="text-md text-gray-500 mb-1 truncate">ID: {client.clientId || 'N/A'}</p>
                       <p className="text-md text-gray-400 truncate">{client.phone}</p>
-                      <div className={`mt-2 text-xs px-2 py-1 rounded-full ${client.status === 'paid' ? 'bg-green-100 text-green-800' :
+                      <div className={`mt-2 text-xs px-2 py-1 rounded-full font-semibold ${client.status === 'paid' ? 'bg-green-100 text-green-800' :
+                        isClientOverdue(client) ? 'bg-red-100 text-red-800 font-bold' :
                           client.status === 'partial' ? 'bg-yellow-100 text-yellow-800' :
                             'bg-red-100 text-red-800'
                         }`}>
-                        {client.status || 'pending'}
+                        {client.status === 'paid' ? '✅ Paid' :
+                          isClientOverdue(client) ? '⏳ Pending (Overdue)' :
+                            client.status === 'partial' ? '⚠️ Partial' :
+                              '⏳ Pending'}
                       </div>
                     </div>
                   </div>
@@ -492,7 +1268,7 @@ const MClientDetails = () => {
               <div className="bg-white rounded-lg p-8 shadow text-center">
                 <i className="fas fa-search text-gray-300 text-3xl mb-3 block"></i>
                 <p className="text-gray-600 text-sm">
-                  {searchQuery || selectedDistrict || selectedLandmark
+                  {searchQuery || selectedDistrict || selectedLandmark || weekDateFilter
                     ? 'No clients found matching your filters'
                     : 'No clients found'}
                 </p>
@@ -533,14 +1309,55 @@ const MClientDetails = () => {
                       Client ID: {selectedClient.clientId || 'N/A'}
                     </p>
                   </div>
-                  <span className={`inline-block px-3 py-1 rounded text-base font-semibold text-white ${selectedClient.status === 'paid' ? 'bg-green-500' :
-                      selectedClient.status === 'partial' ? 'bg-amber-500' :
-                        'bg-red-500'
-                    }`}>
-                    {selectedClient.status === 'paid' ? '✅ Paid' :
-                      selectedClient.status === 'partial' ? '⚠️ Partial' :
-                        '⏳ Pending'}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    {selectedClient.status !== 'paid' && (selectedClient.pending > 0 || (selectedClient.amount || 6900) - (selectedClient.received || 0) > 0) && (
+                      <button
+                        onClick={openPayModal}
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-1.5 rounded-lg text-sm font-semibold transition-all shadow-sm flex items-center gap-1.5 active:scale-95 cursor-pointer"
+                        title="Collect / Process Custom Payment"
+                      >
+                        <i className="fas fa-money-bill-wave text-xs"></i>
+                        Pay Due
+                      </button>
+                    )}
+                    {selectedClient.status !== 'paid' ? (
+                      <button
+                        onClick={openForecloseModal}
+                        className="bg-amber-600 hover:bg-amber-700 text-white px-3.5 py-1.5 rounded-lg text-sm font-semibold transition-all shadow-sm flex items-center gap-1.5 active:scale-95 cursor-pointer"
+                        title="Foreclose Loan"
+                      >
+                        <i className="fas fa-hand-holding-dollar text-xs"></i>
+                        Foreclose
+                      </button>
+                    ) : (
+                      <button
+                        onClick={openCancelForecloseModal}
+                        className="bg-red-600 hover:bg-red-700 text-white px-3.5 py-1.5 rounded-lg text-sm font-semibold transition-all shadow-sm flex items-center gap-1.5 active:scale-95 cursor-pointer"
+                        title="Cancel Foreclosure and Reopen Loan"
+                      >
+                        <i className="fas fa-rotate-left text-xs"></i>
+                        Cancel Foreclose
+                      </button>
+                    )}
+                    <button
+                      onClick={openReloanModal}
+                      className="bg-[#16423C] hover:bg-[#1f5a52] text-white px-3.5 py-1.5 rounded-lg text-sm font-semibold transition-all shadow-sm flex items-center gap-1.5 active:scale-95 cursor-pointer"
+                      title="Start New Loan (Reloan)"
+                    >
+                      <i className="fas fa-rotate-right text-xs"></i>
+                      Reloan
+                    </button>
+                    <span className={`inline-block px-3 py-1 rounded text-base font-semibold text-white ${selectedClient.status === 'paid' ? 'bg-green-500' :
+                      isClientOverdue(selectedClient) ? 'bg-red-600' :
+                        selectedClient.status === 'partial' ? 'bg-amber-500' :
+                          'bg-red-500'
+                      }`}>
+                      {selectedClient.status === 'paid' ? '✅ Paid' :
+                        isClientOverdue(selectedClient) ? '⏳ Pending (Overdue)' :
+                          selectedClient.status === 'partial' ? '⚠️ Partial' :
+                            '⏳ Pending'}
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -550,8 +1367,8 @@ const MClientDetails = () => {
                 <button
                   onClick={() => setActiveTab('overview')}
                   className={`px-4 py-2 font-semibold text-base capitalize transition-all relative ${activeTab === 'overview'
-                      ? 'text-[#16423C] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-[#16423C]'
-                      : 'text-gray-500 hover:text-[#6A9C89]'
+                    ? 'text-[#16423C] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-[#16423C]'
+                    : 'text-gray-500 hover:text-[#6A9C89]'
                     }`}
                 >
                   Overview
@@ -559,11 +1376,11 @@ const MClientDetails = () => {
                 <button
                   onClick={() => setActiveTab('dues')}
                   className={`px-4 py-2 font-semibold text-base capitalize transition-all relative ${activeTab === 'dues'
-                      ? 'text-[#16423C] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-[#16423C]'
-                      : 'text-gray-500 hover:text-[#6A9C89]'
+                    ? 'text-[#16423C] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-[#16423C]'
+                    : 'text-gray-500 hover:text-[#6A9C89]'
                     }`}
                 >
-                  Payment History {duePayments.length > 0 && `(${duePayments.length})`}
+                  12 Weeks
                 </button>
               </div>
             </div>
@@ -626,7 +1443,7 @@ const MClientDetails = () => {
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
                       <div className="bg-white p-2 rounded">
                         <p className="text-sm text-gray-600 mb-1">Total Amount</p>
-                        <p className="font-bold text-base text-[#16423C]">{formatCurrency(selectedClient.amount)}</p>
+                        <p className="font-bold text-base text-[#16423C]">{formatCurrency(selectedClient.amount === 6900 ? 5000 : selectedClient.amount)}</p>
                       </div>
                       <div className="bg-white p-2 rounded">
                         <p className="text-sm text-gray-600 mb-1">Received</p>
@@ -649,18 +1466,22 @@ const MClientDetails = () => {
                       </div>
                       <div>
                         <p className="text-sm text-gray-600 mb-1">Weekly Due</p>
-                        <p className="font-semibold text-base text-[#16423C]">{formatCurrency(getWeeklyDue(selectedClient))}</p>
+                        <p className="font-semibold text-base text-[#16423C]">{formatCurrency(getCurrentWeeklyDue(selectedClient, duePayments))}</p>
                       </div>
                       <div>
                         <p className="text-sm text-gray-600 mb-1">Status</p>
                         <span className={`inline-block px-2 py-0.5 rounded text-sm font-semibold text-white ${selectedClient.status === 'paid' ? 'bg-green-500' :
-                            selectedClient.status === 'partial' ? 'bg-amber-500' :
-                              'bg-red-500'
+                          selectedClient.status === 'partial' ? 'bg-amber-500' :
+                            'bg-red-500'
                           }`}>
                           {selectedClient.status === 'paid' ? '✅ Paid' :
                             selectedClient.status === 'partial' ? '⚠️ Partial' :
                               '⏳ Pending'}
                         </span>
+                      </div>
+                      <div>
+                        <p className="text-sm text-gray-600 mb-1">Dispensary Date</p>
+                        <p className="font-semibold text-base text-[#16423C]">{formatDate(selectedClient.dispensary)}</p>
                       </div>
                     </div>
                   </div>
@@ -688,156 +1509,730 @@ const MClientDetails = () => {
                 </div>
               )}
 
-              {/* Payment History Tab */}
-              {activeTab === 'dues' && (
-                <div>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-6">
-                    <div className="bg-[#E9EFEC] p-3 rounded border border-[#C4DAD2] text-center">
-                      <p className="text-sm text-gray-600 mb-1">Total Loan</p>
-                      <p className="font-bold text-base text-[#16423C]">{formatCurrency(selectedClient.amount)}</p>
-                    </div>
-                    <div className="bg-[#E9EFEC] p-3 rounded border border-[#C4DAD2] text-center">
-                      <p className="text-sm text-gray-600 mb-1">Weekly Due</p>
-                      <p className="font-bold text-base text-[#16423C]">{formatCurrency(getWeeklyDue(selectedClient))}</p>
-                    </div>
-                    <div className="bg-[#E9EFEC] p-3 rounded border border-[#C4DAD2] text-center">
-                      <p className="text-sm text-gray-600 mb-1">Paid Weeks</p>
-                      <p className="font-bold text-base text-green-600">{duePayments.length}</p>
-                    </div>
-                    <div className="bg-[#E9EFEC] p-3 rounded border border-[#C4DAD2] text-center">
-                      <p className="text-sm text-gray-600 mb-1">Remaining</p>
-                      <p className="font-bold text-base text-red-500">{Math.max(0, 12 - duePayments.length)}</p>
-                    </div>
-                  </div>
+              {/* 12 Weeks Dues Tab */}
+              {activeTab === 'dues' && (() => {
+                const currentLoanStart = selectedClient?.loan_start_date ? new Date(selectedClient.loan_start_date) : null;
+                const currentPayments = duePayments.filter(p => {
+                  if (!currentLoanStart) return true;
+                  const pDate = new Date(p.paidDate || p.weekStartISO);
+                  return pDate >= currentLoanStart || p.status === 'pending';
+                });
+                const previousPayments = duePayments.filter(p => {
+                  if (!currentLoanStart) return false;
+                  const pDate = new Date(p.paidDate || p.weekStartISO);
+                  return p.status === 'paid' && pDate < currentLoanStart;
+                });
+                const activePaymentList = historyViewMode === 'previous' ? previousPayments : currentPayments;
 
-                  <div className="mb-6">
-                    <div className="flex justify-between items-center mb-1">
-                      <span className="text-sm font-semibold text-[#16423C]">Progress</span>
-                      <span className="text-sm text-[#6A9C89]">{duePayments.length}/12 weeks</span>
-                    </div>
-                    <div className="h-2 bg-[#C4DAD2] rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-[#6A9C89] transition-all duration-500"
-                        style={{ width: `${(duePayments.length / 12) * 100}%` }}
-                      ></div>
-                    </div>
-                  </div>
-
-                  <div className="mt-4">
-                    <h3 className="text-base font-bold text-[#16423C] mb-2">Payment History</h3>
-
-                    {paymentsLoading ? (
-                      <div className="flex justify-center items-center py-8">
-                        <div className="text-center">
-                          <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-[#6A9C89]"></div>
-                          <p className="mt-2 text-gray-600">Loading payments...</p>
+                return (
+                  <div>
+                    {previousPayments.length > 0 && (
+                      <div className="flex justify-between items-center mb-4 bg-amber-50/80 p-2.5 rounded-lg border border-amber-200">
+                        <span className="text-xs font-semibold text-amber-800 flex items-center gap-1.5">
+                          <i className="fas fa-history text-amber-600"></i>
+                          Client has previous loan history available
+                        </span>
+                        <div className="flex bg-white/80 p-0.5 rounded-lg border border-amber-300">
+                          <button
+                            onClick={() => setHistoryViewMode('current')}
+                            className={`px-3 py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${historyViewMode === 'current'
+                              ? 'bg-[#16423C] text-white shadow-sm'
+                              : 'text-[#16423C] hover:bg-gray-100'
+                              }`}
+                          >
+                            Current Loan ({currentPayments.filter(p => p.status === 'paid').length}/12)
+                          </button>
+                          <button
+                            onClick={() => setHistoryViewMode('previous')}
+                            className={`px-3 py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${historyViewMode === 'previous'
+                              ? 'bg-[#16423C] text-white shadow-sm'
+                              : 'text-[#16423C] hover:bg-gray-100'
+                              }`}
+                          >
+                            Previous History ({previousPayments.length})
+                          </button>
                         </div>
-                      </div>
-                    ) : duePayments.length === 0 ? (
-                      <div className="p-8 bg-[#E9EFEC] rounded border border-[#C4DAD2] text-center">
-                        <i className="fas fa-credit-card text-gray-400 text-3xl mb-3"></i>
-                        <p className="text-base text-gray-600">No payments recorded yet for this client</p>
-                        <p className="text-sm text-gray-500 mt-1">Payments will appear here once collected</p>
-                      </div>
-                    ) : (
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-sm">
-                          <thead>
-                            <tr className="bg-[#16423C] text-white">
-                              <th className="p-2 text-left">#</th>
-                              <th className="p-2 text-left">Week</th>
-                              <th className="p-2 text-left">Collected By</th>
-                              {/* payment method column removed */}
-                              <th className="p-2 text-right">Amount</th>
-                              <th className="p-2 text-left">Date & Time</th>
-                              <th className="p-2 text-center">Action</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {duePayments.map((payment, index) => (
-                              <tr
-                                key={payment.paymentId || payment.id || index}
-                                className={`border-b border-[#C4DAD2] ${index % 2 === 0 ? 'bg-white' : 'bg-[#F5F9F7]'
-                                  } hover:bg-[#E9EFEC] transition-colors`}
-                              >
-                                <td className="p-2 font-medium text-[#16423C]">{payment.id}</td>
-                                <td className="p-2">
-                                  <span className="font-semibold text-[#16423C] bg-[#C4DAD2] px-2 py-1 rounded">
-                                    Week {payment.weekNumber}
-                                  </span>
-                                </td>
-                                <td className="p-2">
-                                  <div className="flex items-center">
-                                    <i className="fas fa-user-circle text-[#6A9C89] mr-1"></i>
-                                    <span className="text-sm text-[#6A9C89] font-semibold">
-                                      {payment.collectedBy}
-                                    </span>
-                                  </div>
-                                </td>
-                                {/* payment method cell removed */}
-                                <td className="p-2 text-right font-semibold text-[#16423C]">
-                                  {formatCurrency(payment.dueAmount)}
-                                </td>
-                                <td className="p-2">
-                                  <div className="text-sm">
-                                    {new Date(payment.fullDate).toLocaleDateString('en-IN', {
-                                      day: 'numeric',
-                                      month: 'short',
-                                      year: 'numeric'
-                                    })}
-                                  </div>
-                                  <div className="text-xs text-gray-500">
-                                    {new Date(payment.fullDate).toLocaleTimeString('en-IN', {
-                                      hour: '2-digit',
-                                      minute: '2-digit'
-                                    })}
-                                  </div>
-                                </td>
-                                <td className="p-2 text-center">
-                                  <button
-                                    onClick={() => openCancelConfirmModal(payment.paymentId, payment.dueAmount, selectedClient._id)}
-                                    className="bg-red-500 hover:bg-red-600 text-white px-3 py-1.5 rounded text-xs font-semibold transition-all active:scale-95 shadow-sm hover:shadow"
-                                  >
-                                    Cancel
-                                  </button>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
                       </div>
                     )}
-                  </div>
 
-                  {duePayments.length > 0 && (
-                    <div className="mt-6 p-4 bg-[#E9EFEC] rounded border border-[#C4DAD2]">
-                      <h4 className="font-semibold text-[#16423C] mb-3 text-base">Payment Summary</h4>
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                        <div className="bg-white p-2 rounded">
-                          <p className="text-xs text-gray-600">Total Weeks Paid</p>
-                          <p className="font-bold text-green-600">{duePayments.length} weeks</p>
+                    {/* Summary Stats */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-6">
+                      <div className="bg-[#E9EFEC] p-3 rounded border border-[#C4DAD2] text-center">
+                        <p className="text-sm text-gray-600 mb-1">Total Loan</p>
+                        <p className="font-bold text-base text-[#16423C]">{formatCurrency(selectedClient.amount === 6900 ? 5000 : selectedClient.amount)}</p>
+                      </div>
+                      <div className="bg-[#E9EFEC] p-3 rounded border border-[#C4DAD2] text-center">
+                        <p className="text-sm text-gray-600 mb-1">Weekly</p>
+                        <p className="font-bold text-base text-[#16423C]">{formatCurrency(FORCED_WEEKLY)}</p>
+                      </div>
+                      <div className="bg-[#E9EFEC] p-3 rounded border border-[#C4DAD2] text-center">
+                        <p className="text-sm text-gray-600 mb-1">Paid</p>
+                        <p className="font-bold text-base text-green-600">
+                          {activePaymentList.filter(p => p.status === 'paid').length} {historyViewMode === 'previous' ? 'weeks' : '/12'}
+                        </p>
+                      </div>
+                      <div className="bg-[#E9EFEC] p-3 rounded border border-[#C4DAD2] text-center">
+                        <p className="text-sm text-gray-600 mb-1">Weekly Due</p>
+                        <p className="font-semibold text-base text-[#16423C]">{formatCurrency(getCurrentWeeklyDue(selectedClient, duePayments))}</p>
+                      </div>
+                    </div>
+
+                    {/* Progress Bar */}
+                    <div className="mb-6">
+                      <div className="flex justify-between items-center mb-1">
+                        <span className="text-sm font-semibold text-[#16423C]">Progress</span>
+                        <span className="text-sm text-[#6A9C89]">
+                          {historyViewMode === 'previous' ? `${activePaymentList.length} weeks (Completed)` : `${activePaymentList.filter(p => p.status === 'paid').length}/12 weeks`}
+                        </span>
+                      </div>
+                      <div className="h-2 bg-[#C4DAD2] rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-[#6A9C89] transition-all duration-500"
+                          style={{ width: historyViewMode === 'previous' ? '100%' : `${(activePaymentList.filter(p => p.status === 'paid').length / 12) * 100}%` }}
+                        ></div>
+                      </div>
+                    </div>
+
+                    {/* 12 Due Payments Table */}
+                    <div className="mt-4">
+                      <h3 className="text-base font-bold text-[#16423C] mb-2">
+                        {historyViewMode === 'previous' ? 'Previous Loan Payment History' : 'Current Loan Payment Schedule'}
+                      </h3>
+
+                      {activePaymentList.length === 0 ? (
+                        <div className="p-8 bg-[#E9EFEC] rounded border border-[#C4DAD2] text-center">
+                          <i className="fas fa-credit-card text-gray-400 text-3xl mb-3"></i>
+                          <p className="text-base text-gray-600">
+                            {historyViewMode === 'previous' ? 'No previous loan payments found' : 'No payments recorded yet'}
+                          </p>
                         </div>
-                        <div className="bg-white p-2 rounded">
-                          <p className="text-xs text-gray-600">Amount Paid</p>
-                          <p className="font-bold text-green-600">{formatCurrency(duePayments.reduce((sum, p) => sum + (p.dueAmount || 0), 0))}</p>
+                      ) : (
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-sm">
+                            <thead>
+                              <tr className="bg-[#16423C] text-white">
+                                <th className="p-2 text-left">#</th>
+                                <th className="p-2 text-left">Week</th>
+                                <th className="p-2 text-center">Amount</th>
+                                <th className="p-2 text-center">Status</th>
+                                <th className="p-2 text-center">Paid Date</th>
+                                <th className="p-2 text-left">Collected By</th>
+                                <th className="p-2 text-center">Action</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {activePaymentList.map((payment, index) => (
+                                <tr
+                                  key={payment.paymentId || payment.id || index}
+                                  className={`border-b border-[#C4DAD2] ${index % 2 === 0 ? 'bg-white' : 'bg-[#F5F9F7]'
+                                    }`}
+                                >
+                                  <td className="p-2 font-medium text-[#16423C]">{index + 1}</td>
+                                  <td className="p-2">{payment.month || `Week ${index + 1}`}</td>
+                                  <td className="p-2 text-center font-semibold">{formatCurrency(payment.displayAmount ?? payment.dueAmount)}</td>
+                                  <td className="p-2 text-center">
+                                    <span className={`inline-block text-sm font-semibold px-2 py-0.5 rounded ${payment.status === 'paid'
+                                      ? 'bg-green-100 text-green-800'
+                                      : 'bg-red-100 text-red-800'
+                                      }`}>
+                                      {payment.status === 'paid' ? '✅ Paid' : '⏳ Pending'}
+                                    </span>
+                                  </td>
+                                  <td className="p-2 text-center text-gray-600">
+                                    {payment.paidDate ? formatDate(payment.paidDate) : '-'}
+                                  </td>
+                                  <td className="p-2 text-gray-600">
+                                    {payment.collectedStaff ? (
+                                      payment.collectedStaff + (payment.collectedByRole ? ` (${capitalize(payment.collectedByRole)})` : '')
+                                    ) : '-'}
+                                  </td>
+                                  <td className="p-2 text-center">
+                                    {payment.status === 'paid' && payment.paymentId && !payment.isForeclosed ? (
+                                      <button
+                                        onClick={() => openCancelConfirmModal(payment.paymentId, payment.paidAmount || payment.displayAmount || payment.dueAmount, selectedClient._id)}
+                                        className="bg-red-500 hover:bg-red-600 text-white px-3 py-1.5 rounded text-xs font-semibold transition-all active:scale-95 shadow-sm hover:shadow"
+                                      >
+                                        Cancel
+                                      </button>
+                                    ) : (
+                                      '-'
+                                    )}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
                         </div>
-                        <div className="bg-white p-2 rounded">
-                          <p className="text-xs text-gray-600">Remaining Weeks</p>
-                          <p className="font-bold text-red-500">{Math.max(0, 12 - duePayments.length)} weeks</p>
+                      )}
+                    </div>
+
+                    {/* Payment Summary */}
+                    <div className="mt-4 p-3 bg-[#E9EFEC] rounded border border-[#C4DAD2]">
+                      <h4 className="font-semibold text-[#16423C] mb-2 text-base">Summary</h4>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-base">
+                        <div>
+                          <p className="text-sm text-gray-600">Paid Weeks</p>
+                          <p className="font-bold text-green-600">{activePaymentList.filter(p => p.status === 'paid').length} weeks</p>
                         </div>
-                        <div className="bg-white p-2 rounded">
-                          <p className="text-xs text-gray-600">Amount Due</p>
-                          <p className="font-bold text-red-500">{formatCurrency((selectedClient.amount || 0) - (selectedClient.received || 0))}</p>
+                        <div>
+                          <p className="text-sm text-gray-600">Amount Paid</p>
+                          <p className="font-bold text-green-600 text-sm">
+                            {formatCurrency(activePaymentList.filter(p => p.status === 'paid').reduce((sum, p) => sum + (p.paidAmount || p.displayAmount || p.dueAmount || 0), 0))}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-600">Pending Weeks</p>
+                          <p className="font-bold text-red-500">{historyViewMode === 'previous' ? 0 : activePaymentList.filter(p => p.status === 'pending').length} weeks</p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-600">Amount Due</p>
+                          <p className="font-bold text-red-500 text-sm">
+                            {historyViewMode === 'previous' ? '₹0' : formatCurrency((selectedClient.amount || 0) - (selectedClient.received || 0))}
+                          </p>
                         </div>
                       </div>
                     </div>
-                  )}
-                </div>
-              )}
+                  </div>
+                );
+              })()}
             </div>
           </div>
         )}
       </div>
+
+      {/* Custom Pay Due Modal */}
+      {showPayModal && selectedClient && (() => {
+        const totalLoan = selectedClient.amount || 6900;
+        const totalRec = selectedClient.received || 0;
+        const outstanding = selectedClient.pending !== undefined && selectedClient.pending !== null
+          ? selectedClient.pending
+          : Math.max(0, totalLoan - totalRec);
+        const weeklyDue = getCurrentWeeklyDue(selectedClient, duePayments);
+        const enteredNum = Number(payAmount) || 0;
+        const remainingAfterPay = Math.max(0, outstanding - enteredNum);
+        const willBeFullyPaid = enteredNum >= outstanding && outstanding > 0;
+
+        return (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fadeIn">
+            <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl border border-gray-100 max-h-[92vh] overflow-y-auto">
+
+              {/* Modal Header */}
+              <div className="flex items-center justify-between pb-3 mb-4 border-b border-gray-100">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-emerald-50 text-[#16423C] flex items-center justify-center text-lg font-bold">
+                    <i className="fas fa-hand-holding-dollar"></i>
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-bold text-[#16423C]">Receive Payment</h3>
+                    <p className="text-xs text-gray-500">Process custom payment & update client balance</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => !payLoading && setShowPayModal(false)}
+                  disabled={payLoading}
+                  className="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-40"
+                >
+                  <i className="fas fa-times text-lg"></i>
+                </button>
+              </div>
+
+              {/* Client Info Card */}
+              <div className="bg-[#E9EFEC]/60 p-3.5 rounded-xl border border-[#C4DAD2] mb-4">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <div className="font-bold text-gray-800 text-base">{selectedClient.name}</div>
+                    <div className="text-xs text-gray-500 font-mono mt-0.5">ID: {selectedClient.clientId || 'N/A'} • {selectedClient.phone}</div>
+                    <div className="text-xs text-gray-600 mt-1">
+                      <i className="fas fa-map-marker-alt text-emerald-600 mr-1"></i>
+                      {selectedClient.landmark || 'N/A'}, {selectedClient.district || 'N/A'}
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <span className="inline-block px-2.5 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                      Bal: ₹{outstanding.toLocaleString('en-IN')}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Financial Snapshot */}
+              <div className="grid grid-cols-3 gap-2.5 mb-4">
+                <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200 text-center">
+                  <div className="text-[11px] text-gray-500 font-medium">Total Loan</div>
+                  <div className="text-sm font-bold text-gray-800 mt-0.5">₹{totalLoan.toLocaleString('en-IN')}</div>
+                </div>
+                <div className="bg-emerald-50 p-2.5 rounded-xl border border-emerald-200 text-center">
+                  <div className="text-[11px] text-emerald-700 font-medium">Received</div>
+                  <div className="text-sm font-bold text-emerald-800 mt-0.5">₹{totalRec.toLocaleString('en-IN')}</div>
+                </div>
+                <div className="bg-red-50 p-2.5 rounded-xl border border-red-200 text-center">
+                  <div className="text-[11px] text-red-700 font-medium">Outstanding</div>
+                  <div className="text-sm font-extrabold text-red-700 mt-0.5">₹{outstanding.toLocaleString('en-IN')}</div>
+                </div>
+              </div>
+
+              {/* Quick Preset Buttons */}
+              <div className="mb-4">
+                <label className="block text-xs font-bold text-gray-600 mb-1.5 uppercase tracking-wider">
+                  Quick Amount Presets
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPayAmount(String(outstanding))}
+                    className={`py-2 px-2 text-xs font-bold rounded-lg border transition-all ${Number(payAmount) === outstanding
+                      ? 'bg-[#16423C] text-white border-[#16423C] shadow-sm'
+                      : 'bg-gray-50 hover:bg-emerald-50 text-gray-700 border-gray-200 hover:border-emerald-300'
+                      }`}
+                  >
+                    Full Due (₹{outstanding.toLocaleString('en-IN')})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPayAmount(String(Math.min(outstanding, weeklyDue)))}
+                    className={`py-2 px-2 text-xs font-bold rounded-lg border transition-all ${Number(payAmount) === Math.min(outstanding, weeklyDue)
+                      ? 'bg-[#16423C] text-white border-[#16423C] shadow-sm'
+                      : 'bg-gray-50 hover:bg-emerald-50 text-gray-700 border-gray-200 hover:border-emerald-300'
+                      }`}
+                  >
+                    1 Wk Due (₹{Math.min(outstanding, weeklyDue).toLocaleString('en-IN')})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPayAmount(String(Math.round(outstanding / 2)))}
+                    className={`py-2 px-2 text-xs font-bold rounded-lg border transition-all ${Number(payAmount) === Math.round(outstanding / 2)
+                      ? 'bg-[#16423C] text-white border-[#16423C] shadow-sm'
+                      : 'bg-gray-50 hover:bg-emerald-50 text-gray-700 border-gray-200 hover:border-emerald-300'
+                      }`}
+                  >
+                    50% (₹{Math.round(outstanding / 2).toLocaleString('en-IN')})
+                  </button>
+                </div>
+              </div>
+
+              {/* Custom Value Amount Input */}
+              <div className="mb-4">
+                <label className="block text-xs font-bold text-[#16423C] mb-1.5 uppercase tracking-wider">
+                  Custom Payment Amount (₹) <span className="text-red-500">*</span>
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-500 font-bold text-base">₹</span>
+                  <input
+                    type="number"
+                    value={payAmount}
+                    onChange={(e) => setPayAmount(e.target.value)}
+                    placeholder="Enter custom amount..."
+                    min="1"
+                    max={outstanding}
+                    className="w-full pl-8 pr-3 py-2.5 border-2 border-[#16423C]/20 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#16423C] focus:border-[#16423C] font-bold text-lg text-[#16423C] bg-white transition-all"
+                  />
+                </div>
+
+                {/* Live Balance Preview */}
+                <div className="mt-2 flex items-center justify-between text-xs bg-slate-50 px-3 py-2 rounded-lg border border-slate-200">
+                  <span className="text-gray-600 font-medium">Remaining Balance After Payment:</span>
+                  <span className="font-extrabold text-gray-800">
+                    ₹{remainingAfterPay.toLocaleString('en-IN')}
+                    {willBeFullyPaid && (
+                      <span className="ml-1.5 text-emerald-600 font-bold">(Marked as PAID ✓)</span>
+                    )}
+                  </span>
+                </div>
+              </div>
+
+              {/* Payment Method & Date */}
+              <div className="grid grid-cols-2 gap-3 mb-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">
+                    Payment Method
+                  </label>
+                  <select
+                    value={payMethod}
+                    onChange={(e) => setPayMethod(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#16423C]"
+                  >
+                    <option value="cash">Cash</option>
+                    <option value="online">Online Transfer / UPI</option>
+                    <option value="cheque">Cheque</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">
+                    Payment Date
+                  </label>
+                  <input
+                    type="date"
+                    value={payDate}
+                    onChange={(e) => setPayDate(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#16423C]"
+                  />
+                </div>
+              </div>
+
+              {/* Notes Input */}
+              <div className="mb-4">
+                <label className="block text-xs font-bold text-gray-600 mb-1">
+                  Notes / Remarks (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={payNotes}
+                  onChange={(e) => setPayNotes(e.target.value)}
+                  placeholder="e.g. Paid in office / custom settlement"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#16423C]"
+                />
+              </div>
+
+              {/* Error Message */}
+              {payErrorMsg && (
+                <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 text-xs font-semibold rounded-xl flex items-center gap-2">
+                  <i className="fas fa-exclamation-circle text-sm text-red-600"></i>
+                  <span>{payErrorMsg}</span>
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <div className="flex gap-3 pt-2 border-t border-gray-100">
+                <button
+                  type="button"
+                  onClick={handleConfirmPayDue}
+                  disabled={payLoading || !payAmount || Number(payAmount) <= 0}
+                  className="flex-1 bg-[#16423C] hover:bg-[#1f5a52] text-white py-2.5 rounded-xl font-bold text-sm transition-all shadow-md active:scale-95 disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {payLoading ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                      Recording Payment...
+                    </>
+                  ) : (
+                    <>
+                      <i className="fas fa-check-circle"></i>
+                      Confirm Payment (₹{enteredNum.toLocaleString('en-IN')})
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowPayModal(false)}
+                  disabled={payLoading}
+                  className="px-5 bg-gray-100 hover:bg-gray-200 text-gray-700 py-2.5 rounded-xl font-semibold text-sm transition-all"
+                >
+                  Cancel
+                </button>
+              </div>
+
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Foreclose Modal */}
+      {showForecloseModal && selectedClient && (() => {
+        const totalLoanVal = selectedClient.amount === 6900 ? 5000 : (selectedClient.amount || 0);
+        const totalLoanFull = selectedClient.amount || 6900;
+        const currentReceived = selectedClient.received || 0;
+        const balAmount = selectedClient.pending !== undefined && selectedClient.pending !== null
+          ? selectedClient.pending
+          : Math.max(0, totalLoanFull - currentReceived);
+        const givenNum = Number(forecloseGivenAmount || 0);
+        const remainingBal = balAmount - givenNum;
+        const isMatch = (givenNum === balAmount) && balAmount >= 0;
+
+        return (
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl border border-gray-100">
+              <div className="flex items-center justify-between mb-4 pb-3 border-b border-gray-100">
+                <div className="flex items-center gap-2 text-[#16423C]">
+                  <i className="fas fa-hand-holding-dollar text-lg text-amber-600"></i>
+                  <h3 className="text-xl font-bold">Foreclose Loan</h3>
+                </div>
+                <button
+                  onClick={() => setShowForecloseModal(false)}
+                  className="text-gray-400 hover:text-gray-600 transition-colors"
+                >
+                  <i className="fas fa-times text-lg"></i>
+                </button>
+              </div>
+
+              <div className="space-y-4 mb-6">
+                <div className="bg-[#E9EFEC] p-3 rounded-lg border border-[#C4DAD2]">
+                  <p className="text-xs text-gray-500 uppercase font-semibold">Client</p>
+                  <p className="text-base font-bold text-[#16423C]">{selectedClient.name}</p>
+                  <p className="text-xs text-gray-600">ID: {selectedClient.clientId || 'N/A'}</p>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="bg-gray-50 p-2.5 rounded-lg border border-gray-200 text-center">
+                    <p className="text-xs text-gray-500 font-medium">Total Loan</p>
+                    <p className="text-sm font-bold text-[#16423C]">{formatCurrency(totalLoanVal)}</p>
+                  </div>
+                  <div className="bg-emerald-50 p-2.5 rounded-lg border border-emerald-200 text-center">
+                    <p className="text-xs text-emerald-800 font-medium">Given / Paid</p>
+                    <p className="text-sm font-bold text-emerald-700">{formatCurrency(currentReceived)}</p>
+                  </div>
+                  <div className="bg-red-50 p-2.5 rounded-lg border border-red-200 text-center">
+                    <p className="text-xs text-red-800 font-medium">Total Balance</p>
+                    <p className="text-sm font-bold text-red-600">{formatCurrency(balAmount)}</p>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-[#16423C] mb-1">
+                    Foreclose Given Amount (₹) <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    value={forecloseGivenAmount}
+                    onChange={(e) => setForecloseGivenAmount(e.target.value)}
+                    placeholder="Enter balance amount..."
+                    className="w-full px-3 py-2 border-2 border-[#16423C]/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#16423C] text-base font-bold text-[#16423C] bg-white"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className="p-2 bg-gray-50 rounded border border-gray-200">
+                    <span className="text-gray-500">Required Balance: </span>
+                    <span className="font-bold text-gray-800">{formatCurrency(balAmount)}</span>
+                  </div>
+                  <div className="p-2 bg-gray-50 rounded border border-gray-200">
+                    <span className="text-gray-500">Remaining Balance: </span>
+                    <span className={`font-bold ${remainingBal === 0 ? 'text-green-600' : 'text-red-600'}`}>
+                      {formatCurrency(Math.max(0, remainingBal))}
+                    </span>
+                  </div>
+                </div>
+
+                {isMatch ? (
+                  <div className="p-3 bg-emerald-50 rounded-lg border border-emerald-200 text-xs text-emerald-800 flex items-center gap-2">
+                    <i className="fas fa-check-circle text-emerald-600 text-base flex-shrink-0"></i>
+                    <span>Given amount matches total balance! Click confirm to foreclose loan & mark all 12 weeks as paid.</span>
+                  </div>
+                ) : (
+                  <div className="p-3 bg-amber-50 rounded-lg border border-amber-200 text-xs text-amber-800 flex items-center gap-2">
+                    <i className="fas fa-exclamation-triangle text-amber-600 text-base flex-shrink-0"></i>
+                    <span>Given amount must match total balance amount ({formatCurrency(balAmount)}) to foreclose loan.</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  onClick={handleConfirmForeclose}
+                  disabled={forecloseLoading || !isMatch}
+                  className="flex-1 bg-amber-600 hover:bg-amber-700 text-white py-2.5 rounded-lg font-semibold transition-all shadow-md active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  {forecloseLoading ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                      Foreclosing...
+                    </>
+                  ) : (
+                    'Confirm Foreclose'
+                  )}
+                </button>
+                <button
+                  onClick={() => setShowForecloseModal(false)}
+                  className="px-4 bg-gray-100 hover:bg-gray-200 text-gray-700 py-2.5 rounded-lg font-semibold transition-all"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Cancel Foreclose Modal */}
+      {showCancelForecloseModal && selectedClient && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white/95 backdrop-blur-lg rounded-2xl p-6 w-full max-w-sm shadow-2xl border border-white/50 text-center">
+            <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+              <i className="fas fa-rotate-left text-2xl text-red-600"></i>
+            </div>
+            <h2 className="text-2xl font-bold text-[#16423C] mb-2">Cancel Foreclosure</h2>
+            <p className="text-gray-600 text-sm mb-6">
+              Are you sure you want to cancel the foreclosure for <strong>{selectedClient.name}</strong>? This will reopen the loan and restore previous dues and payment schedule.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={handleConfirmCancelForeclose}
+                disabled={cancelForecloseLoading}
+                className="flex-1 bg-red-600 hover:bg-red-700 text-white py-2.5 rounded-lg font-semibold transition-all shadow-md active:scale-95 disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {cancelForecloseLoading ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                    Cancelling...
+                  </>
+                ) : (
+                  'Yes, Cancel Foreclose'
+                )}
+              </button>
+              <button
+                onClick={() => setShowCancelForecloseModal(false)}
+                className="flex-1 bg-gray-200 text-gray-800 py-2.5 rounded-lg font-semibold hover:bg-gray-300 transition-all"
+              >
+                No, Keep Paid
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reloan Modal */}
+      {showReloanModal && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl border border-gray-100 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-4 pb-3 border-b border-gray-100">
+              <div className="flex items-center gap-2 text-[#16423C]">
+                <i className="fas fa-rotate-right text-lg"></i>
+                <h3 className="text-xl font-bold">Reloan Client</h3>
+              </div>
+              <button
+                onClick={() => setShowReloanModal(false)}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                <i className="fas fa-times text-lg"></i>
+              </button>
+            </div>
+
+            <div className="space-y-4 mb-6">
+              <div className="bg-[#E9EFEC] p-3 rounded-lg border border-[#C4DAD2]">
+                <p className="text-xs text-gray-500 uppercase font-semibold">Client</p>
+                <p className="text-base font-bold text-[#16423C]">{selectedClient?.name}</p>
+                <p className="text-xs text-gray-600">ID: {selectedClient?.clientId || 'N/A'}</p>
+              </div>
+
+              {/* Previous Loan Landmark — read-only info */}
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                <p className="text-xs font-semibold text-blue-700 uppercase mb-1">Previous Loan Landmark</p>
+                <p className="text-sm font-bold text-blue-900">
+                  {selectedClient?.landmark?.trim() || <span className="text-gray-400 font-normal italic">Not set</span>}
+                </p>
+              </div>
+
+              {/* New Loan Landmark */}
+              <div>
+                <label className="block text-sm font-semibold text-[#16423C] mb-1">
+                  New Loan Landmark <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={reloanLandmark}
+                  onChange={(e) => setReloanLandmark(e.target.value)}
+                  placeholder="Enter landmark"
+                  className="w-full px-3 py-2 border-2 border-[#16423C]/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#16423C] text-sm font-medium text-[#16423C] bg-white"
+                />
+                {!reloanLandmark && (
+                  <p className="text-xs text-amber-600 mt-1 flex items-center gap-1">
+                    <i className="fas fa-exclamation-triangle"></i>
+                    Enter the landmark for the new loan cycle (used in Daily Dues)
+                  </p>
+                )}
+              </div>
+
+              {/* New Loan District */}
+              <div>
+                <label className="block text-sm font-semibold text-[#16423C] mb-1">
+                  District
+                </label>
+                <input
+                  type="text"
+                  value={reloanDistrict}
+                  onChange={(e) => setReloanDistrict(e.target.value)}
+                  placeholder="Enter district"
+                  className="w-full px-3 py-2 border-2 border-[#16423C]/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#16423C] text-sm font-medium text-[#16423C] bg-white"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-[#16423C] mb-1">
+                  Loan Start Date <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="date"
+                  value={reloanStartDate}
+                  onChange={(e) => setReloanStartDate(e.target.value)}
+                  className="w-full px-3 py-2 border-2 border-[#16423C]/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#16423C] text-sm font-medium text-[#16423C] bg-white"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-[#16423C] mb-1">
+                  Dispensary Date
+                </label>
+                <input
+                  type="date"
+                  value={reloanDispensary}
+                  onChange={(e) => setReloanDispensary(e.target.value)}
+                  className="w-full px-3 py-2 border-2 border-[#16423C]/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#16423C] text-sm font-medium text-[#16423C] bg-white"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-gray-600 mb-1">
+                  Calculated Loan End Date (12 Weeks)
+                </label>
+                <input
+                  type="text"
+                  readOnly
+                  value={
+                    reloanStartDate
+                      ? new Date(new Date(reloanStartDate).getTime() + 12 * 7 * 24 * 60 * 60 * 1000).toLocaleDateString('en-IN', {
+                        day: 'numeric',
+                        month: 'short',
+                        year: 'numeric'
+                      })
+                      : 'N/A'
+                  }
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-gray-50 text-gray-700 font-semibold"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 pt-2">
+                <div className="bg-emerald-50 p-2.5 rounded-lg border border-emerald-200">
+                  <p className="text-xs text-emerald-800 font-medium">New Loan Amount</p>
+                  <p className="text-base font-bold text-emerald-900">
+                    ₹{Number(selectedClient?.amount === 6900 ? 5000 : (selectedClient?.amount || 5000)).toLocaleString('en-IN')}
+                  </p>
+                </div>
+                <div className="bg-emerald-50 p-2.5 rounded-lg border border-emerald-200">
+                  <p className="text-xs text-emerald-800 font-medium">Weekly Due</p>
+                  <p className="text-base font-bold text-emerald-900">₹575</p>
+                </div>
+              </div>
+
+              <p className="text-xs text-amber-700 bg-amber-50 p-2.5 rounded-lg border border-amber-200">
+                <i className="fas fa-info-circle mr-1"></i>
+                Starting a reloan will reset current dues and archive previous payment history under "Previous Loan History".
+              </p>
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={handleConfirmReloan}
+                disabled={reloanLoading || !reloanStartDate || !reloanLandmark}
+                className="flex-1 bg-[#16423C] hover:bg-[#1f5a52] text-white py-2.5 rounded-lg font-semibold transition-all shadow-md active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {reloanLoading ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                    Processing...
+                  </>
+                ) : (
+                  'Confirm Reloan'
+                )}
+              </button>
+              <button
+                onClick={() => setShowReloanModal(false)}
+                className="px-4 bg-gray-100 hover:bg-gray-200 text-gray-700 py-2.5 rounded-lg font-semibold transition-all"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Cancel Payment Confirmation Modal */}
       {showCancelConfirmModal && cancelPaymentData && (

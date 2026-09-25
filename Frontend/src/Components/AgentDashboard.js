@@ -110,19 +110,23 @@ export default function AgentDashboard() {
       try {
         setLoadingPayments(true);
         const userRaw = localStorage.getItem('user');
-        if (!userRaw) {
-          setRecentPayments([]);
+        const token = localStorage.getItem('token');
+        if (!userRaw || !token) {
+          window.location.href = '/';
           return;
         }
         const user = JSON.parse(userRaw);
+        if (user.status === 'Pending') {
+          window.location.href = '/';
+          return;
+        }
         setAgentName(user.name || user.username || '');
         const agentId = user._id || user.id || null;
         const agentName = user.name || user.username || '';
 
         // Request recent payments; backend uses req.user to scope results to the
         // current agent, so no additional query parameter is needed.
-        const token = localStorage.getItem('token');
-        const url = `http://localhost:5000/api/payments/history?limit=6`;
+        const url = `https://karan-e26t.onrender.com/api/payments/history?limit=6`;
         const res = await fetch(url, { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` } });
 
         // helper that enforces agent filter regardless of server response
@@ -145,7 +149,7 @@ export default function AgentDashboard() {
 
         if (!res.ok) {
           // fallback to test endpoint
-          const fallback = await fetch('http://localhost:5000/api/payments/test/all');
+          const fallback = await fetch('https://karan-e26t.onrender.com/api/payments/test/all');
           if (!fallback.ok) throw new Error('Failed to fetch payments');
           const fbData = await fallback.json();
           const payments = (fbData.data && fbData.data.payments) || fbData.data || [];
@@ -177,7 +181,7 @@ export default function AgentDashboard() {
         // Now fetch clients (agent view) to compute today's pending based on schedule
         try {
           const token = localStorage.getItem('token');
-          const clientsRes = await fetch('http://localhost:5000/api/clients/all', {
+          const clientsRes = await fetch('https://karan-e26t.onrender.com/api/clients/all', {
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
           });
 

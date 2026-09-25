@@ -38,7 +38,7 @@ export default function Payments() {
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
-      const response = await axios.get('http://localhost:5000/api/payments', {
+      const response = await axios.get('https://karan-e26t.onrender.com/api/payments', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
@@ -162,7 +162,7 @@ export default function Payments() {
 
     try {
       const token = localStorage.getItem('token');
-      const response = await axios.post('http://localhost:5000/api/payments/process', {
+      const response = await axios.post('https://karan-e26t.onrender.com/api/payments/process', {
         clientId: selectedClient._id,
         amount: selectedAmount,
         paymentMethod,
@@ -230,7 +230,7 @@ export default function Payments() {
       }
 
       // Update client loan_end_date in backend
-      const updateRes = await fetch(`http://localhost:5000/api/clients/${clientId}`, {
+      const updateRes = await fetch(`https://karan-e26t.onrender.com/api/clients/${clientId}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -343,8 +343,8 @@ export default function Payments() {
                 <button
                   onClick={() => setActiveFilter('All')}
                   className={`px-5 py-2 rounded-full border transition-all ${activeFilter === 'All'
-                      ? 'bg-[#16423C] text-white border-[#16423C]'
-                      : 'border-[#6A9C89] text-[#16423C] hover:bg-[#16423C] hover:text-white'
+                    ? 'bg-[#16423C] text-white border-[#16423C]'
+                    : 'border-[#6A9C89] text-[#16423C] hover:bg-[#16423C] hover:text-white'
                     }`}
                 >
                   All
@@ -352,8 +352,8 @@ export default function Payments() {
                 <button
                   onClick={() => setActiveFilter('Pending')}
                   className={`px-5 py-2 rounded-full border transition-all ${activeFilter === 'Pending'
-                      ? 'bg-[#16423C] text-white border-[#16423C]'
-                      : 'border-[#6A9C89] text-[#16423C] hover:bg-[#16423C] hover:text-white'
+                    ? 'bg-[#16423C] text-white border-[#16423C]'
+                    : 'border-[#6A9C89] text-[#16423C] hover:bg-[#16423C] hover:text-white'
                     }`}
                 >
                   Pending
@@ -361,8 +361,8 @@ export default function Payments() {
                 <button
                   onClick={() => setActiveFilter('Partial')}
                   className={`px-5 py-2 rounded-full border transition-all ${activeFilter === 'Partial'
-                      ? 'bg-[#16423C] text-white border-[#16423C]'
-                      : 'border-[#6A9C89] text-[#16423C] hover:bg-[#16423C] hover:text-white'
+                    ? 'bg-[#16423C] text-white border-[#16423C]'
+                    : 'border-[#6A9C89] text-[#16423C] hover:bg-[#16423C] hover:text-white'
                     }`}
                 >
                   Partial
@@ -773,22 +773,20 @@ export default function Payments() {
       {/* Notification Toast */}
       {notification && (
         <div
-          className={`fixed bottom-6 right-6 px-6 py-4 rounded-lg shadow-lg text-white flex items-center gap-3 z-[50000] animate-in fade-in slide-in-from-bottom-4 ${
-            notification.type === 'success'
-              ? 'bg-green-600'
-              : notification.type === 'error'
+          className={`fixed bottom-6 right-6 px-6 py-4 rounded-lg shadow-lg text-white flex items-center gap-3 z-[50000] animate-in fade-in slide-in-from-bottom-4 ${notification.type === 'success'
+            ? 'bg-green-600'
+            : notification.type === 'error'
               ? 'bg-red-600'
               : 'bg-blue-600'
-          }`}
+            }`}
         >
           <i
-            className={`fas ${
-              notification.type === 'success'
-                ? 'fa-check-circle'
-                : notification.type === 'error'
+            className={`fas ${notification.type === 'success'
+              ? 'fa-check-circle'
+              : notification.type === 'error'
                 ? 'fa-exclamation-circle'
                 : 'fa-info-circle'
-            }`}
+              }`}
           ></i>
           <span>{notification.message}</span>
         </div>

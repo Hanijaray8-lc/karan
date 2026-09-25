@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
+import axios from 'axios';
 import {
   FiBarChart2,
   FiUsers,
@@ -11,10 +12,12 @@ import {
   FiUser
 } from 'react-icons/fi';
 
+const API_URL = process.env.REACT_APP_API_URL || 'https://karan-e26t.onrender.com/api';
+
 const Navbar = () => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isLogoutModalOpen, setIsLogoutModalOpen] = useState(false);
-  
+
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -29,23 +32,57 @@ const Navbar = () => {
     const savedUser = localStorage.getItem('user');
 
     if (!token) {
-      navigate('/Agentlogin');
+      navigate('/');
       return;
     }
 
     if (savedUser) {
       const user = JSON.parse(savedUser);
+      if (user.status === 'Pending') {
+        navigate('/');
+        return;
+      }
       setAgentData({
         name: user.name || user.username || "Staff",
         role: user.role ? user.role.charAt(0).toUpperCase() + user.role.slice(1) : "Loan Officer",
         profilePhoto: user.profilePhoto || null
       });
     }
+
+    // Verify live status with backend
+    axios.get(`${API_URL}/auth/check-status`, {
+      headers: { Authorization: `Bearer ${token}` }
+    }).then(res => {
+      if (res.data && res.data.success) {
+        if (res.data.status !== 'Active') {
+          localStorage.removeItem('token');
+          localStorage.removeItem('user');
+          navigate('/');
+        }
+      }
+    }).catch(err => {
+      if (err.response?.status === 401 || err.response?.status === 403) {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        navigate('/');
+      }
+    });
   }, [navigate]);
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    const token = localStorage.getItem('token');
+    if (token) {
+      try {
+        await axios.post(`${API_URL}/auth/logout`, {}, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+      } catch (err) {
+        console.error('Logout error:', err);
+      }
+    }
     localStorage.removeItem('token');
     localStorage.removeItem('user');
+    setIsLogoutModalOpen(false);
     navigate('/');
   };
 
@@ -69,7 +106,10 @@ const Navbar = () => {
   return (
     <>
       {/* Navbar - Full Width Maatrapattullathu */}
-      <nav className="sticky top-0 z-50 bg-[#16423C] backdrop-blur-sm border-b border-white/10 shadow-lg w-full">
+      <nav
+        className="sticky top-0 z-50 bg-[#16423C] backdrop-blur-sm border-b border-white/10 shadow-lg w-full"
+        style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
+      >
         <div className="w-full px-6 h-16 flex items-center justify-between">
 
           {/* Brand Logo */}
@@ -86,8 +126,8 @@ const Navbar = () => {
                   <Link
                     to={item.path}
                     className={`group relative flex items-center gap-3 px-5 py-2 rounded-lg transition-all duration-300 min-w-[145px] ${isActive(item.path)
-                        ? 'bg-white/20 border border-white/30 text-white shadow-md'
-                        : 'bg-white/5 text-white/85 border border-white/5 hover:bg-white/15'
+                      ? 'bg-white/20 border border-white/30 text-white shadow-md'
+                      : 'bg-white/5 text-white/85 border border-white/5 hover:bg-white/15'
                       }`}
                   >
                     <div className={`w-9 h-9 rounded-lg flex items-center justify-center text-lg ${isActive(item.path) ? 'bg-white/20' : 'bg-white/10'
@@ -133,8 +173,14 @@ const Navbar = () => {
         </div>
 
         {/* Mobile Sidebar/Menu */}
-        <div className={`lg:hidden absolute top-16 left-0 right-0 bg-[#16423C] border-b border-white/10 transition-all duration-300 ${isMobileMenuOpen ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-5 pointer-events-none'
-          }`}>
+        <div
+          className={`lg:hidden absolute left-0 right-0 bg-[#16423C] border-b border-white/10 transition-all duration-300 ${isMobileMenuOpen ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-5 pointer-events-none'
+            }`}
+          style={{
+            top: 'calc(4rem + env(safe-area-inset-top, 0px))',
+            paddingBottom: 'env(safe-area-inset-bottom, 0px)'
+          }}
+        >
           <ul className="p-4 space-y-2">
             {navItems.map((item) => (
               <li key={item.path}>

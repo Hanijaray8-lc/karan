@@ -1,4 +1,3 @@
-// AddManager.js (Admin only - Add Managers) - Two Column Layout
 import React, { useState, useEffect, useRef } from 'react';
 import {
   UserPlus,
@@ -17,9 +16,16 @@ import {
   XCircle,
   Key,
   Eye,
-  EyeOff
+  EyeOff,
+  Scan,
+  Camera,
+  Sparkles,
+  RefreshCw,
+  AlertCircle
 } from 'lucide-react';
 import AdminNavbar from './AdminNavbar';
+import { loadFaceApiModels, getFaceDescriptor, captureVideoSnapshot } from '../../utils/faceRecognition';
+import { requestCameraPermissions } from '../../utils/cameraService';
 
 export default function AddManager() {
   const [managers, setManagers] = useState([]);
@@ -38,6 +44,18 @@ export default function AddManager() {
   const [tempPassword, setTempPassword] = useState('');
   const [resetting, setResetting] = useState(false);
 
+  // Face Registration State
+  const [faceData, setFaceData] = useState({ descriptor: null, photo: '' });
+  const [cameraActive, setCameraActive] = useState(false);
+  const [cameraLoading, setCameraLoading] = useState(false);
+  const [faceDetected, setFaceDetected] = useState(false);
+  const [capturingFace, setCapturingFace] = useState(false);
+  const [faceScanError, setFaceScanError] = useState('');
+
+  const faceVideoRef = useRef(null);
+  const faceStreamRef = useRef(null);
+  const faceDetectIntervalRef = useRef(null);
+
   // Popup state for success / error feedback
   const [popup, setPopup] = useState({ visible: false, type: 'success', title: '', message: '' });
   const popupTimeoutRef = useRef(null);
@@ -54,10 +72,11 @@ export default function AddManager() {
   useEffect(() => {
     return () => {
       if (popupTimeoutRef.current) clearTimeout(popupTimeoutRef.current);
+      stopCameraForManager();
     };
   }, []);
 
-  // Form Data - Basic details only
+  // Form Data - Basic details & face biometric fields
   const [formData, setFormData] = useState({
     username: '',
     name: '',
@@ -65,8 +84,123 @@ export default function AddManager() {
     phone: '',
     password: '',
     confirmPassword: '',
-    status: 'Active'
+    status: 'Pending',
+    faceDescriptor: [],
+    facePhoto: '',
+    deleteFace: false
   });
+
+  const startCameraForManager = async () => {
+    setFaceScanError('');
+    setCameraLoading(true);
+    setCameraActive(true);
+    try {
+      await requestCameraPermissions().catch(() => { });
+      await loadFaceApiModels();
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          facingMode: 'user'
+        },
+        audio: false
+      });
+
+      faceStreamRef.current = stream;
+      setCameraLoading(false);
+
+      setTimeout(() => {
+        if (faceVideoRef.current) {
+          faceVideoRef.current.srcObject = stream;
+          faceVideoRef.current.play().catch(e => console.error(e));
+          startFaceDetectionLoop();
+        }
+      }, 200);
+    } catch (err) {
+      console.error('Manager camera access error:', err);
+      setCameraLoading(false);
+      setFaceScanError('Unable to access camera. Please allow webcam permissions in your browser.');
+    }
+  };
+
+  const stopCameraForManager = () => {
+    if (faceDetectIntervalRef.current) {
+      clearInterval(faceDetectIntervalRef.current);
+      faceDetectIntervalRef.current = null;
+    }
+    if (faceStreamRef.current) {
+      faceStreamRef.current.getTracks().forEach(track => track.stop());
+      faceStreamRef.current = null;
+    }
+    if (faceVideoRef.current) {
+      faceVideoRef.current.srcObject = null;
+    }
+    setCameraActive(false);
+    setFaceDetected(false);
+    setCapturingFace(false);
+  };
+
+  const startFaceDetectionLoop = () => {
+    if (faceDetectIntervalRef.current) clearInterval(faceDetectIntervalRef.current);
+
+    faceDetectIntervalRef.current = setInterval(async () => {
+      if (!faceVideoRef.current || faceVideoRef.current.paused || faceVideoRef.current.ended) return;
+
+      try {
+        const detection = await getFaceDescriptor(faceVideoRef.current);
+        if (detection && detection.descriptor && detection.descriptor.length === 128) {
+          setFaceDetected(true);
+        } else {
+          setFaceDetected(false);
+        }
+      } catch (err) {
+        // detection loop noise
+      }
+    }, 600);
+  };
+
+  const handleCaptureManagerFace = async () => {
+    if (!faceVideoRef.current) return;
+    setCapturingFace(true);
+    setFaceScanError('');
+
+    try {
+      const result = await getFaceDescriptor(faceVideoRef.current);
+      if (!result || !result.descriptor || result.descriptor.length !== 128) {
+        setFaceScanError('No clear face detected. Please position face directly in front of the camera.');
+        setCapturingFace(false);
+        return;
+      }
+
+      const snapshot = captureVideoSnapshot(faceVideoRef.current);
+      setFaceData({ descriptor: result.descriptor, photo: snapshot });
+      setFormData(prev => ({
+        ...prev,
+        faceDescriptor: result.descriptor,
+        facePhoto: snapshot,
+        deleteFace: false
+      }));
+
+      stopCameraForManager();
+      showPopup('success', 'Face Scanned', 'Manager face biometric attached successfully!');
+    } catch (err) {
+      console.error('Capture face error:', err);
+      setFaceScanError('Failed to capture face. Please try again.');
+    } finally {
+      setCapturingFace(false);
+    }
+  };
+
+  const handleRemoveManagerFace = () => {
+    setFaceData({ descriptor: null, photo: '' });
+    setFormData(prev => ({
+      ...prev,
+      faceDescriptor: [],
+      facePhoto: '',
+      deleteFace: true
+    }));
+    showPopup('info', 'Face Removed', 'Face ID registration removed for this manager.');
+  };
 
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -95,7 +229,7 @@ export default function AddManager() {
     try {
       setLoading(true);
       const token = localStorage.getItem('token');
-      const res = await fetch('http://localhost:5000/api/managers', {
+      const res = await fetch('https://karan-e26t.onrender.com/api/managers', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
@@ -113,6 +247,36 @@ export default function AddManager() {
     } catch (err) {
       console.error('Error fetching managers:', err);
       alert('Could not fetch managers');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleApproveManager = async (managerId, managerName) => {
+    try {
+      setLoading(true);
+      const token = localStorage.getItem('token');
+      const res = await fetch(`https://karan-e26t.onrender.com/api/managers/${managerId}/approve`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (res.status === 401) {
+        handleAuthError();
+        return;
+      }
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || 'Failed to approve manager');
+
+      showPopup('success', 'Approved', `Manager ${managerName} approved successfully!`);
+      await fetchManagers();
+      if (showViewModal) setShowViewModal(false);
+    } catch (err) {
+      console.error('Error approving manager:', err);
+      showPopup('error', 'Error', err.message || 'Could not approve manager');
     } finally {
       setLoading(false);
     }
@@ -153,8 +317,13 @@ export default function AddManager() {
       phone: '',
       password: '',
       confirmPassword: '',
-      status: 'Active'
+      status: 'Pending',
+      faceDescriptor: [],
+      facePhoto: '',
+      deleteFace: false
     });
+    setFaceData({ descriptor: null, photo: '' });
+    stopCameraForManager();
     setShowPassword(false);
     setShowConfirmPassword(false);
   };
@@ -183,10 +352,12 @@ export default function AddManager() {
         email: formData.email,
         phone: formData.phone,
         password: formData.password,
-        status: formData.status
+        status: formData.status,
+        faceDescriptor: formData.faceDescriptor || [],
+        facePhoto: formData.facePhoto || ''
       };
 
-      const res = await fetch('http://localhost:5000/api/managers', {
+      const res = await fetch('https://karan-e26t.onrender.com/api/managers', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -231,7 +402,10 @@ export default function AddManager() {
         name: formData.name,
         email: formData.email,
         phone: formData.phone,
-        status: formData.status
+        status: formData.status,
+        faceDescriptor: formData.faceDescriptor || [],
+        facePhoto: formData.facePhoto || '',
+        deleteFace: formData.deleteFace || false
       };
 
       // Only include password if provided
@@ -239,7 +413,7 @@ export default function AddManager() {
         managerData.password = formData.password;
       }
 
-      const res = await fetch(`http://localhost:5000/api/managers/${currentManager._id}`, {
+      const res = await fetch(`https://karan-e26t.onrender.com/api/managers/${currentManager._id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -271,7 +445,7 @@ export default function AddManager() {
     try {
       setResetting(true);
       const token = localStorage.getItem('token');
-      const res = await fetch(`http://localhost:5000/api/managers/${currentManager._id}/reset-password`, {
+      const res = await fetch(`https://karan-e26t.onrender.com/api/managers/${currentManager._id}/reset-password`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` }
       });
@@ -303,7 +477,7 @@ export default function AddManager() {
       setLoading(true);
       const token = localStorage.getItem('token');
 
-      const res = await fetch(`http://localhost:5000/api/managers/${currentManager._id}`, {
+      const res = await fetch(`https://karan-e26t.onrender.com/api/managers/${currentManager._id}`, {
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -327,6 +501,11 @@ export default function AddManager() {
 
   const openEditModal = (manager) => {
     setCurrentManager(manager);
+    const hasFace = Boolean(manager.faceRegistered && manager.faceDescriptor && manager.faceDescriptor.length === 128);
+    setFaceData({
+      descriptor: hasFace ? manager.faceDescriptor : null,
+      photo: manager.facePhoto || ''
+    });
     setFormData({
       username: manager.username || '',
       name: manager.name || '',
@@ -334,7 +513,10 @@ export default function AddManager() {
       phone: manager.phone || '',
       password: manager.password || '',
       confirmPassword: manager.password || '',
-      status: manager.status || 'Active'
+      status: manager.status || 'Pending',
+      faceDescriptor: hasFace ? manager.faceDescriptor : [],
+      facePhoto: manager.facePhoto || '',
+      deleteFace: false
     });
     setShowEditModal(true);
   };
@@ -350,13 +532,25 @@ export default function AddManager() {
   };
 
   const getStatusBadge = (status) => {
-    return status === 'Active'
-      ? <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800 border border-green-200">
-        <CheckCircle size={12} className="mr-1" /> Active
-      </span>
-      : <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800 border border-red-200">
+    if (status === 'Active') {
+      return (
+        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-800 border border-green-200">
+          <CheckCircle size={12} className="mr-1" /> Active
+        </span>
+      );
+    }
+    if (status === 'Pending') {
+      return (
+        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-100 text-amber-800 border border-amber-300 shadow-sm">
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping mr-1.5"></span> Waiting Approval
+        </span>
+      );
+    }
+    return (
+      <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-800 border border-red-200">
         <XCircle size={12} className="mr-1" /> Inactive
-      </span>;
+      </span>
+    );
   };
 
   const formatDate = (date) => {
@@ -371,6 +565,7 @@ export default function AddManager() {
   // Calculate stats
   const totalManagers = managers.length;
   const activeManagers = managers.filter(m => m.status === 'Active').length;
+  const pendingManagers = managers.filter(m => m.status === 'Pending').length;
   const newThisMonth = managers.filter(m => {
     const joinDate = new Date(m.joinDate || m.createdAt);
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
@@ -387,45 +582,57 @@ export default function AddManager() {
         <div className="relative px-6 py-6 text-white">
           <h1 className="text-3xl md:text-4xl font-bold tracking-tight">Manager Management</h1>
           <p className="text-emerald-100 mt-2 text-lg flex items-center gap-2">
-            <Star size={20} /> Add and manage Managers only
+            <Star size={20} /> Add and manage Managers and approvals
           </p>
         </div>
       </header>
 
       {/* Stats Cards - Green Theme */}
-      <div className="grid grid-cols-3 gap-2 sm:gap-5 px-4 mb-8">
-        <div className="backdrop-blur-lg bg-white/80 p-3 sm:p-6 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-300 border border-white/20">
-          <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
-            <div className="p-2 sm:p-3 bg-[#16423C]/10 rounded-xl">
-              <Users className="text-[#16423C]" size={24} />
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-4 px-4 mb-8">
+        <div className="backdrop-blur-lg bg-white/80 p-3 sm:p-5 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-300 border border-white/20">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
+            <div className="p-2 sm:p-2.5 bg-[#16423C]/10 rounded-xl">
+              <Users className="text-[#16423C]" size={22} />
             </div>
             <div className="min-w-0">
-              <p className="text-2xl sm:text-4xl font-bold text-[#16423C]">{totalManagers}</p>
-              <p className="text-xs sm:text-sm text-gray-600 uppercase tracking-wide font-medium truncate">Total Managers</p>
+              <p className="text-xl sm:text-3xl font-bold text-[#16423C]">{totalManagers}</p>
+              <p className="text-xs text-gray-600 uppercase tracking-wide font-medium truncate">Total Managers</p>
             </div>
           </div>
         </div>
 
-        <div className="backdrop-blur-lg bg-white/80 p-3 sm:p-6 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-300 border border-white/20">
-          <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
-            <div className="p-2 sm:p-3 bg-green-100 rounded-xl">
-              <User className="text-green-600" size={24} />
+        <div className="backdrop-blur-lg bg-white/80 p-3 sm:p-5 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-300 border border-white/20">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
+            <div className="p-2 sm:p-2.5 bg-green-100 rounded-xl">
+              <User className="text-green-600" size={22} />
             </div>
             <div className="min-w-0">
-              <p className="text-2xl sm:text-4xl font-bold text-green-600">{activeManagers}</p>
-              <p className="text-xs sm:text-sm text-gray-600 uppercase tracking-wide font-medium truncate">Active Managers</p>
+              <p className="text-xl sm:text-3xl font-bold text-green-600">{activeManagers}</p>
+              <p className="text-xs text-gray-600 uppercase tracking-wide font-medium truncate">Active</p>
             </div>
           </div>
         </div>
 
-        <div className="backdrop-blur-lg bg-white/80 p-3 sm:p-6 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-300 border border-white/20">
-          <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
-            <div className="p-2 sm:p-3 bg-blue-100 rounded-xl">
-              <Calendar className="text-blue-600" size={24} />
+        <div className="backdrop-blur-lg bg-white/80 p-3 sm:p-5 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-300 border border-white/20">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
+            <div className="p-2 sm:p-2.5 bg-amber-100 rounded-xl">
+              <Shield className="text-amber-600" size={22} />
             </div>
             <div className="min-w-0">
-              <p className="text-2xl sm:text-4xl font-bold text-blue-600">{newThisMonth}</p>
-              <p className="text-xs sm:text-sm text-gray-600 uppercase tracking-wide font-medium truncate">New (30 days)</p>
+              <p className="text-xl sm:text-3xl font-bold text-amber-600">{pendingManagers}</p>
+              <p className="text-xs text-gray-600 uppercase tracking-wide font-medium truncate">Pending Approval</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="backdrop-blur-lg bg-white/80 p-3 sm:p-5 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-300 border border-white/20">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
+            <div className="p-2 sm:p-2.5 bg-blue-100 rounded-xl">
+              <Calendar className="text-blue-600" size={22} />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xl sm:text-3xl font-bold text-blue-600">{newThisMonth}</p>
+              <p className="text-xs text-gray-600 uppercase tracking-wide font-medium truncate">New (30 days)</p>
             </div>
           </div>
         </div>
@@ -481,7 +688,7 @@ export default function AddManager() {
               <tbody className="divide-y divide-[#16423C]/10">
                 {filteredManagers.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="px-4 py-12 text-center text-gray-500">
+                    <td colSpan={9} className="px-4 py-12 text-center text-gray-500">
                       <div className="flex flex-col items-center gap-2">
                         <Users size={40} className="text-gray-400" />
                         <p className="text-lg">No managers found</p>
@@ -520,10 +727,31 @@ export default function AddManager() {
                           {manager.phone || '—'}
                         </div>
                       </td>
-                      <td className="px-4 py-4">{getStatusBadge(manager.status)}</td>
+                      <td className="px-4 py-4">
+                        <div className="flex flex-col gap-1 items-start">
+                          {getStatusBadge(manager.status)}
+                          {manager.faceRegistered && (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-bold text-teal-800 bg-teal-50 px-2 py-0.5 rounded-full border border-teal-200 shadow-sm" title="Face ID Registered">
+                              <Scan size={11} className="text-teal-600" /> Face ID
+                            </span>
+                          )}
+                        </div>
+                      </td>
                       <td className="px-4 py-4">{formatDate(manager.joinDate || manager.createdAt)}</td>
                       <td className="px-4 py-4">
                         <div className="flex items-center gap-2 justify-center" onClick={(e) => e.stopPropagation()}>
+                          {manager.status === 'Pending' && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleApproveManager(manager._id, manager.name || manager.username);
+                              }}
+                              className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-xs font-bold px-2.5 py-1 rounded-lg flex items-center gap-1 shadow-md hover:shadow-lg transition-all"
+                              title="Approve Manager Account"
+                            >
+                              <CheckCircle size={13} /> Approve
+                            </button>
+                          )}
                           <button
                             onClick={() => openEditModal(manager)}
                             className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
@@ -567,13 +795,28 @@ export default function AddManager() {
 
             <div className="p-6">
               <div className="flex items-center gap-4 mb-6">
-                <div className="w-16 h-16 rounded-full bg-[#16423C]/10 flex items-center justify-center">
-                  <User size={32} className="text-[#16423C]" />
-                </div>
+                {currentManager.facePhoto ? (
+                  <img
+                    src={currentManager.facePhoto}
+                    alt="Manager Face"
+                    className="w-16 h-16 rounded-2xl object-cover border-2 border-emerald-600 shadow-md"
+                  />
+                ) : (
+                  <div className="w-16 h-16 rounded-full bg-[#16423C]/10 flex items-center justify-center">
+                    <User size={32} className="text-[#16423C]" />
+                  </div>
+                )}
                 <div>
                   <h3 className="text-xl font-bold text-[#16423C]">{currentManager.name}</h3>
                   <p className="text-gray-600">@{currentManager.username}</p>
-                  <div className="mt-1">{getStatusBadge(currentManager.status)}</div>
+                  <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                    {getStatusBadge(currentManager.status)}
+                    {currentManager.faceRegistered && (
+                      <span className="inline-flex items-center gap-1 text-[11px] font-bold text-teal-800 bg-teal-50 px-2 py-0.5 rounded-full border border-teal-200">
+                        <Scan size={11} className="text-teal-600" /> Face ID Active
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -609,9 +852,27 @@ export default function AddManager() {
                     <p className="font-medium">Manager</p>
                   </div>
                 </div>
+
+                {currentManager.faceRegistered && (
+                  <div className="flex items-center gap-3 p-3 bg-emerald-50 border border-emerald-200 rounded-lg">
+                    <Scan size={18} className="text-emerald-700" />
+                    <div>
+                      <p className="text-xs text-emerald-800 font-bold">Face ID Biometrics</p>
+                      <p className="text-xs text-emerald-700">Registered for Face Scan Login</p>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="flex gap-3 mt-6">
+                {currentManager.status === 'Pending' && (
+                  <button
+                    onClick={() => handleApproveManager(currentManager._id, currentManager.name || currentManager.username)}
+                    className="flex-1 bg-emerald-600 text-white py-2 rounded-lg font-bold hover:bg-emerald-700 transition-colors flex items-center justify-center gap-1.5 shadow-md"
+                  >
+                    <CheckCircle size={16} /> Approve
+                  </button>
+                )}
                 <button
                   onClick={() => {
                     setShowViewModal(false);
@@ -782,6 +1043,7 @@ export default function AddManager() {
                       onChange={handleInputChange}
                       className="w-full px-4 py-2 border-2 border-[#16423C]/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#16423C]"
                     >
+                      <option value="Pending">Pending (Waiting for Approval)</option>
                       <option value="Active">Active</option>
                       <option value="Inactive">Inactive</option>
                     </select>
@@ -792,6 +1054,72 @@ export default function AddManager() {
                       <Key size={14} /> Password must be at least 6 characters
                     </p>
                   </div>
+                </div>
+
+                {/* Face ID Registration Section for Add Manager */}
+                <div className="md:col-span-2 pt-3 border-t border-gray-100">
+                  <label className="block text-sm font-semibold text-gray-800 mb-2 flex items-center gap-1.5">
+                    <Scan className="w-4 h-4 text-[#16423C]" />
+                    <span>Manager Face ID Biometrics</span>
+                    <span className="text-xs font-normal text-gray-500">(Allows manager to login with Face Scan)</span>
+                  </label>
+
+                  {faceData.descriptor && faceData.descriptor.length === 128 ? (
+                    <div className="flex items-center justify-between p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
+                      <div className="flex items-center gap-3">
+                        {faceData.photo ? (
+                          <img
+                            src={faceData.photo}
+                            alt="Manager Face"
+                            className="w-12 h-12 rounded-xl object-cover border border-emerald-500 shadow-sm"
+                          />
+                        ) : (
+                          <div className="w-12 h-12 rounded-xl bg-emerald-700 text-white flex items-center justify-center font-bold">
+                            <Scan className="w-6 h-6" />
+                          </div>
+                        )}
+                        <div>
+                          <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-800">
+                            <CheckCircle size={14} className="text-emerald-600" />
+                            <span>Face ID Attached</span>
+                          </div>
+                          <p className="text-[11px] text-emerald-700/80">Manager can log in using face scanner on login page</p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={startCameraForManager}
+                          className="px-3 py-1.5 rounded-lg text-xs font-bold text-emerald-800 bg-white hover:bg-emerald-100 border border-emerald-300 transition shadow-sm flex items-center gap-1"
+                        >
+                          <Camera size={13} /> Re-Scan
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleRemoveManagerFace}
+                          className="px-2.5 py-1.5 rounded-lg text-xs font-bold text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 transition"
+                          title="Remove Face ID"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-3 bg-gray-50 border border-gray-200 border-dashed rounded-xl flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2 text-xs text-gray-600">
+                        <Camera className="w-4 h-4 text-gray-400 shrink-0" />
+                        <span>No face biometrics registered for this manager yet.</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={startCameraForManager}
+                        className="px-3 py-1.5 rounded-lg text-xs font-bold text-white bg-[#16423C] hover:bg-[#1f5a52] transition shadow flex items-center gap-1.5 shrink-0"
+                      >
+                        <Scan size={13} /> Scan & Register Face
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -949,6 +1277,7 @@ export default function AddManager() {
                       onChange={handleInputChange}
                       className="w-full px-4 py-2 border-2 border-[#16423C]/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#16423C]"
                     >
+                      <option value="Pending">Pending (Waiting for Approval)</option>
                       <option value="Active">Active</option>
                       <option value="Inactive">Inactive</option>
                     </select>
@@ -959,6 +1288,72 @@ export default function AddManager() {
                       <Key size={14} /> Leave password empty to keep current
                     </p>
                   </div>
+                </div>
+
+                {/* Face ID Registration Section for Edit Manager */}
+                <div className="md:col-span-2 pt-3 border-t border-gray-100">
+                  <label className="block text-sm font-semibold text-gray-800 mb-2 flex items-center gap-1.5">
+                    <Scan className="w-4 h-4 text-[#16423C]" />
+                    <span>Manager Face ID Biometrics</span>
+                    <span className="text-xs font-normal text-gray-500">(Allows manager to login with Face Scan)</span>
+                  </label>
+
+                  {faceData.descriptor && faceData.descriptor.length === 128 ? (
+                    <div className="flex items-center justify-between p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
+                      <div className="flex items-center gap-3">
+                        {faceData.photo ? (
+                          <img
+                            src={faceData.photo}
+                            alt="Manager Face"
+                            className="w-12 h-12 rounded-xl object-cover border border-emerald-500 shadow-sm"
+                          />
+                        ) : (
+                          <div className="w-12 h-12 rounded-xl bg-emerald-700 text-white flex items-center justify-center font-bold">
+                            <Scan className="w-6 h-6" />
+                          </div>
+                        )}
+                        <div>
+                          <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-800">
+                            <CheckCircle size={14} className="text-emerald-600" />
+                            <span>Face ID Registered</span>
+                          </div>
+                          <p className="text-[11px] text-emerald-700/80">Manager can log in using face scanner on login page</p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={startCameraForManager}
+                          className="px-3 py-1.5 rounded-lg text-xs font-bold text-emerald-800 bg-white hover:bg-emerald-100 border border-emerald-300 transition shadow-sm flex items-center gap-1"
+                        >
+                          <Camera size={13} /> Re-Scan
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleRemoveManagerFace}
+                          className="px-2.5 py-1.5 rounded-lg text-xs font-bold text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 transition"
+                          title="Remove Face ID"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-3 bg-gray-50 border border-gray-200 border-dashed rounded-xl flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2 text-xs text-gray-600">
+                        <Camera className="w-4 h-4 text-gray-400 shrink-0" />
+                        <span>No face biometrics registered for this manager yet.</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={startCameraForManager}
+                        className="px-3 py-1.5 rounded-lg text-xs font-bold text-white bg-[#16423C] hover:bg-[#1f5a52] transition shadow flex items-center gap-1.5 shrink-0"
+                      >
+                        <Scan size={13} /> Scan & Register Face
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -1020,6 +1415,114 @@ export default function AddManager() {
               <button
                 onClick={() => setShowDeleteModal(false)}
                 className="flex-1 bg-gray-200 text-gray-800 py-3 rounded-lg font-medium hover:bg-gray-300 transition-all duration-300"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Interactive Face Scanner Camera Modal */}
+      {cameraActive && (
+        <div className="fixed inset-0 z-[60] bg-black/80 backdrop-blur-md flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-slate-900 text-white rounded-3xl p-6 max-w-md w-full border border-teal-500/30 shadow-2xl relative space-y-4">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-teal-500/20 text-teal-400 flex items-center justify-center">
+                  <Scan size={18} />
+                </div>
+                <div>
+                  <h3 className="font-bold text-base text-white">Register Manager Face ID</h3>
+                  <p className="text-[11px] text-teal-200/80">Scan manager face to store biometrics</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={stopCameraForManager}
+                className="p-1 rounded-full text-gray-400 hover:text-white hover:bg-slate-800 transition"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Video Box */}
+            <div className="relative rounded-2xl overflow-hidden bg-black aspect-[4/3] w-full flex items-center justify-center border-2 border-teal-500/50">
+              {cameraLoading ? (
+                <div className="flex flex-col items-center justify-center space-y-2 p-6 text-center">
+                  <RefreshCw className="w-8 h-8 animate-spin text-teal-400" />
+                  <p className="text-xs text-gray-300">Initializing camera & face models...</p>
+                </div>
+              ) : (
+                <>
+                  <video
+                    ref={faceVideoRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    className="w-full h-full object-cover transform -scale-x-100"
+                  />
+                  {/* Overlay HUD */}
+                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center p-4">
+                    <div
+                      className={`relative w-44 h-52 rounded-3xl border-2 transition-all duration-300 ${faceDetected
+                        ? 'border-emerald-400 bg-emerald-500/10 shadow-[0_0_20px_rgba(16,185,129,0.4)]'
+                        : 'border-teal-300/40 border-dashed animate-pulse'
+                        }`}
+                    >
+                      {/* Laser Scanner Line */}
+                      <div className="absolute inset-x-0 h-0.5 bg-gradient-to-r from-transparent via-emerald-400 to-transparent shadow-[0_0_8px_#34d399] animate-bounce"></div>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Status & Error */}
+            <div className="text-center space-y-1.5">
+              {faceScanError ? (
+                <div className="p-2.5 rounded-xl bg-red-950/70 border border-red-800 text-red-200 text-xs flex items-center gap-2">
+                  <AlertCircle size={14} className="text-red-400 shrink-0" />
+                  <span>{faceScanError}</span>
+                </div>
+              ) : (
+                <p className="text-xs text-gray-300">
+                  {faceDetected ? (
+                    <span className="text-emerald-400 font-bold flex items-center justify-center gap-1">
+                      <Sparkles size={14} /> Face Detected! Ready to Capture
+                    </span>
+                  ) : (
+                    'Position the manager\'s face inside the guide frame'
+                  )}
+                </p>
+              )}
+            </div>
+
+            {/* Actions */}
+            <div className="flex gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={handleCaptureManagerFace}
+                disabled={!faceDetected || capturingFace}
+                className="flex-1 py-3 px-4 rounded-xl font-bold text-white bg-emerald-600 hover:bg-emerald-700 active:scale-95 transition shadow-lg flex items-center justify-center gap-2 text-sm disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {capturingFace ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>Capturing...</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-4 h-4 text-emerald-200" />
+                    <span>Capture Face ID</span>
+                  </>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={stopCameraForManager}
+                className="py-3 px-4 rounded-xl font-semibold text-gray-300 bg-slate-800 hover:bg-slate-700 transition text-sm"
               >
                 Cancel
               </button>

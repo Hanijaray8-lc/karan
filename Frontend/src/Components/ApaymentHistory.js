@@ -13,9 +13,70 @@ import {
 
 import Navbar from './AgentNavbar';
 
+// Helper function to format payment date & time for display
+const formatPaymentDateTime = (paymentDateStr, createdAtStr) => {
+  const pDate = paymentDateStr ? new Date(paymentDateStr) : null;
+  const cDate = createdAtStr ? new Date(createdAtStr) : null;
+
+  const isValidP = pDate && !isNaN(pDate.getTime());
+  const isValidC = cDate && !isNaN(cDate.getTime());
+
+  if (!isValidP && !isValidC) {
+    return { display: 'N/A', rawDate: new Date() };
+  }
+
+  if (!isValidP) {
+    return {
+      display: cDate.toLocaleString('en-IN', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true,
+      }),
+      rawDate: cDate,
+    };
+  }
+
+  // Check if paymentDate has dummy time (like 12:00:00 UTC or 00:00:00 UTC)
+  const isDummyTime =
+    typeof paymentDateStr === 'string' &&
+    (paymentDateStr.includes('T12:00:00') ||
+      paymentDateStr.includes('T00:00:00') ||
+      (pDate.getUTCHours() === 12 && pDate.getUTCMinutes() === 0 && pDate.getUTCSeconds() === 0) ||
+      (pDate.getUTCHours() === 0 && pDate.getUTCMinutes() === 0 && pDate.getUTCSeconds() === 0));
+
+  let finalDate = pDate;
+
+  if (isDummyTime && isValidC) {
+    // Keep target payment date, but adopt actual creation time from createdAt
+    finalDate = new Date(pDate);
+    finalDate.setHours(
+      cDate.getHours(),
+      cDate.getMinutes(),
+      cDate.getSeconds(),
+      cDate.getMilliseconds()
+    );
+  }
+
+  return {
+    display: finalDate.toLocaleString('en-IN', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    }),
+    rawDate: finalDate,
+  };
+};
+
 export default function ApaymentHistory() {
   const [searchTerm, setSearchTerm] = useState('');
   const [staffFilter, setStaffFilter] = useState('All Staff');
+  const [dateFilter, setDateFilter] = useState('');
   const [paymentRecords, setPaymentRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -92,7 +153,7 @@ export default function ApaymentHistory() {
   const fetchPaymentsData = async () => {
     try {
       // Use test endpoint (no auth required) for now
-      const response = await fetch('http://localhost:5000/api/payments/test/all', {
+      const response = await fetch('https://karan-e26t.onrender.com/api/payments/test/all', {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
@@ -108,63 +169,94 @@ export default function ApaymentHistory() {
 
       if (data.success) {
         // Map backend data to frontend format
-        const formattedRecords = data.data.payments.map((payment) => ({
-          _id: payment._id,
-          datetime: new Date(payment.paymentDate).toLocaleString('en-IN', {
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
-          }),
-          staff: (() => {
-            const rawName = payment.collectedStaff || '';
-            const agentName = payment.agent && (payment.agent.name || payment.agent.username);
-            const roleLabel = payment.collectedByRole ? payment.collectedByRole.charAt(0).toUpperCase() + payment.collectedByRole.slice(1) : null;
+        const formattedRecords = data.data.payments.map((payment) => {
+          const dt = formatPaymentDateTime(payment.paymentDate, payment.createdAt);
+          return {
+            _id: payment._id,
+            datetime: dt.display,
+            rawDate: dt.rawDate,
+            // Store the role of who collected the payment (agent / manager / admin)
+            collectedByRole: (payment.collectedByRole || 'agent').toLowerCase(),
+            staff: (() => {
+              const rawName = payment.collectedStaff || '';
+              const agentName = payment.agent && (payment.agent.name || payment.agent.username);
+              const roleLabel = payment.collectedByRole ? payment.collectedByRole.charAt(0).toUpperCase() + payment.collectedByRole.slice(1) : null;
 
-            // If backend returned only a role label like 'Manager' treat it as missing
-            const roleOnly = rawName && ['agent', 'manager', 'admin'].includes(rawName.toString().toLowerCase());
+              // If backend returned only a role label like 'Manager' treat it as missing
+              const roleOnly = rawName && ['agent', 'manager', 'admin'].includes(rawName.toString().toLowerCase());
 
-            const displayName = (!rawName || roleOnly)
-              ? (agentName || (payment.collectedStaffId ? String(payment.collectedStaffId) : (roleLabel || 'Unknown')))
-              : rawName;
+              const displayName = (!rawName || roleOnly)
+                ? (agentName || (payment.collectedStaffId ? String(payment.collectedStaffId) : (roleLabel || 'Unknown')))
+                : rawName;
 
-            return {
-              id: payment.agent?._id || (payment.collectedStaffId ? String(payment.collectedStaffId) : 'N/A'),
-              name: displayName,
-              role: roleLabel,
-            };
-          })(),
-          client: {
-            id: payment.client?._id || 'N/A',
-            name: payment.clientName || payment.client?.name || 'Unknown',
-            phone: payment.client?.phone || 'N/A',
-            district: payment.client?.district || 'N/A',
-            landmark: payment.client?.landmark || 'N/A',
-          },
-          received: payment.amount || 0,
-          pending: payment.remainingDue || 0,
-        }));
+              return {
+                id: payment.agent?._id || (payment.collectedStaffId ? String(payment.collectedStaffId) : 'N/A'),
+                name: displayName,
+                role: roleLabel,
+              };
+            })(),
+            client: {
+              id: payment.client?._id || (typeof payment.client === 'string' ? payment.client : null) || 'N/A',
+              name: payment.clientName || payment.client?.name || 'Unknown',
+              phone: payment.client?.phone || 'N/A',
+              district: payment.client?.district || 'N/A',
+              landmark: payment.client?.landmark || 'N/A',
+              assignedAgent: payment.client?.assigned_agent || payment.client?.assigned_agent_name || payment.client?.agent || null,
+            },
+            received: payment.amount || 0,
+            pending: payment.remainingDue || 0,
+          };
+        });
 
-        setPaymentRecords(formattedRecords);
+        // Sort descending: latest payment first (most recent on top)
+        formattedRecords.sort((a, b) => {
+          const timeA = a.rawDate ? a.rawDate.getTime() : 0;
+          const timeB = b.rawDate ? b.rawDate.getTime() : 0;
+          if (timeB !== timeA) return timeB - timeA;
+          return String(b._id || '').localeCompare(String(a._id || ''));
+        });
+
+        // Deduplicate records by _id AND by client + payment date (same client on same date)
+        const uniqueRecords = [];
+        const seenKeys = new Set();
+
+        formattedRecords.forEach((record) => {
+          const idKey = record._id ? String(record._id) : null;
+          const clientId = record.client?.id || record.client?.phone || record.client?.name;
+          const dateStr = record.rawDate
+            ? `${record.rawDate.getFullYear()}-${String(record.rawDate.getMonth() + 1).padStart(2, '0')}-${String(record.rawDate.getDate()).padStart(2, '0')}`
+            : record.datetime;
+          const clientDateKey = clientId && dateStr ? `${clientId}_${dateStr}` : null;
+
+          if (idKey && seenKeys.has(idKey)) return;
+          if (clientDateKey && seenKeys.has(clientDateKey)) return;
+
+          if (idKey) seenKeys.add(idKey);
+          if (clientDateKey) seenKeys.add(clientDateKey);
+          uniqueRecords.push(record);
+        });
+
+        setPaymentRecords(uniqueRecords);
         setError(null);
 
-        // Calculate stats
-        const totalCollected = data.data.stats.totalCollected || 0;
+        // Calculate stats using uniqueRecords
+        const totalCollected = uniqueRecords.reduce((sum, r) => sum + (r.received || 0), 0);
         let todayCollected = 0;
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
-        formattedRecords.forEach((record) => {
-          const paymentDate = new Date(record.datetime);
-          paymentDate.setHours(0, 0, 0, 0);
-          if (paymentDate.getTime() === today.getTime()) {
-            todayCollected += record.received;
+        uniqueRecords.forEach((record) => {
+          if (record.rawDate) {
+            const paymentDate = new Date(record.rawDate);
+            paymentDate.setHours(0, 0, 0, 0);
+            if (paymentDate.getTime() === today.getTime()) {
+              todayCollected += record.received;
+            }
           }
         });
 
-        // Calculate total pending from all payments
-        const totalPending = formattedRecords.reduce(
+        // Calculate total pending from all unique payments
+        const totalPending = uniqueRecords.reduce(
           (sum, record) => sum + (record.pending || 0),
           0
         );
@@ -178,7 +270,7 @@ export default function ApaymentHistory() {
         // Extract unique staff names
         const uniqueStaff = [
           'All Staff',
-          ...new Set(formattedRecords.map((r) => r.staff.name).filter(name => name !== 'Unknown')),
+          ...new Set(uniqueRecords.map((r) => r.staff.name).filter(name => name !== 'Unknown')),
         ];
         setStaffList(uniqueStaff);
       } else {
@@ -199,7 +291,7 @@ export default function ApaymentHistory() {
         return;
       }
 
-      const response = await fetch('http://localhost:5000/api/clients/all', {
+      const response = await fetch('https://karan-e26t.onrender.com/api/clients/all', {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
@@ -235,7 +327,7 @@ export default function ApaymentHistory() {
       const token = localStorage.getItem('token');
 
       // Call backend to delete payment
-      const res = await fetch(`http://localhost:5000/api/payments/${paymentId}`, {
+      const res = await fetch(`https://karan-e26t.onrender.com/api/payments/${paymentId}`, {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
@@ -273,7 +365,7 @@ export default function ApaymentHistory() {
       }
 
       // Update client loan_end_date in backend
-      const updateRes = await fetch(`http://localhost:5000/api/clients/${clientId}`, {
+      const updateRes = await fetch(`https://karan-e26t.onrender.com/api/clients/${clientId}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -289,7 +381,7 @@ export default function ApaymentHistory() {
       }
 
       console.log('Successfully extended loan end date');
-      
+
       // Dispatch custom event to notify other components about the change
       window.dispatchEvent(new CustomEvent('clientUpdated', {
         detail: { clientId, loan_end_date: newEndDate.toISOString() }
@@ -306,26 +398,73 @@ export default function ApaymentHistory() {
     }
   };
 
+  // Helper to determine if payment belongs to the logged-in agent (either collected by agent or for client assigned to agent)
+  const isPaymentForAgent = (record, user, clients) => {
+    if (!user) return true;
+    const userRole = (user.role || '').toLowerCase();
+    if (userRole !== 'agent') return true;
+
+    const userId = String(user._id || user.id || '').trim();
+    const userName = (user.name || user.username || user.email || '').toLowerCase().replace(/\s*\(.*?\)/g, '').trim();
+
+    // 1. Check if collected by this agent directly
+    const staffId = String(record.staff?.id || '').trim();
+    const staffName = (record.staff?.name || '').toLowerCase().replace(/\s*\(.*?\)/g, '').trim();
+
+    if (userId && staffId === userId) return true;
+    if (userName && staffName.includes(userName)) return true;
+    if (userName && userName.includes(staffName) && staffName.length > 0) return true;
+
+    // 2. Check if client in payment record is assigned to this agent
+    const clientId = String(record.client?.id || '').trim();
+    const clientObj = Array.isArray(clients) ? clients.find(c => String(c._id || c.id || '') === clientId) : null;
+
+    const recordAssigned = record.client?.assignedAgent;
+    if (recordAssigned) {
+      const assignedId = String(recordAssigned._id || recordAssigned.id || recordAssigned || '').trim();
+      const assignedName = (recordAssigned.name || recordAssigned.username || String(recordAssigned)).toLowerCase().replace(/\s*\(.*?\)/g, '').trim();
+      if (userId && assignedId === userId) return true;
+      if (userName && assignedName.includes(userName)) return true;
+      if (userName && userName.includes(assignedName) && assignedName.length > 0) return true;
+    }
+
+    if (clientObj) {
+      const assignedId = String(clientObj.assigned_agent?._id || clientObj.assigned_agent?.id || clientObj.assigned_agent || clientObj.agent?._id || clientObj.agent?.id || '').trim();
+      const assignedName = (clientObj.assigned_agent_name || clientObj.assigned_agent?.name || clientObj.assigned_agent?.username || clientObj.agent?.name || clientObj.agent?.username || String(clientObj.assigned_agent || '')).toLowerCase().replace(/\s*\(.*?\)/g, '').trim();
+
+      if (userId && assignedId === userId) return true;
+      if (userName && assignedName.includes(userName)) return true;
+      if (userName && userName.includes(assignedName) && assignedName.length > 0) return true;
+    }
+
+    return false;
+  };
+
   const filteredRecords = paymentRecords.filter((record) => {
+    // Agent-side: only show payments collected by agents (exclude manager/admin payments)
+    const isAgentPayment = (record.collectedByRole || 'agent') === 'agent';
+    if (!isAgentPayment) return false;
+
     const matchesSearch =
       (record.staff?.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
       (record.client?.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (record.client?.id || '').toLowerCase().includes(searchTerm.toLowerCase());
+      (record.client?.id || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (record.client?.district || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (record.client?.landmark || '').toLowerCase().includes(searchTerm.toLowerCase());
 
     const matchesStaff =
       staffFilter === 'All Staff' || record.staff?.name === staffFilter;
 
-    // If logged-in user is an agent, show only payments collected by that agent
-    if (loggedInUser && (loggedInUser.role || '').toLowerCase() === 'agent') {
-      const userId = String(loggedInUser._id || loggedInUser.id || '');
-      const staffId = String(record.staff?.id || '');
-      const staffName = (record.staff?.name || '').toLowerCase();
-      const userName = (loggedInUser.name || loggedInUser.username || '').toLowerCase();
-      const collectedByThisAgent = staffId === userId || staffName === userName;
-      return matchesSearch && matchesStaff && collectedByThisAgent;
-    }
+    const belongsToAgent = isPaymentForAgent(record, loggedInUser, clientsList);
 
-    return matchesSearch && matchesStaff;
+    const matchesDate = !dateFilter || (record.rawDate && (() => {
+      const year = record.rawDate.getFullYear();
+      const month = String(record.rawDate.getMonth() + 1).padStart(2, '0');
+      const day = String(record.rawDate.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}` === dateFilter;
+    })());
+
+    return matchesSearch && matchesStaff && belongsToAgent && matchesDate;
   });
 
   if (error) {
@@ -374,7 +513,7 @@ export default function ApaymentHistory() {
                     ₹{stats.totalCollected.toLocaleString('en-IN')}
                   </p>
                 </div>
-                <div className="bg-white/20 p-2 sm:p-3 rounded-lg hidden sm:block">
+                <div className="bg-[#16423C]/20 p-2 sm:p-3 rounded-lg hidden sm:block">
                   <IndianRupee className="h-6 w-6 sm:h-8 sm:w-8" />
                 </div>
               </div>
@@ -390,7 +529,7 @@ export default function ApaymentHistory() {
                     ₹{stats.todayCollected.toLocaleString('en-IN')}
                   </p>
                 </div>
-                <div className="bg-white/20 p-2 sm:p-3 rounded-lg hidden sm:block">
+                <div className="bg-[#16423C]/20 p-2 sm:p-3 rounded-lg hidden sm:block">
                   <CalendarDays className="h-6 w-6 sm:h-8 sm:w-8" />
                 </div>
               </div>
@@ -406,7 +545,7 @@ export default function ApaymentHistory() {
                     ₹{stats.totalPending.toLocaleString('en-IN')}
                   </p>
                 </div>
-                <div className="bg-white/20 p-2 sm:p-3 rounded-lg hidden sm:block">
+                <div className="bg-[#16423C]/20 p-2 sm:p-3 rounded-lg hidden sm:block">
                   <Users className="h-6 w-6 sm:h-8 sm:w-8" />
                 </div>
               </div>
@@ -449,6 +588,8 @@ export default function ApaymentHistory() {
               <div className="relative">
                 <input
                   type="date"
+                  value={dateFilter}
+                  onChange={(e) => setDateFilter(e.target.value)}
                   className="border rounded-lg px-3 py-2 text-sm w-40"
                 />
               </div>
@@ -458,7 +599,14 @@ export default function ApaymentHistory() {
                 Filter
               </button>
 
-              <button className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm transition-colors">
+              <button
+                onClick={() => {
+                  setSearchTerm('');
+                  setStaffFilter('All Staff');
+                  setDateFilter('');
+                }}
+                className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm transition-colors"
+              >
                 <RotateCcw size={16} />
                 Reset
               </button>

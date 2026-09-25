@@ -5,6 +5,54 @@ import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import ManagerNavbar from './ManagerNavbar';
 
+const parseLocalDate = (dateInput) => {
+  if (!dateInput) return null;
+  if (dateInput instanceof Date) {
+    return new Date(dateInput.getFullYear(), dateInput.getMonth(), dateInput.getDate());
+  }
+  const str = String(dateInput).trim();
+  const match = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (match) {
+    return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  }
+  const d = new Date(dateInput);
+  return isNaN(d.getTime()) ? null : new Date(d.getFullYear(), d.getMonth(), d.getDate());
+};
+
+const toLocalDateStr = (dateInput) => {
+  if (!dateInput) return '';
+  if (typeof dateInput === 'string') {
+    const match = dateInput.trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (match) return `${match[1]}-${match[2]}-${match[3]}`;
+  }
+  const d = dateInput instanceof Date ? dateInput : new Date(dateInput);
+  if (isNaN(d.getTime())) return '';
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
+// Helper for generating scheduled weekly due dates
+const getClientScheduledDueDates = (client) => {
+  if (!client || !client.loan_start_date) return [];
+  const start = parseLocalDate(client.loan_start_date);
+  if (!start) return [];
+
+  const defaultWeeks = 12;
+  const end = client.loan_end_date
+    ? parseLocalDate(client.loan_end_date)
+    : new Date(start.getFullYear(), start.getMonth(), start.getDate() + (defaultWeeks - 1) * 7);
+
+  const dueDates = [];
+  let due = new Date(start);
+  while (due <= end) {
+    dueDates.push(toLocalDateStr(due));
+    due.setDate(due.getDate() + 7);
+  }
+  return dueDates;
+};
+
 // Robust native PDF saver with multiple fallbacks and mkdir attempt
 const savePdfBase64 = async (fileName, base64) => {
   const candidates = [Directory.Documents, Directory.Downloads, Directory.External];
@@ -42,8 +90,13 @@ const MDailyDues = () => {
     const saved = localStorage.getItem('selectedLandmark');
     return saved || '';
   });
+  const [selectedAgent, setSelectedAgent] = useState(() => {
+    const saved = localStorage.getItem('selectedAgent');
+    return saved || '';
+  });
   const [showClientModal, setShowClientModal] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
+  const [showFinalDueModal, setShowFinalDueModal] = useState(false);
   const [selectedClient, setSelectedClient] = useState(null);
   const [notification, setNotification] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -53,6 +106,7 @@ const MDailyDues = () => {
   const [notPaidTodayMap, setNotPaidTodayMap] = useState({}); // localStorage marker for Not Paid
   const [serverPaidTodayMap, setServerPaidTodayMap] = useState({}); // server-side payments today
   const [selectedAlpha, setSelectedAlpha] = useState(''); // alphabet filter for landmarks
+  const [customAmount, setCustomAmount] = useState('');
   const [showMoreAlpha, setShowMoreAlpha] = useState(false);
   // Maintain an ordered list of landmarks (persisted to localStorage) for drag-reorder
   const [orderedLandmarks, setOrderedLandmarks] = useState(() => {
@@ -103,11 +157,16 @@ const MDailyDues = () => {
   // Compute weekly amount client-side when backend value is missing
   const computeWeeklyAmount = (client) => {
     try {
+      if (!client) return 575;
+      const amount = Number(client.amount || 0);
       const pendingTotal = Number(client.pending || 0);
       const pending = isNaN(pendingTotal) ? 0 : pendingTotal;
 
+      if (amount === 5000 || amount === 6900 || pending === 5000 || pending === 6900) return 575;
+      if (client.weekly_amount && Number(client.weekly_amount) > 0) return Number(client.weekly_amount);
+
       if (pending <= 0) return 0;
-      if (!client.loan_start_date) return 0;
+      if (!client.loan_start_date) return 575;
 
       const start = new Date(client.loan_start_date);
       const defaultWeeks = 12;
@@ -129,7 +188,7 @@ const MDailyDues = () => {
       const weekly = weeks > 0 ? (pending / weeks) : 0;
       return Math.round(weekly * 100) / 100;
     } catch (err) {
-      return 0;
+      return 575;
     }
   };
 
@@ -142,6 +201,11 @@ const MDailyDues = () => {
   useEffect(() => {
     localStorage.setItem('selectedLandmark', selectedLandmark);
   }, [selectedLandmark]);
+
+  // Save selected agent filter to localStorage
+  useEffect(() => {
+    localStorage.setItem('selectedAgent', selectedAgent);
+  }, [selectedAgent]);
 
   // Mock data - replace with actual API call
   useEffect(() => {
@@ -160,11 +224,19 @@ const MDailyDues = () => {
   useEffect(() => {
     const handleClientUpdate = (event) => {
       const { clientId, loan_end_date } = event.detail;
-      const todayISO = new Date().toISOString().split('T')[0];
+      const todayISO = toLocalDateStr(new Date());
       setClients(prevClients =>
         prevClients.map(client => {
           if (client._id !== clientId) return client;
-          const updated = { ...client, loan_end_date: loan_end_date, paid: false };
+          const updated = {
+            ...client,
+            loan_end_date: loan_end_date,
+            paid: false,
+            payments: (client.payments || []).filter(p => {
+              const pDate = p.paymentDate ? toLocalDateStr(new Date(p.paymentDate)) : null;
+              return pDate !== todayISO;
+            })
+          };
           if (updated.paidDates instanceof Set) {
             const newSet = new Set(updated.paidDates);
             newSet.delete(todayISO);
@@ -178,7 +250,15 @@ const MDailyDues = () => {
       // Update selectedClient if it's the same client
       setSelectedClient(prev => {
         if (!prev || prev._id !== clientId) return prev;
-        const updated = { ...prev, loan_end_date: loan_end_date, paid: false };
+        const updated = {
+          ...prev,
+          loan_end_date: loan_end_date,
+          paid: false,
+          payments: (prev.payments || []).filter(p => {
+            const pDate = p.paymentDate ? toLocalDateStr(new Date(p.paymentDate)) : null;
+            return pDate !== todayISO;
+          })
+        };
         if (updated.paidDates instanceof Set) {
           const newSet = new Set(updated.paidDates);
           newSet.delete(todayISO);
@@ -199,31 +279,97 @@ const MDailyDues = () => {
         delete newMap[clientId];
         return newMap;
       });
-      showNotification('Client due date has been extended due to payment cancellation.', 'info');
+      setServerPaidTodayMap(prev => {
+        const newMap = { ...prev };
+        delete newMap[clientId];
+        return newMap;
+      });
+      try {
+        localStorage.removeItem(`markedPaid_${clientId}`);
+        localStorage.removeItem(`pushedNotPaid_${clientId}`);
+      } catch (e) { }
+      showNotification('Client payment updated / cancelled.', 'info');
     };
 
     const handleClientPaid = (event) => {
-      const { clientId } = event.detail;
+      const { clientId, amount = 575 } = event.detail;
+      const todayISO = toLocalDateStr(new Date());
+      const newPayment = {
+        amount,
+        paymentDate: new Date().toISOString(),
+        collectedByRole: JSON.parse(localStorage.getItem('user') || '{}')?.role || 'manager'
+      };
+      setClients(prevClients =>
+        prevClients.map(client => {
+          if (client._id !== clientId) return client;
+          const updatedPayments = [...(client.payments || []), newPayment];
+          const updated = {
+            ...client,
+            paid: true,
+            received: (client.received || 0) + amount,
+            pending: (client.pending || 0) - amount,
+            payments: updatedPayments
+          };
+          if (updated.paidDates instanceof Set) {
+            updated.paidDates = new Set([...updated.paidDates, todayISO]);
+          } else if (Array.isArray(updated.paidDates)) {
+            updated.paidDates = [...updated.paidDates, todayISO];
+          } else {
+            updated.paidDates = new Set([todayISO]);
+          }
+          return updated;
+        })
+      );
+      setPaidTodayMap(prev => ({ ...prev, [clientId]: true }));
+      setSelectedClient(prev => {
+        if (!prev || prev._id !== clientId) return prev;
+        const updatedPayments = [...(prev.payments || []), newPayment];
+        const updated = {
+          ...prev,
+          paid: true,
+          received: (prev.received || 0) + amount,
+          pending: (prev.pending || 0) - amount,
+          payments: updatedPayments
+        };
+        if (updated.paidDates instanceof Set) {
+          updated.paidDates = new Set([...updated.paidDates, todayISO]);
+        } else if (Array.isArray(updated.paidDates)) {
+          updated.paidDates = [...updated.paidDates, todayISO];
+        } else {
+          updated.paidDates = new Set([todayISO]);
+        }
+        return updated;
+      });
+    };
+
+    const handleClientPushed = (event) => {
+      const { clientId, loan_end_date } = event.detail;
       setClients(prevClients =>
         prevClients.map(client =>
-          client._id === clientId ? { ...client, paid: true } : client
+          client._id === clientId ? { ...client, loan_end_date } : client
         )
       );
+      setNotPaidTodayMap(prev => ({ ...prev, [clientId]: true }));
+      setSelectedClient(prev => {
+        if (!prev || prev._id !== clientId) return prev;
+        return { ...prev, loan_end_date };
+      });
     };
 
     window.addEventListener('clientUpdated', handleClientUpdate);
     window.addEventListener('clientPaid', handleClientPaid);
+    window.addEventListener('clientLoanEndUpdated', handleClientPushed);
     return () => {
       window.removeEventListener('clientUpdated', handleClientUpdate);
       window.removeEventListener('clientPaid', handleClientPaid);
+      window.removeEventListener('clientLoanEndUpdated', handleClientPushed);
     };
   }, []);
 
-  // Fetch clients without showing loading indicator (for polling)
   const fetchClientsWithoutLoading = async () => {
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch('http://localhost:5000/api/clients/all', {
+      const res = await fetch('https://karan-e26t.onrender.com/api/clients/all', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
@@ -247,37 +393,130 @@ const MDailyDues = () => {
             pending_amount: isNaN(normalizedPending) ? 0 : normalizedPending,
             paidDates: new Set(),
             paid: false,
+            payments: [],
             type: 'loan'
           };
         });
         // Attach paid status by checking payment records
         try {
-          const payRes = await fetch('http://localhost:5000/api/payments/test/all');
+          const payRes = await fetch('https://karan-e26t.onrender.com/api/payments/test/all');
           const payJson = payRes.ok ? await payRes.json() : null;
-          const payments = (payJson && payJson.data && payJson.data.payments) || [];
-          const todayISO = new Date().toISOString().split('T')[0];
+          const rawPayments = (payJson && payJson.data && payJson.data.payments) || [];
+          const seenIds = new Set();
+          const payments = [];
+          rawPayments.forEach(p => {
+            const pId = p._id || p.id;
+            if (pId) {
+              if (!seenIds.has(pId)) {
+                seenIds.add(pId);
+                payments.push(p);
+              }
+            } else {
+              payments.push(p);
+            }
+          });
+          const todayISO = toLocalDateStr(new Date());
+
+          // Build maps: paidDatesMap, collectorsMap, and paymentsByClient
           const paidDatesMap = {};
+          const collectorsMap = {};
+          const paymentsByClient = {};
 
           payments.forEach(p => {
-            const clientId = p.client && p.client._id ? String(p.client._id) : (p.client ? String(p.client) : null);
-            const pDate = p.paymentDate ? new Date(p.paymentDate).toISOString().split('T')[0] : null;
+            const clientId = p.client && p.client._id
+              ? String(p.client._id)
+              : (p.client && p.client.id
+                ? String(p.client.id)
+                : (p.client ? String(p.client) : (p.clientId ? String(p.clientId) : (p.client_id ? String(p.client_id) : null))));
+            const pDate = p.paymentDate ? toLocalDateStr(p.paymentDate) : null;
             if (clientId && pDate) {
               if (!paidDatesMap[clientId]) paidDatesMap[clientId] = new Set();
               paidDatesMap[clientId].add(pDate);
             }
+
+            if (clientId) {
+              if (!paymentsByClient[clientId]) paymentsByClient[clientId] = [];
+              paymentsByClient[clientId].push(p);
+            }
+
+            if (clientId && pDate === todayISO) {
+              const role = p.collectedByRole || (p.collectedStaff || '').toString().match(/\((agent|manager|admin)\)$/)?.[1];
+              if (role) {
+                if (!collectorsMap[clientId]) collectorsMap[clientId] = new Set();
+                collectorsMap[clientId].add(role);
+              }
+            }
           });
 
-          const withPaid = transformedClients.map(c => {
-            const id = c._id ? String(c._id) : (c.clientId ? String(c.clientId) : null);
-            const paidDates = paidDatesMap[id] || new Set();
-            return { ...c, paidDates, paid: paidDates.has(todayISO) };
+          // convert collectorsMap sets to arrays for state
+          const collectorsObj = {};
+          Object.keys(collectorsMap).forEach(k => { collectorsObj[k] = Array.from(collectorsMap[k]); });
+          setServerPaidTodayMap(collectorsObj);
+
+          // Sync local paid markers with server state (clear local markedPaid if server has no payment today)
+          transformedClients.forEach(c => {
+            const id = c._id ? String(c._id) : (c.clientId ? String(c.clientId) : (c.id ? String(c.id) : null));
+            if (id && (!collectorsObj[id] || collectorsObj[id].length === 0)) {
+              try { localStorage.removeItem(`markedPaid_${id}`); } catch (e) { }
+              setPaidTodayMap(prev => {
+                if (!prev[id]) return prev;
+                const n = { ...prev };
+                delete n[id];
+                return n;
+              });
+            }
           });
 
-          const paidMap = {};
-          withPaid.forEach(c => { const id = c._id ? String(c._id) : (c.clientId ? String(c.clientId) : null); if (id) paidMap[id] = Boolean(c.paid); });
-          setServerPaidTodayMap(paidMap);
+          setClients(prevClients => {
+            const prevClientMap = {};
+            (prevClients || []).forEach(c => {
+              const cid = c._id ? String(c._id) : (c.clientId ? String(c.clientId) : (c.id ? String(c.id) : null));
+              if (cid) prevClientMap[cid] = c;
+            });
 
-          setClients(withPaid);
+            const withPaid = transformedClients.map(c => {
+              const id = c._id ? String(c._id) : (c.clientId ? String(c.clientId) : (c.id ? String(c.id) : null));
+              const prevC = prevClientMap[id];
+
+              let paidDates = paidDatesMap[id] ? new Set(paidDatesMap[id]) : new Set();
+
+              // Merge any locally added paidDates from existing state
+              if (prevC && prevC.paidDates) {
+                if (prevC.paidDates instanceof Set) {
+                  prevC.paidDates.forEach(d => paidDates.add(d));
+                } else if (Array.isArray(prevC.paidDates)) {
+                  prevC.paidDates.forEach(d => paidDates.add(d));
+                }
+              }
+
+              let clientPayments = paymentsByClient[id] ? [...paymentsByClient[id]] : [];
+              // Merge any locally added payments from existing state if not already present
+              if (prevC && Array.isArray(prevC.payments) && prevC.payments.length > 0) {
+                const existingDates = new Set(clientPayments.map(p => p.paymentDate ? toLocalDateStr(p.paymentDate) : null));
+                prevC.payments.forEach(localP => {
+                  const localDate = localP.paymentDate ? toLocalDateStr(localP.paymentDate) : null;
+                  if (localDate && !existingDates.has(localDate)) {
+                    clientPayments.push(localP);
+                    paidDates.add(localDate);
+                  }
+                });
+              }
+
+              return { ...c, paidDates, paid: paidDates.has(todayISO), payments: clientPayments };
+            });
+
+            // Build map for pushed status
+            const pushedToday = {};
+            withPaid.forEach(c => {
+              if (c.last_pushed_date === todayISO) {
+                const cid = c._id ? String(c._id) : (c.clientId ? String(c.clientId) : (c.id ? String(c.id) : null));
+                if (cid) pushedToday[cid] = true;
+              }
+            });
+            setNotPaidTodayMap(prev => ({ ...prev, ...pushedToday }));
+
+            return withPaid;
+          });
         } catch (err) {
           setClients(transformedClients);
         }
@@ -291,7 +530,7 @@ const MDailyDues = () => {
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch('http://localhost:5000/api/clients/all', {
+      const res = await fetch('https://karan-e26t.onrender.com/api/clients/all', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
@@ -323,37 +562,127 @@ const MDailyDues = () => {
             pending_amount: isNaN(normalizedPending) ? 0 : normalizedPending,
             paidDates: new Set(),
             paid: false,
+            payments: [],
             type: 'loan'
           };
         });
 
         try {
-          const payRes = await fetch('http://localhost:5000/api/payments/test/all');
+          const payRes = await fetch('https://karan-e26t.onrender.com/api/payments/test/all');
           const payJson = payRes.ok ? await payRes.json() : null;
-          const payments = (payJson && payJson.data && payJson.data.payments) || [];
-          const todayISO = new Date().toISOString().split('T')[0];
+          const rawPayments = (payJson && payJson.data && payJson.data.payments) || [];
+          const seenIds = new Set();
+          const payments = [];
+          rawPayments.forEach(p => {
+            const pId = p._id || p.id;
+            if (pId) {
+              if (!seenIds.has(pId)) {
+                seenIds.add(pId);
+                payments.push(p);
+              }
+            } else {
+              payments.push(p);
+            }
+          });
+          const todayISO = toLocalDateStr(new Date());
           const paidDatesMap = {};
+          const collectorsMap = {};
+          const paymentsByClient = {};
 
           payments.forEach(p => {
-            const clientId = p.client && p.client._id ? String(p.client._id) : (p.client ? String(p.client) : null);
-            const pDate = p.paymentDate ? new Date(p.paymentDate).toISOString().split('T')[0] : null;
+            const clientId = p.client && p.client._id
+              ? String(p.client._id)
+              : (p.client && p.client.id
+                ? String(p.client.id)
+                : (p.client ? String(p.client) : (p.clientId ? String(p.clientId) : (p.client_id ? String(p.client_id) : null))));
+            const pDate = p.paymentDate ? toLocalDateStr(p.paymentDate) : null;
             if (clientId && pDate) {
               if (!paidDatesMap[clientId]) paidDatesMap[clientId] = new Set();
               paidDatesMap[clientId].add(pDate);
             }
+
+            if (clientId) {
+              if (!paymentsByClient[clientId]) paymentsByClient[clientId] = [];
+              paymentsByClient[clientId].push(p);
+            }
+
+            if (clientId && pDate === todayISO) {
+              const role = p.collectedByRole || (p.collectedStaff || '').toString().match(/\((agent|manager|admin)\)$/)?.[1];
+              if (role) {
+                if (!collectorsMap[clientId]) collectorsMap[clientId] = new Set();
+                collectorsMap[clientId].add(role);
+              }
+            }
           });
 
-          const withPaid = transformedClients.map(c => {
-            const id = c._id ? String(c._id) : (c.clientId ? String(c.clientId) : null);
-            const paidDates = paidDatesMap[id] || new Set();
-            return { ...c, paidDates, paid: paidDates.has(todayISO) };
+          const collectorsObj = {};
+          Object.keys(collectorsMap).forEach(k => { collectorsObj[k] = Array.from(collectorsMap[k]); });
+          setServerPaidTodayMap(collectorsObj);
+
+          // Sync local paid markers with server state (clear local markedPaid if server has no payment today)
+          transformedClients.forEach(c => {
+            const id = c._id ? String(c._id) : (c.clientId ? String(c.clientId) : (c.id ? String(c.id) : null));
+            if (id && (!collectorsObj[id] || collectorsObj[id].length === 0)) {
+              try { localStorage.removeItem(`markedPaid_${id}`); } catch (e) { }
+              setPaidTodayMap(prev => {
+                if (!prev[id]) return prev;
+                const n = { ...prev };
+                delete n[id];
+                return n;
+              });
+            }
           });
 
-          const paidMap = {};
-          withPaid.forEach(c => { const id = c._id ? String(c._id) : (c.clientId ? String(c.clientId) : null); if (id) paidMap[id] = Boolean(c.paid); });
-          setServerPaidTodayMap(paidMap);
+          setClients(prevClients => {
+            const prevClientMap = {};
+            (prevClients || []).forEach(c => {
+              const cid = c._id ? String(c._id) : (c.clientId ? String(c.clientId) : (c.id ? String(c.id) : null));
+              if (cid) prevClientMap[cid] = c;
+            });
 
-          setClients(withPaid);
+            const withPaid = transformedClients.map(c => {
+              const id = c._id ? String(c._id) : (c.clientId ? String(c.clientId) : (c.id ? String(c.id) : null));
+              const prevC = prevClientMap[id];
+
+              let paidDates = paidDatesMap[id] ? new Set(paidDatesMap[id]) : new Set();
+
+              // Merge any locally added paidDates from existing state
+              if (prevC && prevC.paidDates) {
+                if (prevC.paidDates instanceof Set) {
+                  prevC.paidDates.forEach(d => paidDates.add(d));
+                } else if (Array.isArray(prevC.paidDates)) {
+                  prevC.paidDates.forEach(d => paidDates.add(d));
+                }
+              }
+
+              let clientPayments = paymentsByClient[id] ? [...paymentsByClient[id]] : [];
+              // Merge any locally added payments from existing state if not already present
+              if (prevC && Array.isArray(prevC.payments) && prevC.payments.length > 0) {
+                const existingDates = new Set(clientPayments.map(p => p.paymentDate ? toLocalDateStr(p.paymentDate) : null));
+                prevC.payments.forEach(localP => {
+                  const localDate = localP.paymentDate ? toLocalDateStr(localP.paymentDate) : null;
+                  if (localDate && !existingDates.has(localDate)) {
+                    clientPayments.push(localP);
+                    paidDates.add(localDate);
+                  }
+                });
+              }
+
+              return { ...c, paidDates, paid: paidDates.has(todayISO), payments: clientPayments };
+            });
+
+            // Build map for pushed status
+            const pushedToday = {};
+            withPaid.forEach(c => {
+              if (c.last_pushed_date === todayISO) {
+                const cid = c._id ? String(c._id) : (c.clientId ? String(c.clientId) : (c.id ? String(c.id) : null));
+                if (cid) pushedToday[cid] = true;
+              }
+            });
+            setNotPaidTodayMap(prev => ({ ...prev, ...pushedToday }));
+
+            return withPaid;
+          });
         } catch (err) {
           setClients(transformedClients);
         }
@@ -377,27 +706,15 @@ const MDailyDues = () => {
   // Calculate if client is due in the given week
   const isClientDueInWeek = (client, weekStartDate, weekEndDate) => {
     // use total pending amount (client.pending) to determine if loan is active
-    if (!client.loan_start_date || Number(client.pending) <= 0) {
+    if (!client || !client.loan_start_date || Number(client.pending) <= 0) {
       return false;
     }
+    const wStartStr = toLocalDateStr(weekStartDate);
+    const wEndStr = toLocalDateStr(weekEndDate);
+    if (!wStartStr || !wEndStr) return false;
 
-    const loanStartDate = new Date(client.loan_start_date);
-    const loanEndDate = new Date(client.loan_end_date);
-
-    // Calculate all weekly due dates for the client
-    let dueDate = new Date(loanStartDate);
-
-    while (dueDate <= loanEndDate) {
-      // Check if this due date falls within the selected week
-      if (dueDate >= weekStartDate && dueDate <= weekEndDate) {
-        return true;
-      }
-
-      // Move to next week
-      dueDate.setDate(dueDate.getDate() + 7);
-    }
-
-    return false;
+    const scheduledDates = getClientScheduledDueDates(client);
+    return scheduledDates.some(d => d >= wStartStr && d <= wEndStr);
   };
 
   // Get week start and end dates
@@ -430,6 +747,10 @@ const MDailyDues = () => {
       filtered = filtered.filter(client => client.district === selectedDistrict);
     }
 
+    if (selectedAgent) {
+      filtered = filtered.filter(client => getClientAgentKey(client) === selectedAgent);
+    }
+
     if (selectedLandmark) {
       filtered = filtered.filter(client => client.landmark === selectedLandmark);
     }
@@ -446,16 +767,58 @@ const MDailyDues = () => {
     return filtered;
   };
 
-  // Get clients to display in the grid (shows clients due on selected date and unpaid)
+  const isClientPaidOnDate = (client, dateStr) => {
+    if (!client) return false;
+    const targetDate = dateStr || calendarDateFilter || toLocalDateStr(selectedDate);
+    const todayISO = toLocalDateStr(new Date());
+    const id = client._id || client.clientId || client.id;
+
+    if (client.paidDates) {
+      if (client.paidDates instanceof Set && client.paidDates.has(targetDate)) return true;
+      if (Array.isArray(client.paidDates) && client.paidDates.includes(targetDate)) return true;
+    }
+
+    if (client.payments && Array.isArray(client.payments)) {
+      const hasPaymentOnDate = client.payments.some(p => {
+        const pDate = p.paymentDate ? toLocalDateStr(new Date(p.paymentDate)) : null;
+        return pDate === targetDate;
+      });
+      if (hasPaymentOnDate) return true;
+    }
+
+    if (targetDate === todayISO) {
+      if (id && paidTodayMap[id]) return true;
+      if (id && isLocalActionDoneToday(id, 'markedPaid')) return true;
+      if (id && Array.isArray(serverPaidTodayMap[id]) && serverPaidTodayMap[id].length > 0) return true;
+    }
+
+    if (isClientDueOnDate(client, targetDate) && calculateCurrentDue(client, targetDate) <= 0) {
+      return true;
+    }
+
+    return false;
+  };
+
+  // Get clients to display in the grid (shows clients due on selected date)
   const getDisplayedClients = () => {
     let displayed = [...clients];
 
-    // Filter by due date (today or selected calendar date) and unpaid
-    const filterDate = calendarDateFilter || selectedDate.toISOString().split('T')[0];
-    displayed = displayed.filter(client => isClientDueOnDate(client, filterDate) && !client.paidDates.has(filterDate));
+    // Filter by due date (today or selected calendar date)
+    const filterDate = calendarDateFilter || toLocalDateStr(selectedDate);
+    const todayISO = toLocalDateStr(new Date());
+    displayed = displayed.filter(client => {
+      const id = client._id || client.clientId || client.id;
+      const isPushed = (filterDate === todayISO ? Boolean(notPaidTodayMap[id]) : false) || client.last_pushed_date === filterDate;
+      const isPaid = isClientPaidOnDate(client, filterDate) || (client.status === 'paid' && Number(client.pending) <= 0) || calculateCurrentDue(client, filterDate) <= 0;
+      return isClientDueOnDate(client, filterDate) && !isPushed && !isPaid;
+    });
 
     if (selectedDistrict) {
       displayed = displayed.filter(client => client.district === selectedDistrict);
+    }
+
+    if (selectedAgent) {
+      displayed = displayed.filter(client => getClientAgentKey(client) === selectedAgent);
     }
 
     if (selectedLandmark) {
@@ -474,6 +837,29 @@ const MDailyDues = () => {
     return displayed;
   };
 
+  const getClientAgentKey = (client) => {
+    if (!client) return '';
+    if (client.assigned_agent) return String(client.assigned_agent);
+    if (client.assigned_agent_name) return String(client.assigned_agent_name);
+    if (client.agent && (client.agent._id || client.agent.name || client.agent.username)) {
+      return String(client.agent._id || client.agent.name || client.agent.username);
+    }
+    return '';
+  };
+
+  const getUniqueAgents = () => {
+    const map = {};
+    clients.forEach((c) => {
+      const key = getClientAgentKey(c);
+      if (!key) return;
+      const label = c.assigned_agent_name || (c.agent && (c.agent.name || c.agent.username)) || 'Unknown';
+      map[key] = label;
+    });
+    return Object.entries(map)
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  };
+
   // Get unique districts
   const getUniqueDistricts = () => {
     return [...new Set(clients.map(c => c.district))].filter(d => d).sort();
@@ -481,31 +867,157 @@ const MDailyDues = () => {
 
   // Calculate stats
   const calculateStats = () => {
-    let filtered = getFilteredClients();
+    const statsDate = calendarDateFilter || toLocalDateStr(selectedDate);
+    const todayISO = toLocalDateStr(new Date());
 
-    // If a calendar date is selected, only show stats for clients due on that specific date
-    if (calendarDateFilter) {
-      filtered = filtered.filter(client => isClientDueOnDate(client, calendarDateFilter));
+    // Filter clients who are due on this date and not pushed
+    const dueClients = clients.filter(client => {
+      const id = client._id || client.clientId || client.id;
+      const isPushed = (statsDate === todayISO ? Boolean(notPaidTodayMap[id]) : false) || client.last_pushed_date === statsDate;
+      return isClientDueOnDate(client, statsDate) && !isPushed;
+    });
+
+    let filtered = dueClients;
+    if (selectedDistrict) {
+      filtered = filtered.filter(client => client.district === selectedDistrict);
+    }
+    if (selectedAgent) {
+      filtered = filtered.filter(client => getClientAgentKey(client) === selectedAgent);
+    }
+    if (selectedLandmark) {
+      filtered = filtered.filter(client => client.landmark === selectedLandmark);
     }
 
     let totalDue = 0;
     let totalPaid = 0;
 
     filtered.forEach(client => {
-      const amt = client.daily_amount_value || 0;
-      if (client.paid) {
-        totalPaid += amt;
-      } else {
-        totalDue += amt;
+      const remainingDue = calculateCurrentDue(client, statsDate);
+      const paidOnDate = getPaidAmountOnDate(client, statsDate);
+
+      totalPaid += paidOnDate;
+      if (!isClientPaidOnDate(client, statsDate)) {
+        totalDue += remainingDue;
       }
     });
 
     return { totalDue, totalPaid };
   };
 
+  const getPaidAmountOnDate = (client, dateStr) => {
+    if (!client || !client.payments) return 0;
+    const seenIds = new Set();
+    const uniquePayments = [];
+    client.payments.forEach(p => {
+      const pId = p._id || p.id;
+      if (pId) {
+        if (!seenIds.has(pId)) {
+          seenIds.add(pId);
+          uniquePayments.push(p);
+        }
+      } else {
+        uniquePayments.push(p);
+      }
+    });
+
+    return uniquePayments
+      .filter(p => {
+        const pDate = p.paymentDate ? toLocalDateStr(new Date(p.paymentDate)) : null;
+        return pDate === dateStr;
+      })
+      .reduce((sum, p) => sum + Number(p.amount || 0), 0);
+  };
+
+  const calculateCurrentDue = (client, dateParam) => {
+    if (!client) return 575;
+    const pendingCap = Number(client.pending ?? ((client.amount || 6900) - (client.received || 0)));
+    if (pendingCap <= 0) return 0;
+
+    const DEFAULT_WEEKLY_DUE = 575;
+    const weeklyInstallment = DEFAULT_WEEKLY_DUE;
+
+    const targetDateStr = dateParam || calendarDateFilter || toLocalDateStr(selectedDate);
+
+    if (!client.loan_start_date) {
+      return Math.min(pendingCap, weeklyInstallment);
+    }
+
+    const start = parseLocalDate(client.loan_start_date);
+    const target = parseLocalDate(targetDateStr);
+    if (!start || !target) return Math.min(pendingCap, weeklyInstallment);
+
+    // Determine target week index T (1-based)
+    let T = 1;
+    if (target > start) {
+      const diffDays = Math.round((target.getTime() - start.getTime()) / (24 * 60 * 60 * 1000));
+      T = Math.floor(diffDays / 7) + 1;
+    }
+
+    // Map payments by week index
+    const paymentsByWeek = {};
+    if (client.payments && Array.isArray(client.payments) && client.payments.length > 0) {
+      const seenIds = new Set();
+      const uniquePayments = [];
+      client.payments.forEach(p => {
+        const pId = p._id || p.id;
+        if (pId) {
+          if (!seenIds.has(pId)) {
+            seenIds.add(pId);
+            uniquePayments.push(p);
+          }
+        } else {
+          uniquePayments.push(p);
+        }
+      });
+
+      uniquePayments.forEach(p => {
+        if (!p.paymentDate) return;
+        const pDate = parseLocalDate(p.paymentDate);
+        if (!pDate) return;
+
+        // Ignore payments that occurred prior to current loan_start_date
+        if (pDate < start) return;
+
+        let weekIdx = 1;
+        if (pDate > start) {
+          const pDiffDays = Math.round((pDate.getTime() - start.getTime()) / (24 * 60 * 60 * 1000));
+          weekIdx = Math.floor(pDiffDays / 7) + 1;
+        }
+        paymentsByWeek[weekIdx] = (paymentsByWeek[weekIdx] || 0) + Number(p.amount || 0);
+      });
+    }
+
+    if (T <= 1) {
+      return Math.min(pendingCap, weeklyInstallment);
+    }
+
+    // Roll forward week by week: each week's due depends on the
+    // actual due vs actual paid of the PREVIOUS week only (not a flat
+    // comparison), so advance/shortfall correctly resolves after one week.
+    let runningDue = weeklyInstallment; // due for week 1
+    for (let k = 1; k < T; k++) {
+      if (Object.prototype.hasOwnProperty.call(paymentsByWeek, k)) {
+        const paidThisWeek = paymentsByWeek[k];
+        const diff = paidThisWeek - weeklyInstallment;
+        runningDue = weeklyInstallment - diff;
+        if (runningDue < 0) runningDue = 0;
+      } else {
+        runningDue = weeklyInstallment; // no payment record for that week — reset to default
+      }
+    }
+    const due = runningDue;
+
+    return Math.min(pendingCap, due);
+  };
+
   // Handle client click
   const handleClientClick = (client) => {
     setSelectedClient(client);
+    const targetDateStr = calendarDateFilter || toLocalDateStr(selectedDate);
+    const dueAmt = calculateCurrentDue(client, targetDateStr);
+    const paidAmt = getPaidAmountOnDate(client, targetDateStr);
+    const amountToShow = dueAmt > 0 ? dueAmt : (paidAmt > 0 ? paidAmt : dueAmt);
+    setCustomAmount(amountToShow.toString());
     setShowClientModal(true);
     if (window.innerWidth <= 768) {
       document.body.style.overflow = 'hidden';
@@ -514,8 +1026,7 @@ const MDailyDues = () => {
 
   // Helpers for per-day action checks
   const todayKey = () => {
-    const d = new Date();
-    return d.toISOString().slice(0, 10); // YYYY-MM-DD
+    return toLocalDateStr(new Date()); // YYYY-MM-DD (local calendar day)
   };
 
   const isLocalActionDoneToday = (clientId, action) => {
@@ -537,8 +1048,7 @@ const MDailyDues = () => {
 
   // Helper to get today's date string (YYYY-MM-DD)
   const getTodayDateString = () => {
-    const d = new Date();
-    return d.toISOString().slice(0, 10);
+    return toLocalDateStr(new Date());
   };
 
   // Query server for any payments for this client today (to avoid duplicate Mark Paid)
@@ -549,17 +1059,22 @@ const MDailyDues = () => {
 
       const today = getTodayDateString();
       // Query for payments made today for this specific client
-      const res = await fetch(`http://localhost:5000/api/payments/history?clientId=${clientId}&startDate=${today}&endDate=${today}`, {
+      const res = await fetch(`https://karan-e26t.onrender.com/api/payments/history?clientId=${clientId}&startDate=${today}&endDate=${today}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
       if (!res.ok) return false;
 
       const data = await res.json();
-      // Check if there are any payments recorded today
-      const exists = data && data.data && Array.isArray(data.data.payments) && data.data.payments.length > 0;
-      setServerPaidTodayMap(prev => ({ ...prev, [clientId]: exists }));
-      return exists;
+      const payments = data && data.data && Array.isArray(data.data.payments) ? data.data.payments : [];
+      const collectors = new Set();
+      payments.forEach(p => {
+        const role = p.collectedByRole || (p.collectedStaff || '').toString().match(/\((agent|manager|admin)\)$/)?.[1];
+        if (role) collectors.add(role);
+      });
+      const collectorArray = Array.from(collectors);
+      setServerPaidTodayMap(prev => ({ ...prev, [clientId]: collectorArray }));
+      return collectorArray.length > 0;
     } catch (err) {
       console.error('Error checking payments today:', err);
       return false;
@@ -584,38 +1099,90 @@ const MDailyDues = () => {
     checkServerPaymentsToday(id);
   }, [selectedClient]);
 
-  // POST payment for a client (mark as paid for this week's amount)
   const handleMarkPaid = async (client) => {
     try {
       const token = localStorage.getItem('token');
-      const amount = Number(client.daily_amount_value || client.weekly_amount_value || 0);
-      if (!amount || amount <= 0) {
-        showNotification('Amount is zero, cannot mark paid', 'error');
+      const amount = Number(customAmount);
+      if (isNaN(amount) || amount <= 0) {
+        showNotification('Please enter a valid amount', 'error');
         return;
       }
 
-      const res = await fetch('http://localhost:5000/api/payments/process', {
+      const targetDateStr = calendarDateFilter || toLocalDateStr(selectedDate);
+      const payDateIso = targetDateStr ? `${targetDateStr}T12:00:00.000Z` : new Date().toISOString();
+
+      const res = await fetch('https://karan-e26t.onrender.com/api/payments/process', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ clientId: client._id, amount, paymentMethod: 'cash', notes: 'Marked from Weekly Dues' })
+        body: JSON.stringify({
+          clientId: client._id,
+          amount,
+          paymentMethod: 'cash',
+          notes: 'Marked from Weekly Dues',
+          paymentDate: payDateIso
+        })
       });
 
       const data = await res.json();
       if (!res.ok) throw new Error(data.message || 'Failed to save payment');
 
       // Update button state only - disable via serverPaidTodayMap
-      setServerPaidTodayMap(prev => ({ ...prev, [client._id]: true }));
+      // add current role to collectors array in serverPaidTodayMap
+      try {
+        const user = JSON.parse(localStorage.getItem('user') || '{}');
+        const role = user?.role || 'manager';
+        setServerPaidTodayMap(prev => {
+          const existing = Array.isArray(prev[client._id]) ? prev[client._id] : (prev[client._id] ? [prev[client._id]] : []);
+          const s = new Set(existing);
+          s.add(role);
+          return { ...prev, [client._id]: Array.from(s) };
+        });
+      } catch (e) {
+        setServerPaidTodayMap(prev => ({ ...prev, [client._id]: ['manager'] }));
+      }
       // Mark action locally for today so button stays disabled on page reload
       setLocalActionDone(client._id, 'markedPaid');
+      const todayISO = getTodayDateString();
+      const newPaymentObj = {
+        amount,
+        paymentDate: payDateIso,
+        collectedByRole: JSON.parse(localStorage.getItem('user') || '{}')?.role || 'manager'
+      };
       // Update client paid status immediately
-      setSelectedClient(prev => ({ ...prev, paidDates: new Set([...prev.paidDates, currentDate]), paid: true }));
+      setSelectedClient(prev => {
+        if (!prev) return prev;
+        const prevPaid = prev.paidDates instanceof Set
+          ? Array.from(prev.paidDates)
+          : (Array.isArray(prev.paidDates) ? prev.paidDates : []);
+        const prevPayments = Array.isArray(prev.payments) ? prev.payments : [];
+        return {
+          ...prev,
+          paidDates: new Set([...prevPaid, targetDateStr]),
+          paid: targetDateStr === todayISO,
+          received: (prev.received || 0) + amount,
+          pending: Math.max(0, (prev.pending || 0) - amount),
+          payments: [...prevPayments, newPaymentObj]
+        };
+      });
       setClients(prevClients =>
-        prevClients.map(c =>
-          c._id === client._id ? { ...c, paidDates: new Set([...c.paidDates, currentDate]), paid: true } : c
-        )
+        prevClients.map(c => {
+          if (c._id !== client._id) return c;
+          const cPaid = c.paidDates instanceof Set
+            ? Array.from(c.paidDates)
+            : (Array.isArray(c.paidDates) ? c.paidDates : []);
+          const cPayments = Array.isArray(c.payments) ? c.payments : [];
+          return {
+            ...c,
+            paidDates: new Set([...cPaid, targetDateStr]),
+            paid: targetDateStr === todayISO,
+            received: (c.received || 0) + amount,
+            pending: Math.max(0, (c.pending || 0) - amount),
+            payments: [...cPayments, newPaymentObj]
+          };
+        })
       );
 
       // Reset overflow immediately before closing modal
@@ -626,7 +1193,10 @@ const MDailyDues = () => {
       setSelectedClient(null);
 
       // Dispatch event to sync with other components
-      window.dispatchEvent(new CustomEvent('clientPaid', { detail: { clientId: client._id } }));
+      window.dispatchEvent(new CustomEvent('clientPaid', { detail: { clientId: client._id, amount } }));
+
+      // Refresh data silently without reloading the entire page
+      fetchClientsWithoutLoading();
 
       showNotification('Marked as paid successfully', 'success');
     } catch (err) {
@@ -635,8 +1205,25 @@ const MDailyDues = () => {
     }
   };
 
-  // Handle 'Not Paid' - extend client's loan_end_date by 7 days
-  const handleNotPaid = async (client) => {
+  const isFinalDueWeek = (client) => {
+    if (!client || !client.loan_start_date) return false;
+    const targetDateStr = calendarDateFilter || toLocalDateStr(selectedDate);
+    const weekIdx = calculateWeekIndex(client, targetDateStr);
+    if (weekIdx && weekIdx >= 12) return true;
+
+    const start = new Date(client.loan_start_date);
+    start.setHours(0, 0, 0, 0);
+    const target = new Date((targetDateStr || toLocalDateStr(new Date())) + 'T00:00:00');
+    if (target >= start) {
+      const diffMs = target.getTime() - start.getTime();
+      const weeksPassed = Math.floor(diffMs / (7 * 24 * 60 * 60 * 1000)) + 1;
+      return weeksPassed >= 12;
+    }
+    return false;
+  };
+
+  // Execute 'Not Paid' - extend client's loan_end_date by 7 days
+  const executeNotPaid = async (client) => {
     try {
       const token = localStorage.getItem('token');
 
@@ -646,21 +1233,19 @@ const MDailyDues = () => {
         newEnd = new Date(currentEnd.getTime() + 7 * 24 * 60 * 60 * 1000);
       } else if (client.loan_start_date) {
         const start = new Date(client.loan_start_date);
-        // if there was no existing end date assume default 12 dues (start + 11w)
-        // and then push it by 1 week, ending up with start + 12w
         newEnd = new Date(start.getTime() + 12 * 7 * 24 * 60 * 60 * 1000);
       } else {
         showNotification('Cannot extend due date: missing start date', 'error');
         return;
       }
 
-      const res = await fetch(`http://localhost:5000/api/clients/${client._id}`, {
+      const res = await fetch(`https://karan-e26t.onrender.com/api/clients/${client._id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ loan_end_date: newEnd.toISOString() })
+        body: JSON.stringify({ loan_end_date: newEnd.toISOString(), is_pushed: true })
       });
 
       const data = await res.json();
@@ -668,7 +1253,6 @@ const MDailyDues = () => {
 
       // update local client record
       setClients(prev => prev.map(c => c._id === client._id ? { ...c, loan_end_date: newEnd.toISOString() } : c));
-      // Notify other components (e.g., AddClient) about the updated loan_end_date
       try {
         window.dispatchEvent(new CustomEvent('clientLoanEndUpdated', {
           detail: { clientId: client._id, loan_end_date: newEnd.toISOString() }
@@ -676,27 +1260,41 @@ const MDailyDues = () => {
       } catch (e) {
         // ignore if dispatch fails in some environments
       }
-      // mark action locally for today so Not Paid can't be clicked again
       setLocalActionDone(client._id, 'pushedNotPaid');
 
-      // Reset overflow immediately before closing modal
       document.body.style.overflow = 'auto';
 
-      // Close modal and clear selected client
       setShowClientModal(false);
+      setShowFinalDueModal(false);
       setSelectedClient(null);
 
-      showNotification('Due extended by 1 week', 'success');
+      fetchClientsWithoutLoading();
+
+      if (isFinalDueWeek(client)) {
+        showNotification('12th due pushed. Client moved to Pending Clients section.', 'warning');
+      } else {
+        showNotification('Due extended by 1 week', 'success');
+      }
     } catch (err) {
       console.error('Extend due error:', err);
       showNotification(err.message || 'Failed to extend due', 'error');
     }
   };
 
+  const handleNotPaid = async (client) => {
+    if (!client) return;
+    if (isFinalDueWeek(client)) {
+      setShowFinalDueModal(true);
+      return;
+    }
+    await executeNotPaid(client);
+  };
+
   // Close modal
   const closeModal = () => {
     document.body.style.overflow = 'auto';
     setShowClientModal(false);
+    setShowFinalDueModal(false);
     setSelectedClient(null);
   };
 
@@ -706,12 +1304,14 @@ const MDailyDues = () => {
     const exportDateStr = calendarDateFilter || format(selectedDate, 'yyyy-MM-dd');
 
     // apply district/landmark filters and only include clients due on the exact date
+    const todayISO = toLocalDateStr(new Date());
     const candidates = clients.filter(c => {
-      if (Number(c.pending) <= 0) return false;
+      const id = c._id || c.clientId || c.id;
+      const isPushed = (exportDateStr === todayISO ? Boolean(notPaidTodayMap[id]) : false) || c.last_pushed_date === exportDateStr;
       if (selectedDistrict && c.district !== selectedDistrict) return false;
+      if (selectedAgent && getClientAgentKey(c) !== selectedAgent) return false;
       if (selectedLandmark && c.landmark !== selectedLandmark) return false;
-      if (c.paidDates.has(exportDateStr)) return false;
-      return isClientDueOnDate(c, exportDateStr);
+      return isClientDueOnDate(c, exportDateStr) && calculateCurrentDue(c, exportDateStr) > 0 && !isPushed && !isClientPaidOnDate(c, exportDateStr);
     });
 
     if (candidates.length === 0) {
@@ -720,26 +1320,33 @@ const MDailyDues = () => {
       return;
     }
 
-    const { jsPDF } = await import('jspdf');
-    const doc = new jsPDF();
+    showNotification('Generating PDF, please wait...', 'info');
 
-    doc.setFontSize(16);
+    const { jsPDF } = await import('jspdf');
+    const html2canvasModule = await import('html2canvas');
+    const html2canvas = html2canvasModule.default;
+    const doc = new jsPDF('p', 'mm', 'a4');
+
+    // Create a hidden container for rendering
+    const container = document.createElement('div');
+    container.style.position = 'absolute';
+    container.style.left = '-9999px';
+    container.style.top = '0px';
+    container.style.width = '210mm';
+    container.style.backgroundColor = '#ffffff';
+    container.style.color = '#000000';
+    // Use standard fonts, browser will use fallback for Tamil natively
+    container.style.fontFamily = 'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+    document.body.appendChild(container);
+
     let title = 'Daily Dues Report';
-    if (selectedLandmark) {
+    if (selectedAgent) {
+      const selectedAgentName = getUniqueAgents().find(agent => agent.id === selectedAgent)?.name;
+      if (selectedAgentName) title += ` - Agent: ${selectedAgentName}`;
+    } else if (selectedLandmark) {
       title += ` - ${selectedLandmark}`;
     }
-    doc.text(title, 105, 15, { align: 'center' });
-    doc.setFontSize(12);
-    doc.text('Unpaid Clients Collection List', 105, 25, { align: 'center' });
-    doc.text(`Report Date: ${format(new Date(exportDateStr + 'T00:00:00'), 'EEEE, MMMM d, yyyy')}`, 105, 35, { align: 'center' });
 
-    let y = 50;
-    doc.setFontSize(11);
-
-    // Header row for clients
-
-
-    // Group candidates by landmark AND district combination
     const groups = {};
     candidates.forEach(c => {
       const landmark = (c.landmark && String(c.landmark).trim()) || 'Other Areas';
@@ -750,84 +1357,204 @@ const MDailyDues = () => {
     });
 
     let total = 0;
-    // iterate groups in the user-defined ordered landmark order first
     const orderedKeys = [];
     orderedAvailableLandmarks.forEach(lmk => {
       Object.keys(groups).forEach(k => {
         if (k.startsWith(lmk + '|')) orderedKeys.push(k);
       });
     });
-    // append any groups not present in ordered list
     Object.keys(groups).forEach(k => { if (!orderedKeys.includes(k)) orderedKeys.push(k); });
 
-    orderedKeys.forEach((landmark) => {
-      const list = groups[landmark];
+    let pages = [];
 
-      // Landmark and District header
-      doc.setFontSize(13);
-      doc.setFont('helvetica', 'bold');
-      const [lmk, dist] = landmark.split('|');
-      let hdr = `Landmark: ${lmk} ( ${dist})`;
-      doc.text(hdr, 10, y);
-      y += 7;
-      doc.text('Client Name', 10, y);
-      doc.text('Client ID', 80, y);
-      doc.text('Phone', 130, y);
-      doc.text('Amount', 180, y, { align: 'right' });
-      y += 8;
-      // For each client under this landmark
+    const createNewPage = () => {
+      const page = document.createElement('div');
+      page.style.width = '210mm';
+      page.style.height = '297mm';
+      page.style.padding = '15mm 15mm 25mm 15mm';
+      page.style.boxSizing = 'border-box';
+      page.style.position = 'relative';
+      page.style.backgroundColor = '#ffffff';
+      page.style.overflow = 'hidden';
+      return page;
+    };
+
+    const createHeader = (pageDiv, full = false) => {
+      const headerDiv = document.createElement('div');
+      headerDiv.style.textAlign = 'center';
+      headerDiv.style.marginBottom = '20px';
+
+      if (full) {
+        const titleEl = document.createElement('h1');
+        titleEl.innerText = title;
+        titleEl.style.fontSize = '22px';
+        titleEl.style.margin = '0 0 5px 0';
+
+        const subEl = document.createElement('h2');
+        subEl.innerText = 'Unpaid Clients Collection List';
+        subEl.style.fontSize = '16px';
+        subEl.style.margin = '0 0 5px 0';
+
+        const dateEl = document.createElement('div');
+        dateEl.innerText = `Report Date: ${format(new Date(exportDateStr + 'T00:00:00'), 'EEEE, MMMM d, yyyy')}`;
+        dateEl.style.fontSize = '14px';
+
+        headerDiv.appendChild(titleEl);
+        headerDiv.appendChild(subEl);
+        headerDiv.appendChild(dateEl);
+      } else {
+        const contEl = document.createElement('div');
+        contEl.innerText = `Daily Dues — Continued`;
+        contEl.style.fontSize = '12px';
+        contEl.style.fontWeight = '600';
+        contEl.style.margin = '0 0 8px 0';
+        headerDiv.appendChild(contEl);
+      }
+      pageDiv.appendChild(headerDiv);
+    };
+
+    const createThead = () => {
+      const thead = document.createElement('tr');
+      thead.innerHTML = `
+        <th style="text-align: left; padding: 4px 0; border-bottom: 2px solid #000; width: 10%;">S.No</th>
+        <th style="text-align: left; padding: 4px 0; border-bottom: 2px solid #000; width: 32%;">Client Name</th>
+        <th style="text-align: left; padding: 4px 0; border-bottom: 2px solid #000; width: 23%;">Client ID</th>
+        <th style="text-align: left; padding: 4px 0; border-bottom: 2px solid #000; width: 20%;">Phone</th>
+        <th style="text-align: right; padding: 4px 0; border-bottom: 2px solid #000; width: 15%;">Amount</th>
+      `;
+      return thead;
+    };
+
+    const doesElementFit = (element, pageDiv) => {
+      const pageRect = pageDiv.getBoundingClientRect();
+      const pxPerMm = pageRect.height / 297;
+      const maxAllowedBottom = pageRect.bottom - (25 * pxPerMm);
+      const elemRect = element.getBoundingClientRect();
+      return elemRect.bottom <= maxAllowedBottom + 0.5;
+    };
+
+    let currentPage = createNewPage();
+    pages.push(currentPage);
+    container.appendChild(currentPage);
+    createHeader(currentPage, true);
+
+    orderedKeys.forEach((landmarkKey) => {
+      const list = groups[landmarkKey];
+      if (!list || list.length === 0) return;
+      const [lmk, dist] = landmarkKey.split('|');
+      let hdrText = `Landmark: ${lmk} (${dist})`;
+
+      let rowsInCurrentGroupOnThisPage = 0;
+      let currentLmDiv = null;
+      let currentTable = null;
+
+      const startNewGroupSection = (isContinued = false) => {
+        currentLmDiv = document.createElement('div');
+        currentLmDiv.style.marginTop = '15px';
+
+        const lmTitle = document.createElement('div');
+        lmTitle.innerText = isContinued ? `${hdrText} — Continued` : hdrText;
+        lmTitle.style.fontSize = '16px';
+        lmTitle.style.fontWeight = 'bold';
+        lmTitle.style.marginBottom = '8px';
+        currentLmDiv.appendChild(lmTitle);
+
+        currentTable = document.createElement('table');
+        currentTable.style.width = '100%';
+        currentTable.style.borderCollapse = 'collapse';
+        currentTable.style.fontSize = '14px';
+        currentTable.style.marginBottom = '10px';
+        currentTable.appendChild(createThead());
+
+        currentLmDiv.appendChild(currentTable);
+        currentPage.appendChild(currentLmDiv);
+        rowsInCurrentGroupOnThisPage = 0;
+      };
+
+      startNewGroupSection(false);
+
+      let serialNo = 1;
+
       list.forEach(client => {
-        const amountValue = Number(client.daily_amount_value || client.weekly_amount_value || 0);
+        const amountValue = calculateCurrentDue(client, exportDateStr);
         const weekIdx = calculateWeekIndex(client, exportDateStr) || 1;
         const amountText = `RS. ${amountValue.toLocaleString('en-IN')}/${weekIdx}`;
-
-        // Prepare row values
-        const nameText = String(client.name || '');
-        const districtText = client.district ? ` (${client.district})` : '';
-        const clientId = String(client.clientId || 'N/A');
-        const phone = String(client.phone || '');
-
-        // write name+district in first column
-        doc.setFont('helvetica', 'normal');
-        doc.setFontSize(11);
-        doc.text(nameText, 10, y);
-
-        // write clientId in second column
-        doc.setFont('helvetica', 'normal');
-        doc.setFontSize(10);
-        doc.text(clientId, 80, y);
-
-        // phone in third column
-        if (phone) doc.text(phone, 130, y);
-
-        // amount in last column
-        doc.setFont('helvetica', 'normal');
-        doc.text(amountText, 180, y, { align: 'right' });
-
-        // move y by height of content (approx max of lines)
-        const lineCount = 1; // clientId is single line
-        y += 6 * lineCount;
-
-        y += 4; // small spacer
         total += amountValue;
 
-        if (y > 270) {
-          doc.addPage();
-          y = 20;
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td style="padding: 4px 0; border-bottom: 1px solid #eee;">${serialNo++}</td>
+          <td style="padding: 4px 0; border-bottom: 1px solid #eee;">${String(client.name || '')}</td>
+          <td style="padding: 4px 0; border-bottom: 1px solid #eee;">${String(client.clientId || 'N/A')}</td>
+          <td style="padding: 4px 0; border-bottom: 1px solid #eee;">${String(client.phone || '')}</td>
+          <td style="padding: 4px 0; border-bottom: 1px solid #eee; text-align: right;">${amountText}</td>
+        `;
+
+        currentTable.appendChild(tr);
+
+        if (!doesElementFit(tr, currentPage)) {
+          currentTable.removeChild(tr);
+
+          if (rowsInCurrentGroupOnThisPage === 0) {
+            currentPage.removeChild(currentLmDiv);
+
+            currentPage = createNewPage();
+            pages.push(currentPage);
+            container.appendChild(currentPage);
+            createHeader(currentPage, false);
+
+            startNewGroupSection(false);
+            currentTable.appendChild(tr);
+            rowsInCurrentGroupOnThisPage = 1;
+          } else {
+            currentPage = createNewPage();
+            pages.push(currentPage);
+            container.appendChild(currentPage);
+            createHeader(currentPage, false);
+
+            startNewGroupSection(true);
+            currentTable.appendChild(tr);
+            rowsInCurrentGroupOnThisPage = 1;
+          }
+        } else {
+          rowsInCurrentGroupOnThisPage++;
         }
       });
-
-      // Spacer after group
-      y += 6;
-      if (y > 270) {
-        doc.addPage();
-        y = 20;
-      }
     });
 
-    doc.setFontSize(12);
-    doc.setFont('helvetica', 'bold');
-    doc.text(`Total: RS. ${total.toFixed(0)}`, 10, y + 10);
+    const totalDiv = document.createElement('div');
+    totalDiv.innerText = `Total: RS. ${total.toFixed(0)}`;
+    totalDiv.style.fontSize = '16px';
+    totalDiv.style.fontWeight = 'bold';
+    totalDiv.style.marginTop = '20px';
+
+    currentPage.appendChild(totalDiv);
+
+    if (!doesElementFit(totalDiv, currentPage)) {
+      currentPage.removeChild(totalDiv);
+      currentPage = createNewPage();
+      pages.push(currentPage);
+      container.appendChild(currentPage);
+      createHeader(currentPage, false);
+      currentPage.appendChild(totalDiv);
+    }
+
+    container.innerHTML = '';
+    pages.forEach(p => container.appendChild(p));
+
+    try {
+      for (let i = 0; i < pages.length; i++) {
+        const canvas = await html2canvas(pages[i], { scale: 2, useCORS: true, logging: false });
+        const imgData = canvas.toDataURL('image/jpeg', 0.95);
+        if (i > 0) doc.addPage();
+        doc.addImage(imgData, 'JPEG', 0, 0, 210, 297, undefined, 'FAST');
+      }
+    } catch (err) {
+      console.error('Canvas error:', err);
+      showNotification('Error generating PDF graphics', 'error');
+    } finally {
+      document.body.removeChild(container);
+    }
 
     if (Capacitor.isNativePlatform()) {
       const pdfBase64 = doc.output('dataurlstring').split(',')[1];
@@ -838,7 +1565,7 @@ const MDailyDues = () => {
       // Try writing to app Cache (no external storage permission) and share the file
       try {
         const cachePath = `${folder}/${fileName}`;
-        await Filesystem.mkdir({ path: folder, directory: Directory.Cache, recursive: true }).catch(() => {});
+        await Filesystem.mkdir({ path: folder, directory: Directory.Cache, recursive: true }).catch(() => { });
         await Filesystem.writeFile({ path: cachePath, data: pdfBase64, directory: Directory.Cache });
         // Obtain a native URI to share
         const uriResult = await Filesystem.getUri({ directory: Directory.Cache, path: cachePath });
@@ -864,7 +1591,7 @@ const MDailyDues = () => {
           // Last resort: fall back to web download (may open browser fallback on some platforms)
           try {
             const dataUrl = doc.output('dataurlstring');
-            await Share.share({ title: 'Daily Dues Report', text: 'Daily Dues PDF', url: dataUrl }).catch(() => {});
+            await Share.share({ title: 'Daily Dues Report', text: 'Daily Dues PDF', url: dataUrl }).catch(() => { });
           } catch (shareErr) {
             // If even share with data URL fails, fall back to in-app download
             doc.save('DailyDuesReport.pdf');
@@ -898,6 +1625,22 @@ const MDailyDues = () => {
     const newDate = new Date(weekStartDate);
     newDate.setDate(newDate.getDate() - 7);
     setWeekStartDate(newDate);
+
+    // Keep the client list's due/paid calculations (selectedDate / calendarDateFilter)
+    // in sync with the calendar strip. Without this, only the visible day-buttons
+    // moved back a week while every card kept computing against the OLD date,
+    // which is what produced the "wrong calculation after navigating" bug.
+    setSelectedDate(prevSelected => {
+      const shifted = new Date(prevSelected);
+      shifted.setDate(shifted.getDate() - 7);
+      return shifted;
+    });
+    setCalendarDateFilter(prevFilter => {
+      if (!prevFilter) return prevFilter;
+      const d = new Date(prevFilter + 'T00:00:00');
+      d.setDate(d.getDate() - 7);
+      return format(d, 'yyyy-MM-dd');
+    });
   };
 
   // Navigate to next week
@@ -905,12 +1648,26 @@ const MDailyDues = () => {
     const newDate = new Date(weekStartDate);
     newDate.setDate(newDate.getDate() + 7);
     setWeekStartDate(newDate);
+
+    // Same sync fix as previousWeek (see comment above) but shifting forward.
+    setSelectedDate(prevSelected => {
+      const shifted = new Date(prevSelected);
+      shifted.setDate(shifted.getDate() + 7);
+      return shifted;
+    });
+    setCalendarDateFilter(prevFilter => {
+      if (!prevFilter) return prevFilter;
+      const d = new Date(prevFilter + 'T00:00:00');
+      d.setDate(d.getDate() + 7);
+      return format(d, 'yyyy-MM-dd');
+    });
   };
 
   // Render calendar days for current week
   const renderCalendarDays = () => {
     const weekDays = getWeekDates(weekStartDate);
 
+    const todayISO = toLocalDateStr(new Date());
     return weekDays.map((day) => {
       const dateStr = format(day, 'yyyy-MM-dd');
       const isCurrentDay = isToday(day);
@@ -918,27 +1675,10 @@ const MDailyDues = () => {
 
       // Count clients due on this specific day
       const clientsForDate = clients.filter(c => {
-        if (!c.loan_start_date || Number(c.pending) <= 0) return false;
-
-        const loanStartDate = new Date(c.loan_start_date);
-        const loanEndDate = new Date(c.loan_end_date);
-        const currentDayDate = new Date(day);
-
-        // Calculate all weekly due dates for the client
-        let dueDate = new Date(loanStartDate);
-
-        while (dueDate <= loanEndDate) {
-          // Check if this due date matches the day
-          if (format(dueDate, 'yyyy-MM-dd') === dateStr) {
-            return true;
-          }
-
-          // Move to next week
-          dueDate.setDate(dueDate.getDate() + 7);
-        }
-
-        return false;
-      }).filter(c => !c.paidDates.has(dateStr));
+        const id = c._id || c.clientId || c.id;
+        const isPushed = (dateStr === todayISO ? Boolean(notPaidTodayMap[id]) : false) || c.last_pushed_date === dateStr;
+        return isClientDueOnDate(c, dateStr) && calculateCurrentDue(c, dateStr) > 0 && !isPushed && !isClientPaidOnDate(c, dateStr);
+      });
 
       const clientCount = clientsForDate.length;
 
@@ -975,8 +1715,8 @@ const MDailyDues = () => {
           </span>
           {clientCount > 0 && (
             <span className={`text-xs font-bold px-1 py-0.5 rounded ${isCurrentDay || isSelectedDay
-                ? 'bg-white/20 text-white'
-                : 'bg-[#6A9C89]/20 text-[#6A9C89]'
+              ? 'bg-white/20 text-white'
+              : 'bg-[#6A9C89]/20 text-[#6A9C89]'
               }`}>
               {clientCount}
             </span>
@@ -990,44 +1730,23 @@ const MDailyDues = () => {
   const isClientDueOnDate = (client, dateStr) => {
     if (!client || !client.loan_start_date) return false;
     if (Number(client.pending) <= 0) return false;
+    const targetStr = toLocalDateStr(dateStr);
+    if (!targetStr) return false;
 
-    const start = new Date(client.loan_start_date);
-    const defaultWeeks = 12;
-    const end = client.loan_end_date
-      ? new Date(client.loan_end_date)
-      : new Date(start.getTime() + (defaultWeeks - 1) * 7 * 24 * 60 * 60 * 1000);
-
-    const target = new Date(dateStr + 'T00:00:00');
-
-    let due = new Date(start);
-    while (due <= end) {
-      if (format(due, 'yyyy-MM-dd') === format(target, 'yyyy-MM-dd')) return true;
-      due.setDate(due.getDate() + 7);
-    }
-    return false;
+    const scheduledDates = getClientScheduledDueDates(client);
+    return scheduledDates.includes(targetStr);
   };
 
   // Calculate which due-week index (1-based) the given date corresponds to for the client
   const calculateWeekIndex = (client, dateStr) => {
     if (!client || !client.loan_start_date) return null;
     if (Number(client.pending) <= 0) return null;
+    const targetStr = toLocalDateStr(dateStr);
+    if (!targetStr) return null;
 
-    const start = new Date(client.loan_start_date);
-    const defaultWeeks = 12;
-    const end = client.loan_end_date
-      ? new Date(client.loan_end_date)
-      : new Date(start.getTime() + (defaultWeeks - 1) * 7 * 24 * 60 * 60 * 1000);
-
-    const target = new Date(dateStr + 'T00:00:00');
-
-    let due = new Date(start);
-    let idx = 1;
-    while (due <= end) {
-      if (format(due, 'yyyy-MM-dd') === format(target, 'yyyy-MM-dd')) return idx;
-      due.setDate(due.getDate() + 7);
-      idx += 1;
-    }
-    return null;
+    const scheduledDates = getClientScheduledDueDates(client);
+    const idx = scheduledDates.indexOf(targetStr);
+    return idx !== -1 ? idx + 1 : null;
   };
 
   // Drag handlers for reordering landmarks
@@ -1063,6 +1782,8 @@ const MDailyDues = () => {
 
   const stats = calculateStats();
   const availableLandmarks = getAvailableLandmarks();
+  const availableAgents = getUniqueAgents();
+  const selectedAgentLabel = availableAgents.find(agent => agent.id === selectedAgent)?.name || '';
   // Merge saved order with currently available landmarks so new landmarks are appended
   const orderedAvailableLandmarks = (orderedLandmarks && orderedLandmarks.length)
     ? [...orderedLandmarks.filter(l => availableLandmarks.includes(l)), ...availableLandmarks.filter(l => !orderedLandmarks.includes(l))]
@@ -1088,7 +1809,7 @@ const MDailyDues = () => {
   const filteredLandmarks = selectedAlpha
     ? orderedAvailableLandmarks.filter(l => (l || '').toString().toLowerCase().startsWith(selectedAlpha.toLowerCase()))
     : orderedAvailableLandmarks;
-  const currentDate = calendarDateFilter || selectedDate.toISOString().split('T')[0];
+  const currentDate = calendarDateFilter || toLocalDateStr(selectedDate);
   // show all clients in the grid (but keep week-based logic for calendar/stats/export)
   const filteredClients = getDisplayedClients();
   // Order displayed clients by the orderedAvailableLandmarks sequence
@@ -1165,6 +1886,23 @@ const MDailyDues = () => {
           <div className="flex flex-col lg:flex-row gap-6 lg:gap-8 w-full">
             {/* Sidebar */}
             <div className="bg-white rounded-xl p-5 shadow-lg border-2 border-[#C4DAD2] h-fit lg:sticky lg:top-5 w-full lg:w-[350px] flex-shrink-0">
+              {/* Agent Filter */}
+              <div className="mb-5">
+                <label className="block text-sm font-semibold text-[#6A9C89] uppercase tracking-wide mb-2">
+                  Filter by Agent
+                </label>
+                <select
+                  value={selectedAgent}
+                  onChange={(e) => setSelectedAgent(e.target.value)}
+                  className="w-full p-3 border-2 border-[#C4DAD2] rounded-lg bg-white text-[#16423C] font-medium cursor-pointer focus:outline-none focus:border-[#6A9C89]"
+                >
+                  <option value="">All Agents</option>
+                  {availableAgents.map(agent => (
+                    <option key={agent.id} value={agent.id}>{agent.name}</option>
+                  ))}
+                </select>
+              </div>
+
               {/* District Filter */}
               <div className="mb-5">
                 <label className="block text-sm font-semibold text-[#6A9C89] uppercase tracking-wide mb-2">
@@ -1258,7 +1996,7 @@ const MDailyDues = () => {
                 {/* Alphabet filter (A-Z) */}
                 <div className="flex flex-col gap-3 pb-6 mb-6 border-b-2 border-[#C4DAD2]">
                   <div className="flex items-center gap-2">
-                    {['A','B','C'].map(letter => (
+                    {['A', 'B', 'C'].map(letter => (
                       <button
                         key={letter}
                         onClick={() => setSelectedAlpha(prev => prev === letter ? '' : letter)}
@@ -1322,13 +2060,13 @@ const MDailyDues = () => {
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
                     {filteredLandmarks.filter(landmarkName => {
                       // Only show landmarks that have at least one client today
-                      const todayClients = filteredClients.filter(c => 
+                      const todayClients = filteredClients.filter(c =>
                         (c.landmark || '') === landmarkName
                       );
                       return todayClients.length > 0;
                     }).map((landmarkName) => {
                       // Count today's clients for this landmark using filteredClients (already date-filtered)
-                      const todayClients = filteredClients.filter(c => 
+                      const todayClients = filteredClients.filter(c =>
                         (c.landmark || '') === landmarkName
                       );
                       const icon = getIconForLandmark(landmarkName);
@@ -1401,59 +2139,79 @@ const MDailyDues = () => {
               {/* Client Grid - All Areas or Specific Landmark */}
               {(selectedLandmark === '' || selectedLandmark !== '') && !loading && filteredClients.length > 0 ? (
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-1 justify-items-stretch">
-                  {orderedFilteredClients.map((client) => (
-                    <div
-                      key={client._id || client.clientId || client.id || client.phone}
-                      onClick={() => handleClientClick(client)}
-                      className="bg-white rounded-xl p-3 shadow-lg border-2 border-transparent hover:border-[#C4DAD2] hover:-translate-y-1 hover:shadow-xl transition-all cursor-pointer flex flex-col h-full active:scale-75w-medium"
-                    >
-                      <div className="flex items-start justify-between mb-4">
-                        <div className="flex-1">
-                          <h3 className="text-lg font-bold text-[#16423C] mb-2 break-words">
-                            {client.name}
-                          </h3>
-                          <span className={`
-                        inline-block text-xs font-semibold px-3 py-1.5 rounded-full
-                        ${client.type === 'personal'
-                              ? 'bg-[#16423C]/10 text-[#16423C] border border-[#16423C]/20'
-                              : 'bg-[#16423C] text-white border border-[#16423C]'}
-                      `}>
-                            {client.type.charAt(0).toUpperCase() + client.type.slice(1)}
-                          </span>
-                        </div>
-                        <span className={`
-                      w-3 h-3 rounded-full flex-shrink-0
-                      ${client.paid
-                            ? 'bg-[#6A9C89] shadow-[0_0_0_3px_rgba(106,156,137,0.2)]'
-                            : 'bg-[#16423C] shadow-[0_0_0_3px_rgba(22,66,60,0.2)]'}
-                    `}></span>
-                      </div>
+                  {orderedFilteredClients.map((client) => {
+                    const weekIdx = calculateWeekIndex(client, currentDate);
 
-                      <div className="flex-1">
-                        <div className="flex items-center gap-3 text-[#16423C] mb-3">
-                          <i className="fas fa-phone text-[#6A9C89] w-4"></i>
-                          <span className="text-sm break-all">{client.phone}</span>
-                        </div>
-                        {client.address && (
-                          <div className="text-sm text-[#6A9C89] leading-relaxed break-words">
-                            {client.address}
+                    return (
+                      <div
+                        key={client._id || client.clientId || client.id || client.phone}
+                        onClick={() => handleClientClick(client)}
+                        className="bg-white rounded-xl p-3 shadow-lg border-2 border-transparent hover:border-[#C4DAD2] hover:-translate-y-1 hover:shadow-xl transition-all cursor-pointer flex flex-col h-full active:scale-75w-medium"
+                      >
+                        <div className="flex items-start justify-between mb-4">
+                          <div className="flex-1">
+                            <h3 className="text-lg font-bold text-[#16423C] mb-2 break-words">
+                              {client.name}
+                            </h3>
+                            <div className="flex items-center flex-wrap gap-y-1">
+                              <span className={`
+                            inline-block text-xs font-semibold px-3 py-1.5 rounded-full
+                            ${client.type === 'personal'
+                                  ? 'bg-[#16423C]/10 text-[#16423C] border border-[#16423C]/20'
+                                  : 'bg-[#16423C] text-white border border-[#16423C]'}
+                          `}>
+                                {client.type.charAt(0).toUpperCase() + client.type.slice(1)}
+                              </span>
+                              {weekIdx && (
+                                <span className="inline-block text-xs font-semibold px-3 py-1.5 rounded-full bg-[#6A9C89]/10 text-[#6A9C89] border border-[#6A9C89]/20 ml-2">
+                                  Week {weekIdx}
+                                </span>
+                              )}
+                            </div>
                           </div>
-                        )}
-                      </div>
+                          <span className={`
+                        w-3 h-3 rounded-full flex-shrink-0
+                        ${isClientPaidOnDate(client, currentDate)
+                              ? 'bg-[#6A9C89] shadow-[0_0_0_3px_rgba(106,156,137,0.2)]'
+                              : 'bg-[#16423C] shadow-[0_0_0_3px_rgba(22,66,60,0.2)]'}
+                      `}></span>
+                        </div>
 
-                      <div className="mt-4 pt-4 border-t-2 border-[#C4DAD2]">
-                        <div className="text-sm font-semibold text-[#6A9C89] mb-1">
-                          Weekly Payment
+                        <div className="flex-1">
+                          <div className="flex items-center gap-3 text-[#16423C] mb-3">
+                            <i className="fas fa-phone text-[#6A9C89] w-4"></i>
+                            <span className="text-sm break-all">{client.phone}</span>
+                          </div>
+                          {client.address && (
+                            <div className="text-sm text-[#6A9C89] leading-relaxed break-words">
+                              {client.address}
+                            </div>
+                          )}
                         </div>
-                        <div className={`
-                      text-xl font-bold
-                      ${client.paid ? 'text-[#6A9C89] bg-[#6A9C89]/10 py-2 px-3 rounded-lg inline-block' : 'text-[#16423C]'}
-                    `}>
-                          {client.daily_amount}
+
+                        <div className="mt-4 pt-4 border-t-2 border-[#C4DAD2]">
+                          <div className="text-sm font-semibold text-[#6A9C89] mb-1">
+                            Weekly Payment
+                          </div>
+                          <div className={`
+                        text-xl font-bold flex items-center justify-between
+                        ${isClientPaidOnDate(client, currentDate) ? 'text-[#6A9C89] bg-[#6A9C89]/10 py-2 px-3 rounded-lg' : 'text-[#16423C]'}
+                      `}>
+                            <span>
+                              ₹{
+                                isClientPaidOnDate(client, currentDate)
+                                  ? (getPaidAmountOnDate(client, currentDate) || calculateCurrentDue(client, currentDate)).toLocaleString('en-IN')
+                                  : calculateCurrentDue(client, currentDate).toLocaleString('en-IN')
+                              }
+                            </span>
+                            {isClientPaidOnDate(client, currentDate) && (
+                              <span className="text-xs bg-[#6A9C89] text-white px-2.5 py-1 rounded-full font-bold ml-2">Paid ✅</span>
+                            )}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : !loading && (
                 <div className="text-center py-20 bg-white rounded-xl border-2 border-[#C4DAD2]">
@@ -1465,7 +2223,7 @@ const MDailyDues = () => {
                     {selectedLandmark ? 'Try selecting a different landmark' : 'Try adjusting your search criteria'}
                   </p>
                 </div>
-              ) }
+              )}
             </div>
           </div>
         </div>
@@ -1527,30 +2285,80 @@ const MDailyDues = () => {
                   </div>
                 </div>
 
-                <div className="text-4xl font-bold text-[#16423C] text-center my-8 p-8 bg-gradient-to-r from-[#E9EFEC] to-[#C4DAD2] rounded-xl border-2 border-[#C4DAD2] break-words">
-                  {selectedClient.daily_amount}
+                <div className="mb-6 p-4 bg-gradient-to-r from-[#E9EFEC] to-[#C4DAD2] rounded-xl border-2 border-[#C4DAD2] text-center">
+                  <div className="text-sm font-semibold text-[#6A9C89] uppercase tracking-wide mb-2">
+                    {isClientPaidOnDate(selectedClient, currentDate) ? 'Paid Amount' : 'Due Amount'}
+                  </div>
+                  <div className="text-4xl font-bold text-[#16423C] mb-4">
+                    ₹{(isClientPaidOnDate(selectedClient, currentDate)
+                      ? (getPaidAmountOnDate(selectedClient, currentDate) || calculateCurrentDue(selectedClient, currentDate))
+                      : calculateCurrentDue(selectedClient, currentDate)
+                    ).toLocaleString('en-IN')}
+                  </div>
+
+                  <div className="text-left">
+                    <label className="block text-xs font-semibold text-[#6A9C89] uppercase tracking-wide mb-1.5">
+                      Amount to Pay (₹)
+                    </label>
+                    <input
+                      type="number"
+                      value={customAmount}
+                      onChange={(e) => setCustomAmount(e.target.value)}
+                      disabled={isClientPaidOnDate(selectedClient, currentDate) || (selectedClient?._id && Array.isArray(serverPaidTodayMap[selectedClient._id]) && serverPaidTodayMap[selectedClient._id].includes('agent') && serverPaidTodayMap[selectedClient._id].includes('manager'))}
+                      className="w-full px-3 py-2 text-center text-lg font-bold text-[#16423C] border-2 border-[#16423C]/20 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#16423C] bg-white"
+                    />
+                    {(() => {
+                      const dueVal = isClientPaidOnDate(selectedClient, currentDate)
+                        ? (getPaidAmountOnDate(selectedClient, currentDate) || calculateCurrentDue(selectedClient, currentDate))
+                        : calculateCurrentDue(selectedClient, currentDate);
+                      const enteredVal = Number(customAmount) || 0;
+                      const remaining = dueVal - enteredVal;
+                      if (!isClientPaidOnDate(selectedClient, currentDate) && remaining > 0 && enteredVal > 0) {
+                        return (
+                          <p className="text-xs text-yellow-700 mt-2 font-semibold">
+                            ⚠️ Partial: ₹{remaining} will be added to the next week's due.
+                          </p>
+                        );
+                      } else if (!isClientPaidOnDate(selectedClient, currentDate) && remaining < 0) {
+                        return (
+                          <p className="text-xs text-green-700 mt-2 font-semibold">
+                            ✨ Advance: ₹{Math.abs(remaining)} extra paid.
+                          </p>
+                        );
+                      }
+                      return null;
+                    })()}
+                  </div>
                 </div>
 
-                <button
-                  onClick={() => handleMarkPaid(selectedClient)}
-                  disabled={
-                    !selectedClient ||
-                    selectedClient.paidDates.has(currentDate) ||
-                    paidTodayMap[selectedClient._id]
-                  }
-                  className={`w-full py-4 mb-3 rounded-xl font-semibold flex items-center justify-center gap-3 shadow-lg hover:-translate-y-1 hover:shadow-xl transition-all active:scale-95 ${selectedClient && (selectedClient.paidDates.has(currentDate) || paidTodayMap[selectedClient._id]) ? 'bg-gray-300 text-gray-600 cursor-not-allowed' : 'bg-gradient-to-r from-[#6A9C89] to-[#16423C] text-white'}`}
-                >
-                  <i className="fas fa-check"></i>
-                  {selectedClient && (selectedClient.paidDates.has(currentDate) || paidTodayMap[selectedClient._id]) ? 'Paid' : 'Mark as Paid'}
-                </button>
+                {(() => {
+                  const isPaid = !selectedClient || isClientPaidOnDate(selectedClient, currentDate) || calculateCurrentDue(selectedClient, currentDate) <= 0;
+                  return (
+                    <button
+                      onClick={() => handleMarkPaid(selectedClient)}
+                      disabled={isPaid}
+                      className={`w-full py-4 mb-3 rounded-xl font-semibold flex items-center justify-center gap-3 shadow-lg hover:-translate-y-1 hover:shadow-xl transition-all active:scale-95 ${isPaid ? 'bg-gray-300 text-gray-600 cursor-not-allowed' : 'bg-gradient-to-r from-[#6A9C89] to-[#16423C] text-white'}`}
+                    >
+                      <i className="fas fa-check"></i>
+                      {isPaid ? 'Paid ✅' : 'Mark as Paid'}
+                    </button>
+                  );
+                })()}
 
                 <button
                   onClick={() => handleNotPaid(selectedClient)}
-                  disabled={!selectedClient || notPaidTodayMap[selectedClient._id] || selectedClient.paidDates.has(currentDate) || paidTodayMap[selectedClient._id]}
-                  className={`w-full py-4 mb-3 ${notPaidTodayMap[selectedClient._id] || selectedClient.paidDates.has(currentDate) || paidTodayMap[selectedClient._id] ? 'bg-gray-300 text-gray-600 cursor-not-allowed' : 'bg-yellow-500 text-white'} rounded-xl font-semibold flex items-center justify-center gap-3 shadow-lg hover:-translate-y-1 hover:shadow-xl transition-all active:scale-95`}
+                  disabled={
+                    !selectedClient ||
+                    notPaidTodayMap[selectedClient._id] ||
+                    selectedClient.last_pushed_date === currentDate ||
+                    calculateCurrentDue(selectedClient, currentDate) <= 0 ||
+                    (Array.isArray(serverPaidTodayMap[selectedClient._id]) && serverPaidTodayMap[selectedClient._id].includes('agent') && serverPaidTodayMap[selectedClient._id].includes('manager')) ||
+                    isClientPaidOnDate(selectedClient, currentDate)
+                  }
+                  className={`w-full py-4 mb-3 ${notPaidTodayMap[selectedClient._id] || calculateCurrentDue(selectedClient, currentDate) <= 0 || isClientPaidOnDate(selectedClient, currentDate) ? 'bg-gray-300 text-gray-600 cursor-not-allowed' : 'bg-yellow-500 text-white'} rounded-xl font-semibold flex items-center justify-center gap-3 shadow-lg hover:-translate-y-1 hover:shadow-xl transition-all active:scale-95`}
                 >
                   <i className="fas fa-forward"></i>
-                  {selectedClient.paidDates.has(currentDate) || paidTodayMap[selectedClient._id] ? 'Already Paid Today' : notPaidTodayMap[selectedClient._id] ? 'Already Pushed Today' : 'CANCEL (Push to next week)'}
+                  {(selectedClient && calculateCurrentDue(selectedClient, currentDate) <= 0) ? 'Already Paid' : (notPaidTodayMap[selectedClient._id] || selectedClient.last_pushed_date === currentDate) ? 'Already Pushed Today' : 'CANCEL (Push to next week)'}
                 </button>
 
                 <button
@@ -1599,6 +2407,63 @@ const MDailyDues = () => {
                     PDF
                   </button>
                 </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 12th Due Warning Dialogue Modal */}
+        {showFinalDueModal && selectedClient && (
+          <div
+            className="fixed inset-0 bg-[#16423C]/70 backdrop-blur-sm z-[1100] flex items-center justify-center p-4"
+            onClick={() => setShowFinalDueModal(false)}
+          >
+            <div
+              className="bg-white rounded-2xl max-w-[480px] w-full shadow-2xl border-2 border-yellow-400 p-6 animate-[modalFade_0.3s_ease]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-4 text-yellow-600 mb-4">
+                <div className="w-12 h-12 rounded-full bg-yellow-100 flex items-center justify-center text-2xl flex-shrink-0 font-bold">
+                  ⚠️
+                </div>
+                <div>
+                  <h3 className="text-xl font-bold text-[#16423C]">12th (Final) Due Notice</h3>
+                  <p className="text-xs text-yellow-700 font-bold">Client must pay something!</p>
+                </div>
+              </div>
+
+              <div className="bg-yellow-50 border-l-4 border-yellow-500 p-4 rounded-r-xl mb-6">
+                <p className="text-sm text-yellow-900 leading-relaxed font-medium">
+                  Client <strong className="text-[#16423C] font-bold">{selectedClient.name}</strong> is on their <strong>12th (final) due</strong>.
+                </p>
+                <p className="text-xs text-yellow-800 mt-2 font-semibold">
+                  Pushing this due to next week will move the remaining balance (₹{(selectedClient.pending || 0).toLocaleString('en-IN')}) into the <strong>Pending Clients</strong> section.
+                </p>
+              </div>
+
+              <div className="flex flex-col gap-3">
+                <button
+                  onClick={() => executeNotPaid(selectedClient)}
+                  className="w-full py-3.5 bg-yellow-500 hover:bg-yellow-600 text-white rounded-xl font-bold flex items-center justify-center gap-2 shadow-md hover:shadow-lg transition-all active:scale-95"
+                >
+                  <i className="fas fa-arrow-right"></i>
+                  Move to Pending Clients (Push 1 Week)
+                </button>
+
+                <button
+                  onClick={() => setShowFinalDueModal(false)}
+                  className="w-full py-3 bg-[#6A9C89] hover:bg-[#16423C] text-white rounded-xl font-semibold flex items-center justify-center gap-2 transition-all active:scale-95"
+                >
+                  <i className="fas fa-money-bill-wave"></i>
+                  Pay Now
+                </button>
+
+                <button
+                  onClick={() => setShowFinalDueModal(false)}
+                  className="w-full py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl font-medium transition-all active:scale-95"
+                >
+                  Cancel
+                </button>
               </div>
             </div>
           </div>
