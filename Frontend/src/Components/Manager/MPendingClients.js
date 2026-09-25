@@ -110,7 +110,7 @@ const MPendingClients = () => {
         throw new Error('Authentication token not found. Please log in again.');
       }
 
-      const response = await fetch('https://karan-e26t.onrender.com/api/payments/process', {
+      const response = await fetch('https://karanfinance.com/api/payments/process', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -199,7 +199,7 @@ const MPendingClients = () => {
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch('https://karan-e26t.onrender.com/api/clients/all', {
+      const res = await fetch('https://karanfinance.com/api/clients/all', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
@@ -209,7 +209,7 @@ const MPendingClients = () => {
       if (data.success && data.clients) {
         // Fetch payments to map them for dynamic due calculation
         try {
-          const payRes = await fetch('https://karan-e26t.onrender.com/api/payments/test/all');
+          const payRes = await fetch('https://karanfinance.com/api/payments/test/all');
           const payJson = payRes.ok ? await payRes.json() : null;
           const payments = (payJson && payJson.data && payJson.data.payments) || [];
 

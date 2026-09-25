@@ -169,7 +169,7 @@ export default function MpaymentHistory() {
     try {
       const token = localStorage.getItem('token');
       if (!token) return;
-      const response = await fetch('https://karan-e26t.onrender.com/api/clients/all', {
+      const response = await fetch('https://karanfinance.com/api/clients/all', {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
@@ -199,7 +199,7 @@ export default function MpaymentHistory() {
     try {
       const token = localStorage.getItem('token');
 
-      const res = await fetch(`https://karan-e26t.onrender.com/api/payments/${paymentId}`, {
+      const res = await fetch(`https://karanfinance.com/api/payments/${paymentId}`, {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
@@ -229,7 +229,7 @@ export default function MpaymentHistory() {
         }
 
         if (newEndDate && token) {
-          await fetch(`https://karan-e26t.onrender.com/api/clients/${clientId}`, {
+          await fetch(`https://karanfinance.com/api/clients/${clientId}`, {
             method: 'PUT',
             headers: {
               'Content-Type': 'application/json',
@@ -264,7 +264,7 @@ export default function MpaymentHistory() {
   const fetchPaymentsData = async () => {
     try {
       // Use test endpoint (no auth required) for now
-      const response = await fetch('https://karan-e26t.onrender.com/api/payments/test/all', {
+      const response = await fetch('https://karanfinance.com/api/payments/test/all', {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',

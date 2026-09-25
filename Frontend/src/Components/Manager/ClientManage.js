@@ -71,7 +71,7 @@ export default function ClientManage() {
           return;
         }
 
-        const res = await fetch(`https://karan-e26t.onrender.com/api/agents/${agentId}`, {
+        const res = await fetch(`https://karanfinance.com/api/agents/${agentId}`, {
           headers: { Authorization: `Bearer ${token}` }
         });
 
@@ -97,7 +97,7 @@ export default function ClientManage() {
       }
 
       // Default: admin/manager - fetch full agents list
-      const res = await fetch('https://karan-e26t.onrender.com/api/agents', {
+      const res = await fetch('https://karanfinance.com/api/agents', {
         headers: { Authorization: `Bearer ${token}` }
       });
 
@@ -135,7 +135,7 @@ export default function ClientManage() {
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`https://karan-e26t.onrender.com/api/clients/agent/${agentId}`, {
+      const res = await fetch(`https://karanfinance.com/api/clients/agent/${agentId}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
 
@@ -161,7 +161,7 @@ export default function ClientManage() {
   const fetchPaymentHistory = async (clientId) => {
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`https://karan-e26t.onrender.com/api/payments/history/${clientId}`, {
+      const res = await fetch(`https://karanfinance.com/api/payments/history/${clientId}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
 
@@ -206,7 +206,7 @@ export default function ClientManage() {
 
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`https://karan-e26t.onrender.com/api/clients/${selectedClient._id}/transfer`, {
+      const res = await fetch(`https://karanfinance.com/api/clients/${selectedClient._id}/transfer`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',

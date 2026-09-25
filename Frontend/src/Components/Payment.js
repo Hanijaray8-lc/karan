@@ -38,7 +38,7 @@ export default function Payments() {
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
-      const response = await axios.get('https://karan-e26t.onrender.com/api/payments', {
+      const response = await axios.get('https://karanfinance.com/api/payments', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
@@ -162,7 +162,7 @@ export default function Payments() {
 
     try {
       const token = localStorage.getItem('token');
-      const response = await axios.post('https://karan-e26t.onrender.com/api/payments/process', {
+      const response = await axios.post('https://karanfinance.com/api/payments/process', {
         clientId: selectedClient._id,
         amount: selectedAmount,
         paymentMethod,
@@ -230,7 +230,7 @@ export default function Payments() {
       }
 
       // Update client loan_end_date in backend
-      const updateRes = await fetch(`https://karan-e26t.onrender.com/api/clients/${clientId}`, {
+      const updateRes = await fetch(`https://karanfinance.com/api/clients/${clientId}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',

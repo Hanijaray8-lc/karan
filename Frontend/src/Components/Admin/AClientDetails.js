@@ -93,7 +93,7 @@ const AClientDetails = () => {
       setPayErrorMsg('');
       const token = localStorage.getItem('token');
 
-      const response = await fetch('https://karan-e26t.onrender.com/api/payments/process', {
+      const response = await fetch('https://karanfinance.com/api/payments/process', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -178,7 +178,7 @@ const AClientDetails = () => {
       const token = localStorage.getItem('token');
 
       // Call backend to delete payment
-      const res = await fetch(`https://karan-e26t.onrender.com/api/payments/${paymentId}`, {
+      const res = await fetch(`https://karanfinance.com/api/payments/${paymentId}`, {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
@@ -224,7 +224,7 @@ const AClientDetails = () => {
       }
 
       // Update client loan_end_date in backend
-      const updateRes = await fetch(`https://karan-e26t.onrender.com/api/clients/${clientId}`, {
+      const updateRes = await fetch(`https://karanfinance.com/api/clients/${clientId}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -305,13 +305,13 @@ const AClientDetails = () => {
 
       // If no token, use the public test endpoint to avoid 401 when not authenticated
       if (!token) {
-        const res = await fetch('https://karan-e26t.onrender.com/api/clients/test/all');
+        const res = await fetch('https://karanfinance.com/api/clients/test/all');
         if (!res.ok) throw new Error('Failed to fetch clients');
         const json = await res.json();
         clientsList = json.clients || [];
       } else {
         // Try the protected endpoint when token is available
-        const response = await fetch('https://karan-e26t.onrender.com/api/clients', {
+        const response = await fetch('https://karanfinance.com/api/clients', {
           headers: {
             'Authorization': `Bearer ${token}`
           }
@@ -319,7 +319,7 @@ const AClientDetails = () => {
 
         // If unauthorized, fallback to public test endpoint to avoid showing 401 errors to unauthenticated users
         if (response.status === 401) {
-          const fb = await fetch('https://karan-e26t.onrender.com/api/clients/test/all');
+          const fb = await fetch('https://karanfinance.com/api/clients/test/all');
           if (!fb.ok) throw new Error('Failed to fetch clients');
           const fbJson = await fb.json();
           clientsList = fbJson.clients || [];
@@ -558,13 +558,13 @@ const AClientDetails = () => {
 
       try {
         const token = localStorage.getItem('token');
-        const res = await fetch(`https://karan-e26t.onrender.com/api/payments/client/${selectedClient._id}`, {
+        const res = await fetch(`https://karanfinance.com/api/payments/client/${selectedClient._id}`, {
           headers: { Authorization: `Bearer ${token}` }
         });
 
         if (!res.ok) {
           // Try admin route as a fallback (for admins viewing any client)
-          const adminRes = await fetch(`https://karan-e26t.onrender.com/api/payments/admin/all`, {
+          const adminRes = await fetch(`https://karanfinance.com/api/payments/admin/all`, {
             headers: { Authorization: `Bearer ${token}` }
           });
 
@@ -842,7 +842,7 @@ const AClientDetails = () => {
       let paymentSuccess = false;
       if (givenNum > 0) {
         try {
-          const payRes = await fetch('https://karan-e26t.onrender.com/api/payments/process', {
+          const payRes = await fetch('https://karanfinance.com/api/payments/process', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -868,7 +868,7 @@ const AClientDetails = () => {
       }
 
       // 2. Always update client status to paid and pending to 0
-      const updateRes = await fetch(`https://karan-e26t.onrender.com/api/clients/${selectedClient._id}`, {
+      const updateRes = await fetch(`https://karanfinance.com/api/clients/${selectedClient._id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -961,7 +961,7 @@ const AClientDetails = () => {
       const token = localStorage.getItem('token');
 
       // 1. Fetch current payment records to identify foreclosure payment(s)
-      const historyRes = await fetch(`https://karan-e26t.onrender.com/api/payments/history?clientId=${selectedClient._id}`, {
+      const historyRes = await fetch(`https://karanfinance.com/api/payments/history?clientId=${selectedClient._id}`, {
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { 'Authorization': `Bearer ${token}` } : {})
@@ -978,7 +978,7 @@ const AClientDetails = () => {
       const foreclosurePayments = payments.filter(p => p.paymentMethod === 'Foreclosure');
       for (const fp of foreclosurePayments) {
         try {
-          await fetch(`https://karan-e26t.onrender.com/api/payments/${fp._id}`, {
+          await fetch(`https://karanfinance.com/api/payments/${fp._id}`, {
             method: 'DELETE',
             headers: {
               'Content-Type': 'application/json',
@@ -999,7 +999,7 @@ const AClientDetails = () => {
       const restoredStatus = restoredPending <= 0 ? 'paid' : (restoredReceived > 0 ? 'partial' : 'pending');
 
       // Update client in backend
-      const updateRes = await fetch(`https://karan-e26t.onrender.com/api/clients/${selectedClient._id}`, {
+      const updateRes = await fetch(`https://karanfinance.com/api/clients/${selectedClient._id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -1084,7 +1084,7 @@ const AClientDetails = () => {
         ...(reloanDistrict ? { district: reloanDistrict } : {})
       };
 
-      const res = await fetch(`https://karan-e26t.onrender.com/api/clients/${selectedClient._id}`, {
+      const res = await fetch(`https://karanfinance.com/api/clients/${selectedClient._id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',

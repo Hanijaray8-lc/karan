@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { ArrowRightOnRectangleIcon, Bars3Icon, XMarkIcon, BellIcon } from '@heroicons/react/24/outline';
 import axios from 'axios';
 
-const API_URL = process.env.REACT_APP_API_URL || 'https://karan-e26t.onrender.com/api';
+const API_URL = process.env.REACT_APP_API_URL || 'https://karanfinance.com/api';
 
 const navItems = [
   { label: 'Dashboard', path: '/Manager/managerdashboard' },

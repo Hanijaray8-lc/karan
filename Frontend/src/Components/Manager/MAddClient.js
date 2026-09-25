@@ -93,7 +93,7 @@ export default function MClientManagement() {
   const fetchAgents = async () => {
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch('https://karan-e26t.onrender.com/api/agents', {
+      const res = await fetch('https://karanfinance.com/api/agents', {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (res.status === 401) return handleAuthError();
@@ -194,7 +194,7 @@ export default function MClientManagement() {
     try {
       setLoading(true);
       const token = localStorage.getItem('token');
-      const res = await fetch('https://karan-e26t.onrender.com/api/clients', {
+      const res = await fetch('https://karanfinance.com/api/clients', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
@@ -262,7 +262,7 @@ export default function MClientManagement() {
       formattedData.total_weeks = calculateTotalWeeks();
       formattedData.weekly_amount = calculateWeeklyAmount();
 
-      const res = await fetch('https://karan-e26t.onrender.com/api/clients', {
+      const res = await fetch('https://karanfinance.com/api/clients', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -397,7 +397,7 @@ export default function MClientManagement() {
       updatedData.total_weeks = calculateTotalWeeks();
       updatedData.weekly_amount = calculateWeeklyAmount();
 
-      const res = await fetch(`https://karan-e26t.onrender.com/api/clients/${currentClient._id}`, {
+      const res = await fetch(`https://karanfinance.com/api/clients/${currentClient._id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -422,7 +422,7 @@ export default function MClientManagement() {
   const handleDeleteClient = async () => {
     if (!currentClient?._id) return;
     try {
-      const res = await fetch(`https://karan-e26t.onrender.com/api/clients/${currentClient._id}`, {
+      const res = await fetch(`https://karanfinance.com/api/clients/${currentClient._id}`, {
         method: 'DELETE',
         headers: {
           Authorization: `Bearer ${localStorage.getItem('token')}`,

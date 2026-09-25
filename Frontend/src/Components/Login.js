@@ -8,7 +8,7 @@ import { loadFaceApiModels, getFaceDescriptor } from '../utils/faceRecognition';
 import { requestCameraPermissions } from '../utils/cameraService';
 import { prewarmLocalDatabase } from '../services/prewarmService';
 
-const API_URL = process.env.REACT_APP_API_URL || 'https://karan-e26t.onrender.com/api';
+const API_URL = process.env.REACT_APP_API_URL || 'https://karanfinance.com/api';
 
 export default function Login() {
   const [formData, setFormData] = useState({ username: '', password: '' });

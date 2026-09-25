@@ -53,7 +53,7 @@ const AdminDashboard = () => {
     const fetchData = async () => {
       try {
         setLoadingData(true);
-        const res = await axios.get('https://karan-e26t.onrender.com/api/payments/test/all');
+        const res = await axios.get('https://karanfinance.com/api/payments/test/all');
         const payments = (res.data && res.data.data && res.data.data.payments) || [];
         const totalCollected = (res.data && res.data.data && res.data.data.stats && res.data.data.stats.totalCollected) || 0;
 
@@ -130,7 +130,7 @@ const AdminDashboard = () => {
         const monthly = Object.keys(monthBuckets).map(m => ({ month: m, amount: monthBuckets[m] }));
 
         // Fetch clients to compute total lent amount and outstanding dues
-        const clientsRes = await axios.get('https://karan-e26t.onrender.com/api/clients/test/all');
+        const clientsRes = await axios.get('https://karanfinance.com/api/clients/test/all');
         const clients = (clientsRes.data && clientsRes.data.clients) || [];
         const totalLent = clients.reduce((sum, c) => sum + (Number(c.amount) || 0), 0);
         const totalPending = clients.reduce((sum, c) => sum + (Number(c.pending) || 0), 0);
@@ -250,7 +250,7 @@ const AdminDashboard = () => {
       try {
         const token = localStorage.getItem('token');
         if (!token) return;
-        const res = await axios.get('https://karan-e26t.onrender.com/api/agents/pending-approvals', {
+        const res = await axios.get('https://karanfinance.com/api/agents/pending-approvals', {
           headers: { Authorization: `Bearer ${token}` }
         });
         if (res.data && res.data.success) {

@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'; // Added for redirection
 import AdminNavbar from './AdminNavbar';
 import axios from 'axios';
 
-const API_URL = process.env.REACT_APP_API_URL || 'https://karan-e26t.onrender.com/api';
+const API_URL = process.env.REACT_APP_API_URL || 'https://karanfinance.com/api';
 
 const AgentManagement = () => {
   const navigate = useNavigate();

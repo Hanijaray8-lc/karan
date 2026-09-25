@@ -344,7 +344,7 @@ const DailyDues = () => {
   const fetchClientsWithoutLoading = async () => {
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch('https://karan-e26t.onrender.com/api/clients/all', {
+      const res = await fetch('https://karanfinance.com/api/clients/all', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
@@ -374,7 +374,7 @@ const DailyDues = () => {
         });
         // Attach paid status by checking payment records
         try {
-          const payRes = await fetch('https://karan-e26t.onrender.com/api/payments/test/all');
+          const payRes = await fetch('https://karanfinance.com/api/payments/test/all');
           const payJson = payRes.ok ? await payRes.json() : null;
           const rawPayments = (payJson && payJson.data && payJson.data.payments) || [];
           const seenIds = new Set();
@@ -505,7 +505,7 @@ const DailyDues = () => {
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch('https://karan-e26t.onrender.com/api/clients/all', {
+      const res = await fetch('https://karanfinance.com/api/clients/all', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
@@ -543,7 +543,7 @@ const DailyDues = () => {
         });
 
         try {
-          const payRes = await fetch('https://karan-e26t.onrender.com/api/payments/test/all');
+          const payRes = await fetch('https://karanfinance.com/api/payments/test/all');
           const payJson = payRes.ok ? await payRes.json() : null;
           const rawPayments = (payJson && payJson.data && payJson.data.payments) || [];
           const seenIds = new Set();
@@ -1003,7 +1003,7 @@ const DailyDues = () => {
 
       const today = getTodayDateString();
       // Query for payments made today for this specific client
-      const res = await fetch(`https://karan-e26t.onrender.com/api/payments/history?clientId=${clientId}&startDate=${today}&endDate=${today}`, {
+      const res = await fetch(`https://karanfinance.com/api/payments/history?clientId=${clientId}&startDate=${today}&endDate=${today}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
@@ -1077,7 +1077,7 @@ const DailyDues = () => {
       const targetDateStr = calendarDateFilter || toLocalDateStr(selectedDate);
       const payDateIso = targetDateStr ? `${targetDateStr}T12:00:00.000Z` : new Date().toISOString();
 
-      const res = await fetch('https://karan-e26t.onrender.com/api/payments/process', {
+      const res = await fetch('https://karanfinance.com/api/payments/process', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1205,7 +1205,7 @@ const DailyDues = () => {
         return;
       }
 
-      const res = await fetch(`https://karan-e26t.onrender.com/api/clients/${client._id}`, {
+      const res = await fetch(`https://karanfinance.com/api/clients/${client._id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',

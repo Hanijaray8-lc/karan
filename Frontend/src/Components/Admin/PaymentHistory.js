@@ -164,13 +164,13 @@ export default function PaymentHistory() {
 
       if (!token) {
         // public test endpoint fallback
-        const response = await fetch('https://karan-e26t.onrender.com/api/clients/test/all');
+        const response = await fetch('https://karanfinance.com/api/clients/test/all');
         if (response.ok) {
           const data = await response.json();
           clientsData = data.clients || [];
         }
       } else {
-        const response = await fetch('https://karan-e26t.onrender.com/api/clients/all', {
+        const response = await fetch('https://karanfinance.com/api/clients/all', {
           method: 'GET',
           headers: {
             'Content-Type': 'application/json',
@@ -182,7 +182,7 @@ export default function PaymentHistory() {
           const data = await response.json();
           clientsData = data.clients || [];
         } else if (response.status === 401) {
-          const fb = await fetch('https://karan-e26t.onrender.com/api/clients/test/all');
+          const fb = await fetch('https://karanfinance.com/api/clients/test/all');
           if (fb.ok) {
             const data = await fb.json();
             clientsData = data.clients || [];
@@ -210,7 +210,7 @@ export default function PaymentHistory() {
       const token = localStorage.getItem('token');
 
       // Call backend to delete payment
-      const res = await fetch(`https://karan-e26t.onrender.com/api/payments/${paymentId}`, {
+      const res = await fetch(`https://karanfinance.com/api/payments/${paymentId}`, {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
@@ -256,7 +256,7 @@ export default function PaymentHistory() {
       }
 
       // Update client loan_end_date in backend
-      const updateRes = await fetch(`https://karan-e26t.onrender.com/api/clients/${clientId}`, {
+      const updateRes = await fetch(`https://karanfinance.com/api/clients/${clientId}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -308,7 +308,7 @@ export default function PaymentHistory() {
   const fetchPaymentsData = async () => {
     try {
       // Use test endpoint (no auth required) for now
-      const response = await fetch('https://karan-e26t.onrender.com/api/payments/test/all', {
+      const response = await fetch('https://karanfinance.com/api/payments/test/all', {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',

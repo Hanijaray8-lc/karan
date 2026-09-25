@@ -3,7 +3,7 @@
 
 import localSqliteDb from './localSqliteDb';
 
-const API_BASE = 'https://karan-e26t.onrender.com/api';
+const API_BASE = 'https://karanfinance.com/api';
 
 /**
  * Pre-warm the local SQLite database in the background when the app starts or after login
