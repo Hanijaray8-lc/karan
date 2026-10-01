@@ -163,8 +163,8 @@ const ClientDetails = () => {
     let currentDate = new Date(startDate);
     let paymentId = 1;
 
-    // weekly amount forced to ₹575 (12-week schedule)
-    const weeklyDue = FORCED_WEEKLY;
+    // weekly amount (default to FORCED_WEEKLY 575)
+    const weeklyDue = (client.weekly_amount && Number(client.weekly_amount) > 0) ? Number(client.weekly_amount) : FORCED_WEEKLY;
 
     while (currentDate <= endDate && paymentId <= 12) {
       // Calculate week start and end (ISO date strings) to match payments
@@ -176,6 +176,8 @@ const ClientDetails = () => {
         id: paymentId,
         month: `Week ${paymentId} - ${currentDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`,
         dueAmount: weeklyDue,
+        displayAmount: weeklyDue,
+        paidAmount: 0,
         status: 'pending',
         paidDate: null,
         weekStartISO: weekStart.toISOString().split('T')[0],
@@ -201,6 +203,8 @@ const ClientDetails = () => {
         id: paymentId,
         month: `Week ${paymentId} - ${weekStart.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`,
         dueAmount: weeklyDue,
+        displayAmount: weeklyDue,
+        paidAmount: 0,
         status: 'pending',
         paidDate: null,
         weekStartISO: weekStart.toISOString().split('T')[0],
@@ -212,6 +216,54 @@ const ClientDetails = () => {
     }
 
     return payments;
+  };
+
+  // Apply rolling weekly adjustment logic to schedule of weeks
+  // (e.g. week 1 pays 600 -> week 2 due becomes 550; week 2 pays 550 -> week 3 returns to 575)
+  const applyWeeklyAdjustment = (weeks, client) => {
+    if (!weeks || weeks.length === 0) return [];
+    const baseWeekly = (client?.weekly_amount && Number(client.weekly_amount) > 0)
+      ? Number(client.weekly_amount)
+      : FORCED_WEEKLY;
+
+    let runningDue = baseWeekly;
+
+    return weeks.map(week => {
+      const w = { ...week };
+      w.dueAmount = runningDue;
+
+      if (w.status === 'paid') {
+        if (w.isForeclosed) {
+          w.displayAmount = w.dueAmount;
+        } else {
+          const actualPaid = (w.paidAmount !== undefined && w.paidAmount > 0) ? w.paidAmount : w.dueAmount;
+          w.paidAmount = actualPaid;
+          w.displayAmount = actualPaid;
+          const diff = actualPaid - runningDue;
+          runningDue = Math.max(0, baseWeekly - diff);
+        }
+      } else {
+        w.displayAmount = runningDue;
+        runningDue = baseWeekly;
+      }
+      return w;
+    });
+  };
+
+  // Helper to compute active/current weekly due amount for selected client
+  const getCurrentWeeklyDue = (client, paymentsList) => {
+    if (!client) return FORCED_WEEKLY;
+    const pendingCap = Number(client.pending ?? ((client.amount || 6900) - (client.received || 0)));
+    if (pendingCap <= 0) return 0;
+
+    const firstPending = (paymentsList || []).find(p => p.status === 'pending');
+    if (firstPending && firstPending.dueAmount !== undefined) {
+      return Math.min(pendingCap, firstPending.dueAmount);
+    }
+    const baseWeekly = (client?.weekly_amount && Number(client.weekly_amount) > 0)
+      ? Number(client.weekly_amount)
+      : FORCED_WEEKLY;
+    return Math.min(pendingCap, baseWeekly);
   };
 
   // Open cancel confirmation modal
@@ -349,7 +401,7 @@ const ClientDetails = () => {
           });
 
           if (!historyRes.ok) {
-            setDuePayments(baseWeeks);
+            setDuePayments(applyWeeklyAdjustment(baseWeeks, selectedClient));
             return;
           }
 
@@ -396,6 +448,7 @@ const ClientDetails = () => {
           if (idx !== -1) {
             merged[idx].status = 'paid';
             merged[idx].paidDate = pISO;
+            merged[idx].paidAmount = (merged[idx].paidAmount || 0) + Number(p.amount || 0);
             merged[idx].collectedStaff = p.collectedStaff || (p.agent && (p.agent.name || p.agent.username)) || 'Unknown';
             merged[idx].collectedByRole = p.collectedByRole || (p.agent ? 'agent' : null);
             merged[idx].paymentId = p._id || p.id;
@@ -415,6 +468,7 @@ const ClientDetails = () => {
           if (idx !== -1) {
             merged[idx].status = 'paid';
             merged[idx].paidDate = pISO;
+            merged[idx].paidAmount = (merged[idx].paidAmount || 0) + Number(p.amount || 0);
             merged[idx].collectedStaff = p.collectedStaff || (p.agent && (p.agent.name || p.agent.username)) || 'Unknown';
             merged[idx].collectedByRole = p.collectedByRole || (p.agent ? 'agent' : null);
             merged[idx].paymentId = p._id || p.id;
@@ -461,10 +515,10 @@ const ClientDetails = () => {
           });
         }
 
-        setDuePayments(merged);
+        setDuePayments(applyWeeklyAdjustment(merged, selectedClient));
       } catch (err) {
         console.error('Error fetching client payments:', err);
-        setDuePayments(baseWeeks);
+        setDuePayments(applyWeeklyAdjustment(baseWeeks, selectedClient));
       } finally {
         setPaymentsLoading(false);
       }
@@ -1153,7 +1207,7 @@ const ClientDetails = () => {
                       </div>
                       <div>
                         <p className="text-sm text-gray-600 mb-1">Weekly Due</p>
-                        <p className="font-semibold text-base text-[#16423C]">{formatCurrency(FORCED_WEEKLY)}</p>
+                        <p className="font-semibold text-base text-[#16423C]">{formatCurrency(getCurrentWeeklyDue(selectedClient, duePayments))}</p>
                       </div>
                       <div>
                         <p className="text-sm text-gray-600 mb-1">Status</p>
@@ -1260,7 +1314,7 @@ const ClientDetails = () => {
                       </div>
                       <div className="bg-[#E9EFEC] p-3 rounded border border-[#C4DAD2] text-center">
                         <p className="text-sm text-gray-600 mb-1">Weekly Due</p>
-                        <p className="font-semibold text-base text-[#16423C]">{formatCurrency(FORCED_WEEKLY)}</p>
+                        <p className="font-semibold text-base text-[#16423C]">{formatCurrency(getCurrentWeeklyDue(selectedClient, duePayments))}</p>
                       </div>
                     </div>
 
@@ -1323,7 +1377,7 @@ const ClientDetails = () => {
                                 >
                                   <td className="p-2 font-medium text-[#16423C]">{index + 1}</td>
                                   <td className="p-2">{payment.month || `Week ${index + 1}`}</td>
-                                  <td className="p-2 text-center font-semibold">{formatCurrency(payment.dueAmount)}</td>
+                                  <td className="p-2 text-center font-semibold">{formatCurrency(payment.displayAmount ?? payment.dueAmount)}</td>
                                   <td className="p-2 text-center">
                                     <span className={`inline-block text-sm font-semibold px-2 py-0.5 rounded ${payment.status === 'paid'
                                       ? 'bg-green-100 text-green-800'
@@ -1343,7 +1397,7 @@ const ClientDetails = () => {
                                   <td className="p-2 text-center">
                                     {payment.status === 'paid' && payment.paymentId && !payment.isForeclosed ? (
                                       <button
-                                        onClick={() => openCancelConfirmModal(payment.paymentId, payment.dueAmount, selectedClient._id)}
+                                        onClick={() => openCancelConfirmModal(payment.paymentId, payment.paidAmount || payment.displayAmount || payment.dueAmount, selectedClient._id)}
                                         className="bg-red-500 hover:bg-red-600 text-white px-3 py-1.5 rounded text-xs font-semibold transition-all active:scale-95 shadow-sm hover:shadow"
                                       >
                                         Cancel
@@ -1371,7 +1425,7 @@ const ClientDetails = () => {
                         <div>
                           <p className="text-sm text-gray-600">Amount Paid</p>
                           <p className="font-bold text-green-600 text-sm">
-                            {formatCurrency(activePaymentList.filter(p => p.status === 'paid').reduce((sum, p) => sum + (p.dueAmount || 0), 0))}
+                            {formatCurrency(activePaymentList.filter(p => p.status === 'paid').reduce((sum, p) => sum + (p.paidAmount || p.displayAmount || p.dueAmount || 0), 0))}
                           </p>
                         </div>
                         <div>
