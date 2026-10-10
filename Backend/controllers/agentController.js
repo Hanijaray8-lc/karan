@@ -80,7 +80,8 @@ const createAgent = async (req, res) => {
        status: status || 'Pending',
        department: department || 'Field Agent',
        commission: commission ? parseInt(commission) : 0,
-       role: 'agent'
+       role: 'agent',
+       joinDate: req.body.joinDate ? new Date(req.body.joinDate) : new Date()
      };
 
     if (req.file) agentData.profilePhoto = `/uploads/${req.file.filename}`;

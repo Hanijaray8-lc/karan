@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const Client = require('../models/Client');
 const Agent = require('../models/Agent');
+const Manager = require('../models/Manager');
 const { protect, authorize } = require('../middleware/auth');
 
 // Helper function to calculate weekly installment
@@ -68,7 +69,16 @@ router.get('/test/all', async (req, res) => {
 // GET all clients (Admin and Manager)
 router.get('/', protect, authorize('admin','manager'), async function getClients(req, res) {
   try {
-    const clients = await Client.find().sort({ createdAt: -1 }).lean();
+    const filter = {};
+    if (req.user && req.user.role === 'manager') {
+      const manager = await Manager.findById(req.user.id);
+      if (manager && (manager.joinDate || manager.createdAt)) {
+        const jDate = new Date(manager.joinDate || manager.createdAt);
+        filter.createdAt = { $gte: jDate };
+      }
+    }
+
+    const clients = await Client.find(filter).sort({ createdAt: -1 }).lean();
 
     const totalClients = clients.length;
     const totalLoanAmount = clients.reduce((sum, client) => sum + Number(client.amount === 6900 ? 5000 : (client.amount || 0)), 0);
@@ -89,11 +99,23 @@ router.get('/', protect, authorize('admin','manager'), async function getClients
 // GET all clients for authenticated users (agents/managers/admin) - used by agent portal
 router.get('/all', protect, authorize('admin', 'manager', 'agent'), async function getClientsForAgents(req, res) {
   try {
-    // If the requester is an agent, return only clients assigned to them.
-    // Admins and managers continue to receive all clients.
+    // If the requester is an agent, return only clients assigned to them and created on/after join date.
+    // Managers receive clients created on/after their join date.
+    // Admins continue to receive all clients.
     const filter = {};
     if (req.user && req.user.role === 'agent') {
       filter.assigned_agent = req.user.id;
+      const agent = await Agent.findById(req.user.id);
+      if (agent && (agent.joinDate || agent.createdAt)) {
+        const jDate = new Date(agent.joinDate || agent.createdAt);
+        filter.createdAt = { $gte: jDate };
+      }
+    } else if (req.user && req.user.role === 'manager') {
+      const manager = await Manager.findById(req.user.id);
+      if (manager && (manager.joinDate || manager.createdAt)) {
+        const jDate = new Date(manager.joinDate || manager.createdAt);
+        filter.createdAt = { $gte: jDate };
+      }
     }
 
     const clients = await Client.find(filter).sort({ createdAt: -1 });

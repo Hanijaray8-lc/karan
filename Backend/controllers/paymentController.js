@@ -122,17 +122,29 @@ const getPayments = async (req, res) => {
       });
     }
 
-    // Get all clients assigned to this agent with pending amounts
-    const clients = await Client.find({
+    // Get all clients assigned to this agent with pending amounts (created on or after join date)
+    const jDate = agent.joinDate || agent.createdAt;
+    let clientFilter = {
       assigned_agent: agentId,
       pending: { $gt: 0 } // Only clients with pending amount
-    }).populate('assigned_agent', 'name username');
+    };
+    if (jDate) {
+      clientFilter.createdAt = { $gte: jDate };
+    }
+    const clients = await Client.find(clientFilter).populate('assigned_agent', 'name username');
 
-    // Get payment history for these clients (by client IDs)
+    // Get payment history for these clients (by client IDs, on or after join date)
     const clientIds = clients.map(c => c._id);
     let payments = [];
     if (clientIds.length > 0) {
-      payments = await Payment.find({ client: { $in: clientIds } })
+      const payQuery = { client: { $in: clientIds } };
+      if (jDate) {
+        payQuery.$or = [
+          { createdAt: { $gte: jDate } },
+          { paymentDate: { $gte: jDate } }
+        ];
+      }
+      payments = await Payment.find(payQuery)
         .populate('client', 'name phone pending amount')
         .populate('agent', 'name username')
         .sort({ paymentDate: -1, createdAt: -1, _id: -1 });
@@ -209,15 +221,24 @@ const getClientDue = async (req, res) => {
       data: {
         client: {
           _id: client._id,
+          clientId: client.clientId || (client._id ? client._id.toString().slice(-6).toUpperCase() : ''),
           name: client.name,
           husband_name: client.husband_name,
           phone: client.phone,
+          landmark: client.landmark,
           address: client.address,
           district: client.district,
+          dispensary: client.dispensary,
+          nominee_name: client.nominee_name,
+          nominee_husband: client.nominee_husband,
+          nominee_phone: client.nominee_phone,
+          nominee_address: client.nominee_address,
           amount: client.amount,
           received: client.received,
           pending: client.pending,
           status: client.status,
+          weekly_amount: client.weekly_amount,
+          total_weeks: client.total_weeks,
           loan_start_date: client.loan_start_date,
           loan_end_date: client.loan_end_date
         },
@@ -402,6 +423,23 @@ const getPaymentHistory = async (req, res) => {
     let query = {};
     if (req.user.role === 'agent') {
       query.agent = agentId;
+      const agent = await Agent.findById(agentId);
+      if (agent && (agent.joinDate || agent.createdAt)) {
+        const jDate = new Date(agent.joinDate || agent.createdAt);
+        query.$or = [
+          { createdAt: { $gte: jDate } },
+          { paymentDate: { $gte: jDate } }
+        ];
+      }
+    } else if (req.user.role === 'manager') {
+      const manager = await Manager.findById(req.user.id);
+      if (manager && (manager.joinDate || manager.createdAt)) {
+        const jDate = new Date(manager.joinDate || manager.createdAt);
+        query.$or = [
+          { createdAt: { $gte: jDate } },
+          { paymentDate: { $gte: jDate } }
+        ];
+      }
     }
 
     // Filter by client (allowed for all roles). If the requester is an agent
@@ -458,9 +496,15 @@ const getPaymentHistory = async (req, res) => {
 const getDashboardStats = async (req, res) => {
   try {
     const agentId = req.user.id;
+    const agent = await Agent.findById(agentId);
+    const jDate = agent?.joinDate || agent?.createdAt;
+    const clientQuery = { assigned_agent: agentId };
+    if (jDate) {
+      clientQuery.createdAt = { $gte: jDate };
+    }
 
     // Get all clients assigned to agent
-    const clients = await Client.find({ assigned_agent: agentId });
+    const clients = await Client.find(clientQuery);
 
     // Calculate stats
     const totalClients = clients.length;

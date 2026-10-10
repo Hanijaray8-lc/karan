@@ -82,11 +82,14 @@ exports.login = async (req, res) => {
     // 7. Remove password from response
     const userResponse = {
       id: user._id,
+      _id: user._id,
       username: user.username,
       name: user.name || user.username,
       email: user.email,
       role: role,
-      status: userStatus
+      status: userStatus,
+      joinDate: user.joinDate || user.createdAt,
+      createdAt: user.createdAt
     };
 
     res.json({
@@ -212,11 +215,14 @@ exports.faceLogin = async (req, res) => {
 
     const userResponse = {
       id: matchedUser._id,
+      _id: matchedUser._id,
       username: matchedUser.username,
       name: matchedUser.name || matchedUser.username,
       email: matchedUser.email,
       role: matchedRole,
-      status: userStatus
+      status: userStatus,
+      joinDate: matchedUser.joinDate || matchedUser.createdAt,
+      createdAt: matchedUser.createdAt
     };
 
     const roleTitle = matchedRole === 'admin' ? 'Admin' : 'Manager';
@@ -265,11 +271,14 @@ exports.checkStatus = async (req, res) => {
       role: role,
       user: {
         id: user._id,
+        _id: user._id,
         username: user.username,
         name: user.name || user.username,
         email: user.email,
         role: role,
-        status: currentStatus
+        status: currentStatus,
+        joinDate: user.joinDate || user.createdAt,
+        createdAt: user.createdAt
       }
     });
   } catch (err) {

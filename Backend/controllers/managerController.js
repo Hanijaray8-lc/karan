@@ -69,6 +69,7 @@ const createManager = async (req, res) => {
       phone,
       password,
       status: status || 'Pending',
+      joinDate: req.body.joinDate ? new Date(req.body.joinDate) : new Date(),
       addedBy: req.user.id, // Admin ID who added
       faceDescriptor: hasFace ? faceDescriptor.map(Number) : [],
       faceRegistered: hasFace,
