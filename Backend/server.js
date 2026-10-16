@@ -12,7 +12,7 @@ const authRoutes = require('./routes/authRoutes');
 const agentRoutes = require('./routes/agentRoutes');
 const clientRoutes = require('./routes/clientRoutes');
 const adminRoutes = require('./routes/adminRoutes'); // NEW: Admin routes
-const managerRoutes = require('./routes/managerRoutes'); 
+const managerRoutes = require('./routes/managerRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 
 const app = express();
@@ -41,7 +41,7 @@ const corsOptions = {
   origin: function (origin, callback) {
     // Allow requests with no origin (like mobile apps, curl, Postman)
     if (!origin) return callback(null, true);
-    
+
     // Check exact matches or regex for localhost / preview URLs
     if (
       allowedOrigins.includes(origin) ||
@@ -90,7 +90,7 @@ app.use('/api/payments', paymentRoutes);
 
 // 4. Health Check
 app.get('/', (req, res) => {
-  res.json({ 
+  res.json({
     success: true,
     message: 'Karan Finance API is running',
     status: 'active'
@@ -99,9 +99,9 @@ app.get('/', (req, res) => {
 
 // 5. 404 Route Handler
 app.use((req, res) => {
-  res.status(404).json({ 
+  res.status(404).json({
     success: false,
-    message: `Route not found: ${req.method} ${req.url}` 
+    message: `Route not found: ${req.method} ${req.url}`
   });
 });
 
@@ -111,7 +111,7 @@ app.use((err, req, res, next) => {
   res.status(err.status || 500).json({
     success: false,
     message: err.message || 'Internal server error'
-  });  
+  });
 });
 
 const PORT = process.env.PORT || 5000;

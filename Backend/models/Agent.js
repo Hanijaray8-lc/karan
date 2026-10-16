@@ -24,6 +24,10 @@ const agentSchema = new mongoose.Schema({
   lastLoginAttempt: { type: Date },
   approvedBy: { type: String },
   approvedAt: { type: Date },
+  approvedById: { type: mongoose.Schema.Types.ObjectId },
+  approvedByRole: { type: String },
+  managerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Manager' },
+  manager: { type: mongoose.Schema.Types.ObjectId, ref: 'Manager' },
   profilePhoto: { type: String },
   addedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
   joinDate: { type: Date, default: Date.now }

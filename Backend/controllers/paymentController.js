@@ -357,6 +357,7 @@ const processPayment = async (req, res) => {
       clientName: client.name,
       clientPhone: client.phone,
       clientAmount: client.amount,
+      managerId: client.managerId || client.addedBy || (userRole === 'manager' ? userId : null),
       agent: effectiveAgentId,
       collectedStaff: displayName,
       collectedStaffId: userId,
@@ -433,13 +434,21 @@ const getPaymentHistory = async (req, res) => {
       }
     } else if (req.user.role === 'manager') {
       const manager = await Manager.findById(req.user.id);
-      if (manager && (manager.joinDate || manager.createdAt)) {
-        const jDate = new Date(manager.joinDate || manager.createdAt);
-        query.$or = [
-          { createdAt: { $gte: jDate } },
-          { paymentDate: { $gte: jDate } }
-        ];
-      }
+      const jDate = manager && (manager.joinDate || manager.createdAt) ? new Date(manager.joinDate || manager.createdAt) : null;
+      // Get all client IDs added by this manager
+      const managerClients = await Client.find({
+        $or: [{ managerId: req.user.id }, { addedBy: req.user.id }]
+      }).select('_id').lean();
+      const clientIds = managerClients.map(c => c._id);
+
+      query.$or = [
+        { managerId: req.user.id },
+        ...(clientIds.length > 0 ? [{ client: { $in: clientIds } }] : []),
+        {
+          managerId: { $exists: false },
+          ...(jDate ? { $or: [{ createdAt: { $gte: jDate } }, { paymentDate: { $gte: jDate } }] } : {})
+        }
+      ];
     }
 
     // Filter by client (allowed for all roles). If the requester is an agent
@@ -461,7 +470,7 @@ const getPaymentHistory = async (req, res) => {
     }
 
     let payments = await Payment.find(query)
-      .populate('client', 'name phone')
+      .populate('client', 'name phone district landmark')
       .populate('agent', 'name username email') // Populate agent details (collected by)
       .sort({ paymentDate: -1, createdAt: -1, _id: -1 });
 

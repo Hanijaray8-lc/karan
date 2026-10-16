@@ -75,6 +75,12 @@ const clientSchema = new mongoose.Schema({
   assigned_agent: { type: mongoose.Schema.Types.ObjectId, ref: 'Agent' },
   assigned_agent_name: { type: String, default: '' },
 
+  // Manager tracking: which manager added/owns this client
+  managerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Manager' },
+  addedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Manager' },
+  addedByName: { type: String, default: '' },
+  managerName: { type: String, default: '' },
+
   last_pushed_date: { type: String, default: '' },
 }, {
   timestamps: true
@@ -84,6 +90,8 @@ const clientSchema = new mongoose.Schema({
 clientSchema.index({ phone: 1 });
 clientSchema.index({ assigned_agent: 1 });
 clientSchema.index({ district: 1 });
+clientSchema.index({ managerId: 1 });
+clientSchema.index({ addedBy: 1 });
 clientSchema.index({ createdAt: -1 });
 
 module.exports = mongoose.model('Client', clientSchema);

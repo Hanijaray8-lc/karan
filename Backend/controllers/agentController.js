@@ -116,6 +116,15 @@ const approveAgent = async (req, res) => {
     agent.loginRequested = false;
     agent.approvedAt = new Date();
     agent.approvedBy = req.user?.role ? req.user.role.toUpperCase() : 'ADMIN';
+    if (req.user && req.user.role === 'manager') {
+      agent.managerId = req.user.id;
+      agent.manager = req.user.id;
+      agent.approvedById = req.user.id;
+      agent.approvedByRole = 'manager';
+    } else if (req.user) {
+      agent.approvedById = req.user.id;
+      agent.approvedByRole = req.user.role;
+    }
     await agent.save();
 
     const agentResponse = agent.toObject();

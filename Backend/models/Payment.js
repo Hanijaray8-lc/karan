@@ -12,6 +12,12 @@ const paymentSchema = new mongoose.Schema({
     ref: 'Agent',
     required: true
   },
+  // Manager whose client received this payment (manager isolation)
+  managerId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Manager',
+    default: null
+  },
   // Store the name of who collected the payment
   collectedStaff: {
     type: String,
@@ -131,15 +137,18 @@ paymentSchema.pre('save', async function() {
     }
   }
 
-  // Attach a snapshot of client details so payment records are self-contained.
+  // Attach a snapshot of client details and managerId so payment records are self-contained.
   try {
     const Client = require('./Client');
     if (this.client) {
-      const client = await Client.findById(this.client).select('name phone amount');
+      const client = await Client.findById(this.client).select('name phone amount managerId addedBy');
       if (client) {
         this.clientName = client.name;
         this.clientPhone = client.phone;
         this.clientAmount = client.amount;
+        if (!this.managerId && (client.managerId || client.addedBy)) {
+          this.managerId = client.managerId || client.addedBy;
+        }
       }
     }
   } catch (err) {
@@ -150,6 +159,7 @@ paymentSchema.pre('save', async function() {
 // Performance Indexes
 paymentSchema.index({ client: 1, paymentDate: -1 });
 paymentSchema.index({ agent: 1, paymentDate: -1 });
+paymentSchema.index({ managerId: 1, paymentDate: -1 });
 paymentSchema.index({ paymentDate: -1 });
 
 module.exports = mongoose.model('Payment', paymentSchema);

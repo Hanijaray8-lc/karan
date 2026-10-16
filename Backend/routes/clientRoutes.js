@@ -72,10 +72,12 @@ router.get('/', protect, authorize('admin','manager'), async function getClients
     const filter = {};
     if (req.user && req.user.role === 'manager') {
       const manager = await Manager.findById(req.user.id);
-      if (manager && (manager.joinDate || manager.createdAt)) {
-        const jDate = new Date(manager.joinDate || manager.createdAt);
-        filter.createdAt = { $gte: jDate };
-      }
+      const jDate = manager && (manager.joinDate || manager.createdAt) ? new Date(manager.joinDate || manager.createdAt) : null;
+      filter.$or = [
+        { managerId: req.user.id },
+        { addedBy: req.user.id },
+        { managerId: { $exists: false }, addedBy: { $exists: false }, ...(jDate ? { createdAt: { $gte: jDate } } : {}) }
+      ];
     }
 
     const clients = await Client.find(filter).sort({ createdAt: -1 }).lean();
@@ -100,7 +102,7 @@ router.get('/', protect, authorize('admin','manager'), async function getClients
 router.get('/all', protect, authorize('admin', 'manager', 'agent'), async function getClientsForAgents(req, res) {
   try {
     // If the requester is an agent, return only clients assigned to them and created on/after join date.
-    // Managers receive clients created on/after their join date.
+    // Managers receive clients created on/after their join date or owned by them.
     // Admins continue to receive all clients.
     const filter = {};
     if (req.user && req.user.role === 'agent') {
@@ -112,10 +114,12 @@ router.get('/all', protect, authorize('admin', 'manager', 'agent'), async functi
       }
     } else if (req.user && req.user.role === 'manager') {
       const manager = await Manager.findById(req.user.id);
-      if (manager && (manager.joinDate || manager.createdAt)) {
-        const jDate = new Date(manager.joinDate || manager.createdAt);
-        filter.createdAt = { $gte: jDate };
-      }
+      const jDate = manager && (manager.joinDate || manager.createdAt) ? new Date(manager.joinDate || manager.createdAt) : null;
+      filter.$or = [
+        { managerId: req.user.id },
+        { addedBy: req.user.id },
+        { managerId: { $exists: false }, addedBy: { $exists: false }, ...(jDate ? { createdAt: { $gte: jDate } } : {}) }
+      ];
     }
 
     const clients = await Client.find(filter).sort({ createdAt: -1 });
@@ -228,6 +232,25 @@ router.post('/', protect, authorize('admin','manager'), async function createCli
       nominee_phone: req.body.nominee_phone || '',
       nominee_address: req.body.nominee_address || ''
     };
+
+    // Manager isolation: track which manager added this client
+    let managerId = null;
+    let addedBy = null;
+    if (req.user && req.user.role === 'manager') {
+      managerId = req.user.id;
+      addedBy = req.user.id;
+    } else if (req.body.managerId) {
+      managerId = req.body.managerId;
+      addedBy = req.body.addedBy || req.body.managerId;
+    }
+    const managerName = req.body.managerName || req.body.addedByName || (req.user?.name || req.user?.username || '');
+
+    if (managerId) {
+      clientData.managerId = managerId;
+      clientData.addedBy = addedBy;
+      clientData.managerName = managerName;
+      clientData.addedByName = req.body.addedByName || managerName;
+    }
 
     if (assignedAgentId) {
       clientData.assigned_agent = assignedAgentId;
@@ -391,7 +414,27 @@ router.get('/agent/:agentId', protect, authorize('admin', 'manager'), async func
       });
     }
 
-    const clients = await Client.find({ assigned_agent: agentId }).sort({ createdAt: -1 });
+    // Base query: only clients assigned to this agent
+    const query = { assigned_agent: agentId };
+
+    // Manager isolation: restrict to clients that belong to this manager
+    if (req.user && req.user.role === 'manager') {
+      const manager = await Manager.findById(req.user.id);
+      const jDate = manager && (manager.joinDate || manager.createdAt)
+        ? new Date(manager.joinDate || manager.createdAt)
+        : null;
+      query.$or = [
+        { managerId: req.user.id },
+        { addedBy: req.user.id },
+        {
+          managerId: { $exists: false },
+          addedBy: { $exists: false },
+          ...(jDate ? { createdAt: { $gte: jDate } } : {})
+        }
+      ];
+    }
+
+    const clients = await Client.find(query).sort({ createdAt: -1 });
 
     return res.json({
       success: true,
