@@ -441,13 +441,15 @@ const getPaymentHistory = async (req, res) => {
       }).select('_id').lean();
       const clientIds = managerClients.map(c => c._id);
 
+      const noManagerConditions = [{ managerId: { $exists: false } }];
+      if (jDate) {
+        noManagerConditions.push({ $or: [{ createdAt: { $gte: jDate } }, { paymentDate: { $gte: jDate } }] });
+      }
+
       query.$or = [
         { managerId: req.user.id },
         ...(clientIds.length > 0 ? [{ client: { $in: clientIds } }] : []),
-        {
-          managerId: { $exists: false },
-          ...(jDate ? { $or: [{ createdAt: { $gte: jDate } }, { paymentDate: { $gte: jDate } }] } : {})
-        }
+        { $and: noManagerConditions }
       ];
     }
 

@@ -56,7 +56,7 @@ function calculateWeeklyInstallment(loanStartDate, loanEndDate, pendingAmount, t
 router.get('/test/all', async (req, res) => {
   try {
     const clients = await Client.find().sort({ createdAt: -1 }).lean();
-    
+
     res.json({
       success: true,
       clients
@@ -67,16 +67,18 @@ router.get('/test/all', async (req, res) => {
 });
 
 // GET all clients (Admin and Manager)
-router.get('/', protect, authorize('admin','manager'), async function getClients(req, res) {
+router.get('/', protect, authorize('admin', 'manager'), async function getClients(req, res) {
   try {
     const filter = {};
     if (req.user && req.user.role === 'manager') {
       const manager = await Manager.findById(req.user.id);
       const jDate = manager && (manager.joinDate || manager.createdAt) ? new Date(manager.joinDate || manager.createdAt) : null;
+      // Use $in: [null, undefined] to catch both truly-absent fields AND fields explicitly set to null,
+      // preventing Manager2 from seeing Manager1's clients via the legacy date-fallback loophole.
       filter.$or = [
         { managerId: req.user.id },
         { addedBy: req.user.id },
-        { managerId: { $exists: false }, addedBy: { $exists: false }, ...(jDate ? { createdAt: { $gte: jDate } } : {}) }
+        { managerId: { $in: [null, undefined] }, addedBy: { $in: [null, undefined] }, ...(jDate ? { createdAt: { $gte: jDate } } : {}) }
       ];
     }
 
@@ -115,10 +117,11 @@ router.get('/all', protect, authorize('admin', 'manager', 'agent'), async functi
     } else if (req.user && req.user.role === 'manager') {
       const manager = await Manager.findById(req.user.id);
       const jDate = manager && (manager.joinDate || manager.createdAt) ? new Date(manager.joinDate || manager.createdAt) : null;
+      // Same fix: use $in: [null, undefined] for consistent null-field handling
       filter.$or = [
         { managerId: req.user.id },
         { addedBy: req.user.id },
-        { managerId: { $exists: false }, addedBy: { $exists: false }, ...(jDate ? { createdAt: { $gte: jDate } } : {}) }
+        { managerId: { $in: [null, undefined] }, addedBy: { $in: [null, undefined] }, ...(jDate ? { createdAt: { $gte: jDate } } : {}) }
       ];
     }
 
@@ -164,7 +167,7 @@ router.get('/pending', protect, authorize('admin', 'manager'), async function ge
 });
 
 // POST - Add new client (Admin and Manager)
-router.post('/', protect, authorize('admin','manager'), async function createClient(req, res) {
+router.post('/', protect, authorize('admin', 'manager'), async function createClient(req, res) {
   try {
     console.log('Admin adding new client');
 
@@ -172,7 +175,7 @@ router.post('/', protect, authorize('admin','manager'), async function createCli
     const amount = Number(req.body.amount) || 0;
     const received = Number(req.body.received) || 0;
     const pending = amount - received;
-    
+
     let status = 'pending';
     if (pending <= 0) {
       status = 'paid';
@@ -271,10 +274,10 @@ router.post('/', protect, authorize('admin','manager'), async function createCli
     });
   } catch (err) {
     console.error('Error adding client:', err);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Server error', 
-      error: err.message 
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+      error: err.message
     });
   }
 });
@@ -326,7 +329,7 @@ router.put('/:id', protect, authorize('admin', 'agent', 'manager'), async functi
 
     // Recalculate pending and status
     client.pending = (client.amount || 0) - (client.received || 0);
-    
+
     if (client.pending <= 0) {
       client.status = 'paid';
     } else if (client.received > 0) {
@@ -393,7 +396,7 @@ router.put('/:id', protect, authorize('admin', 'agent', 'manager'), async functi
 });
 
 // DELETE client (Admin only)
-router.delete('/:id', protect, authorize('admin','manager'), async function deleteClient(req, res) {
+router.delete('/:id', protect, authorize('admin', 'manager'), async function deleteClient(req, res) {
   try {
     await Client.findByIdAndDelete(req.params.id);
     res.json({ success: true, message: 'Client deleted successfully' });
