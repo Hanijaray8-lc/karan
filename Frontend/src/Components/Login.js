@@ -6,7 +6,7 @@ import axios from 'axios';
 import { CheckCircle, Clock, LogOut, User, RefreshCw, AlertCircle, Scan, X, Sparkles } from 'lucide-react';
 import { loadFaceApiModels, getFaceDescriptor } from '../utils/faceRecognition';
 import { requestCameraPermissions } from '../utils/cameraService';
-import { prewarmLocalDatabase } from '../services/prewarmService';
+import { prewarmLocalDatabase, clearCacheOnLogin } from '../services/prewarmService';
 
 const API_URL = process.env.REACT_APP_API_URL || 'https://karanfinance.com/api';
 
@@ -242,7 +242,7 @@ export default function Login() {
 
         localStorage.setItem('token', token);
         localStorage.setItem('user', JSON.stringify(user));
-        prewarmLocalDatabase();
+        clearCacheOnLogin();
 
         const role = user.role;
         const roleDisplay = role ? role.charAt(0).toUpperCase() + role.slice(1) : 'User';
@@ -310,7 +310,7 @@ export default function Login() {
 
         localStorage.setItem('token', token);
         localStorage.setItem('user', JSON.stringify(user));
-        prewarmLocalDatabase();
+        clearCacheOnLogin();
 
         // Check if user status is Pending (Waiting for Admin Approval)
         if (user.status === 'Pending') {

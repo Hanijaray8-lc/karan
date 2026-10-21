@@ -2,6 +2,7 @@
 // Background pre-warming and manual sync utility for Karan Finance
 
 import localSqliteDb from './localSqliteDb';
+import { resetRevalidationThrottle } from './dbInterceptor';
 
 const API_BASE = 'https://karanfinance.com/api';
 
@@ -29,6 +30,24 @@ export async function prewarmLocalDatabase() {
   } catch (err) {
     console.warn('[Prewarm] Background pre-warm note:', err.message);
   }
+}
+
+/**
+ * Clear ALL local caches on login so a newly logged-in manager/agent
+ * never sees stale data from a previous session.
+ * This MUST be called right after a successful login (before redirect).
+ */
+export async function clearCacheOnLogin() {
+  try {
+    // 1. Wipe all IndexedDB caches + in-memory cache
+    await localSqliteDb.clearAll();
+    // 2. Reset the interceptor throttle so next network call is NOT throttled
+    resetRevalidationThrottle();
+  } catch (err) {
+    console.warn('[Login Cache Clear] Error clearing cache on login:', err.message);
+  }
+  // 3. Re-warm fresh data in background after cache is cleared
+  prewarmLocalDatabase();
 }
 
 /**

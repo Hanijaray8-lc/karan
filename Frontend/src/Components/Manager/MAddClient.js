@@ -1,5 +1,5 @@
 // AddClient.js (Admin version - NO agent dropdown)
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   UserPlus,
   Pencil,
@@ -13,6 +13,7 @@ import {
   XCircle
 } from 'lucide-react';
 import ManagerNavbar from './ManagerNavbar';
+import { filterAgentsForManager, filterClientsForManager, getLoggedInUser } from '../../utils/staffRecordFilter';
 
 export default function MClientManagement() {
   const [clients, setClients] = useState([]);
@@ -85,8 +86,15 @@ export default function MClientManagement() {
       alert('Access denied. Managers only.');
       window.location.href = '/';
     } else {
-      fetchClients();
-      fetchAgents();
+      // Load agents FIRST, then fetch clients with the fresh agents list
+      // so filterClientsForManager always receives up-to-date agent data
+      // (avoids stale-state race condition where agents[] is still [] when
+      //  filterClientsForManager runs, causing other managers' clients to leak through)
+      const initLoad = async () => {
+        const freshAgents = await fetchAgents();
+        await fetchClients(freshAgents);
+      };
+      initLoad();
     }
   }, []);
 
@@ -96,12 +104,17 @@ export default function MClientManagement() {
       const res = await fetch('https://karanfinance.com/api/agents', {
         headers: { Authorization: `Bearer ${token}` }
       });
-      if (res.status === 401) return handleAuthError();
+      if (res.status === 401) { handleAuthError(); return []; }
       const data = await res.json();
-      if (data && data.success) setAgents(data.agents || []);
+      if (data && data.success) {
+        const scopedAgents = filterAgentsForManager(data.agents || [], getLoggedInUser());
+        setAgents(scopedAgents);
+        return scopedAgents; // return fresh list for immediate use
+      }
     } catch (err) {
       console.error('Error fetching agents:', err);
     }
+    return [];
   };
 
   // Listen for external updates to a client's loan_end_date (e.g., from DailyDues Not Paid)
@@ -130,16 +143,12 @@ export default function MClientManagement() {
     return () => window.removeEventListener('clientLoanEndUpdated', handler);
   }, [currentClient, showEditModal]);
 
-  // Calculate pending amount whenever amount or received changes
-  useEffect(() => {
+  // Derived pending — computed directly from formData (no useEffect needed)
+  const derivedPending = useMemo(() => {
     const amount = parseFloat(formData.amount) || 0;
     const received = parseFloat(formData.received) || 0;
-    const pending = amount - received;
-
-    setFormData(prev => ({
-      ...prev,
-      pending: pending >= 0 ? pending.toString() : '0'
-    }));
+    const p = amount - received;
+    return p >= 0 ? p : 0;
   }, [formData.amount, formData.received]);
 
   const handleAuthError = () => {
@@ -151,6 +160,13 @@ export default function MClientManagement() {
 
   // Calculate total weeks between loan start and end date
   const calculateTotalWeeks = () => {
+    const amount = Number(parseFloat(formData.amount) || 0);
+    // Use derivedPending (computed from amount - received) instead of stale state
+    const pending = derivedPending;
+
+    // Special rule: for ₹5000 (payable ₹6900) loans, fixed total weeks is 12
+    if (amount === 5000 || amount === 6900 || pending === 5000 || pending === 6900) return 12;
+
     if (!formData.loan_start_date || !formData.loan_end_date) return 0;
 
     // Use UTC dates to avoid timezone offset issues when parsing date-only strings
@@ -172,7 +188,8 @@ export default function MClientManagement() {
   // When editing an existing client we prefer the stored value so the user
   // sees the server's current schedule instead of a fresh computation.
   const calculateWeeklyAmount = () => {
-    const pending = Number(parseFloat(formData.pending) || 0);
+    // Use derivedPending (computed from amount - received) instead of stale state
+    const pending = derivedPending;
     const amount = Number(parseFloat(formData.amount) || 0);
 
     // Special rule: for ₹5000 (payable ₹6900) loans, use fixed weekly amount ₹575
@@ -190,7 +207,8 @@ export default function MClientManagement() {
     return Number((pending / totalWeeks).toFixed(2));
   };
 
-  const fetchClients = async () => {
+  // agentsList: optional fresh agents array (avoids stale state when called right after fetchAgents)
+  const fetchClients = async (agentsList) => {
     try {
       setLoading(true);
       const token = localStorage.getItem('token');
@@ -206,10 +224,14 @@ export default function MClientManagement() {
       const data = await res.json();
 
       if (data.success) {
-        setClients(data.clients || []);
-        setTotalClients(data.totalClients || 0);
-        setTotalLoanAmount(data.totalLoanAmount || 0);
-        setTotalReceived(data.totalReceived || 0);
+        const loggedInUser = getLoggedInUser();
+        // Prefer the freshly-fetched agentsList; fall back to state (for manual re-fetches)
+        const currentAgents = Array.isArray(agentsList) ? agentsList : agents;
+        const validClients = filterClientsForManager(data.clients || [], currentAgents, loggedInUser);
+        setClients(validClients);
+        setTotalClients(validClients.length);
+        setTotalLoanAmount(validClients.reduce((sum, c) => sum + (c.amount === 6900 ? 5000 : (Number(c.amount) || 0)), 0));
+        setTotalReceived(validClients.reduce((sum, c) => sum + (Number(c.received) || 0), 0));
       }
     } catch (err) {
       console.error('Error fetching clients:', err);
@@ -230,6 +252,9 @@ export default function MClientManagement() {
     try {
       setLoading(true);
       const token = localStorage.getItem('token');
+      const loggedInUser = getLoggedInUser();
+      const managerId = loggedInUser?._id || loggedInUser?.id || undefined;
+      const managerName = loggedInUser?.name || loggedInUser?.username || 'Manager';
 
       let amount = parseFloat(formData.amount) || 5000;
       const received = parseFloat(formData.received) || 0;
@@ -245,6 +270,10 @@ export default function MClientManagement() {
         address: formData.address,
         district: formData.district,
         assigned_agent: formData.assigned_agent || undefined,
+        managerId: managerId,
+        addedBy: managerId,
+        managerName: managerName,
+        addedByName: managerName,
         amount: amount,
         received: received,
         loan_start_date: formData.loan_start_date,
@@ -275,9 +304,15 @@ export default function MClientManagement() {
 
       if (!res.ok) throw new Error(data.message || 'Failed to add client');
 
+      // Instant UI update — prepend new client from server response
+      const newClient = data.client || { ...formattedData, _id: data._id || Date.now().toString() };
+      setClients(prev => [newClient, ...prev]);
+      setTotalClients(prev => prev + 1);
+      setTotalLoanAmount(prev => prev + amount);
+      setTotalReceived(prev => prev + received);
+
       setShowAddModal(false);
       resetForm();
-      await fetchClients();
       showPopup('success', 'Added', `Client ${formattedData.name || ''} added successfully!`);
 
     } catch (err) {
@@ -288,34 +323,38 @@ export default function MClientManagement() {
     }
   };
 
-  const filteredClients = clients.filter((client) => {
+  const filteredClients = useMemo(() => {
     const searchLower = searchTerm.toLowerCase();
-    const displayId = client.clientId || `#${client._id?.slice(-6)}`;
-    const matchesSearch =
-      client.name?.toLowerCase().includes(searchLower) ||
-      client.husband_name?.toLowerCase().includes(searchLower) ||
-      client.phone?.includes(searchLower) ||
-      client.landmark?.toLowerCase().includes(searchLower) ||
-      client.address?.toLowerCase().includes(searchLower) ||
-      client.district?.toLowerCase().includes(searchLower) ||
-      client.nominee_name?.toLowerCase().includes(searchLower) ||
-      client.nominee_husband?.toLowerCase().includes(searchLower) ||
-      client.nominee_phone?.includes(searchLower) ||
-      client.notes?.toLowerCase().includes(searchLower) ||
-      String(displayId).toLowerCase().includes(searchLower);
-
-    const matchesStatus = !statusFilter || client.status === statusFilter;
-
-    const clientStartDate = client.loan_start_date ? new Date(client.loan_start_date) : null;
-    const clientEndDate = client.loan_end_date ? new Date(client.loan_end_date) : null;
     const filterStartDate = dateStart ? new Date(dateStart) : null;
     const filterEndDate = dateEnd ? new Date(dateEnd) : null;
 
-    const matchesDateStart = !filterStartDate || (clientStartDate && clientStartDate >= filterStartDate);
-    const matchesDateEnd = !filterEndDate || (clientEndDate && clientEndDate <= filterEndDate);
+    return clients.filter((client) => {
+      const displayId = client.clientId || `#${client._id?.slice(-6)}`;
+      const matchesSearch =
+        !searchLower ||
+        client.name?.toLowerCase().includes(searchLower) ||
+        client.husband_name?.toLowerCase().includes(searchLower) ||
+        client.phone?.includes(searchLower) ||
+        client.landmark?.toLowerCase().includes(searchLower) ||
+        client.address?.toLowerCase().includes(searchLower) ||
+        client.district?.toLowerCase().includes(searchLower) ||
+        client.nominee_name?.toLowerCase().includes(searchLower) ||
+        client.nominee_husband?.toLowerCase().includes(searchLower) ||
+        client.nominee_phone?.includes(searchLower) ||
+        client.notes?.toLowerCase().includes(searchLower) ||
+        String(displayId).toLowerCase().includes(searchLower);
 
-    return matchesSearch && matchesStatus && matchesDateStart && matchesDateEnd;
-  });
+      const matchesStatus = !statusFilter || client.status === statusFilter;
+
+      const clientStartDate = client.loan_start_date ? new Date(client.loan_start_date) : null;
+      const clientEndDate = client.loan_end_date ? new Date(client.loan_end_date) : null;
+
+      const matchesDateStart = !filterStartDate || (clientStartDate && clientStartDate >= filterStartDate);
+      const matchesDateEnd = !filterEndDate || (clientEndDate && clientEndDate <= filterEndDate);
+
+      return matchesSearch && matchesStatus && matchesDateStart && matchesDateEnd;
+    });
+  }, [clients, searchTerm, statusFilter, dateStart, dateEnd]);
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
@@ -409,9 +448,18 @@ export default function MClientManagement() {
       if (res.status === 401) handleAuthError();
       if (!res.ok) throw new Error('Failed to update');
 
+      const resData = await res.json().catch(() => null);
+      // Instant UI update — replace client in local state
+      const updatedClient = (resData && resData.client) ? resData.client : { ...currentClient, ...updatedData };
+      setClients(prev => prev.map(c => c._id === currentClient._id ? updatedClient : c));
+      // Update stats for amount/received changes
+      const oldAmount = currentClient.amount || 0;
+      const oldReceived = currentClient.received || 0;
+      setTotalLoanAmount(prev => prev - oldAmount + amount);
+      setTotalReceived(prev => prev - oldReceived + received);
+
       setShowEditModal(false);
       resetForm();
-      fetchClients();
       showPopup('success', 'Updated', `Client ${formData.name || ''} updated successfully!`);
     } catch (err) {
       console.error('Error editing client:', err);
@@ -440,8 +488,13 @@ export default function MClientManagement() {
         throw new Error(msg);
       }
 
+      // Instant UI update — remove client from local state immediately
+      setClients(prev => prev.filter(c => c._id !== currentClient._id));
+      setTotalClients(prev => Math.max(0, prev - 1));
+      setTotalLoanAmount(prev => Math.max(0, prev - (currentClient.amount || 0)));
+      setTotalReceived(prev => Math.max(0, prev - (currentClient.received || 0)));
+
       setShowDeleteModal(false);
-      fetchClients();
       showPopup('success', 'Deleted', (data && data.message) ? data.message : 'Client deleted successfully!');
     } catch (err) {
       console.error('Error deleting client:', err);
@@ -917,7 +970,7 @@ export default function MClientManagement() {
                   <input
                     name="pending"
                     type="number"
-                    value={formData.pending}
+                    value={derivedPending}
                     readOnly
                     className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg bg-gray-100 text-gray-700 cursor-not-allowed"
                   />
@@ -1016,7 +1069,7 @@ export default function MClientManagement() {
                       </label>
                       <input
                         type="number"
-                        value={formData.pending}
+                        value={derivedPending}
                         readOnly
                         className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg bg-gray-100 text-gray-700 cursor-not-allowed font-semibold"
                       />
@@ -1204,7 +1257,7 @@ export default function MClientManagement() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Pending (₹)</label>
-                  <input name="pending" type="number" value={formData.pending} readOnly className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg bg-gray-100" />
+                  <input name="pending" type="number" value={derivedPending} readOnly className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg bg-gray-100" />
                 </div>
               </div>
 

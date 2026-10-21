@@ -90,6 +90,12 @@ const AdminActiveInactive = () => {
   };
 
   const getTotalWeeks = (client) => {
+    const amt = Number(client.amount || 0);
+    const weekly = getWeeklyAmount(client);
+    // Standard ₹5000/₹6900 loan with ₹575/wk has at least 12 weeks
+    if (amt === 6900 || amt === 5000 || weekly === 575) {
+      return Math.max(12, Number(client.total_weeks || 12));
+    }
     if (client.total_weeks && Number(client.total_weeks) > 0) {
       return Number(client.total_weeks);
     }
@@ -107,9 +113,11 @@ const AdminActiveInactive = () => {
   const is12WeekFullyCompleted = (client) => {
     const totalWeeks = getTotalWeeks(client);
     const weeksPaid = getPaidWeeks(client);
+    const pending = Number(client.pending || 0);
+    const isPaidStatus = client.status === 'paid';
 
-    // Inactive side ONLY shows clients who have actually completed all 12 weeks of payments (weeksPaid >= totalWeeks)
-    return weeksPaid >= totalWeeks;
+    // Inactive side ONLY shows clients who have completed all weeks AND have no pending amount
+    return (weeksPaid >= totalWeeks || isPaidStatus) && pending <= 0;
   };
 
   // Split clients into Active and Inactive categories

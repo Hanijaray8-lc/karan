@@ -211,11 +211,16 @@ const AdminDashboard = () => {
         let inactiveClientsCount = 0;
         clients.forEach(c => {
           const weeklyAmount = c.weekly_amount && Number(c.weekly_amount) > 0 ? Number(c.weekly_amount) : 575;
-          const totalWeeks = c.total_weeks && Number(c.total_weeks) > 0 ? Number(c.total_weeks) : 12;
+          const amt = Number(c.amount || 0);
+          const totalWeeks = (amt === 6900 || amt === 5000 || weeklyAmount === 575)
+            ? Math.max(12, Number(c.total_weeks || 12))
+            : (c.total_weeks && Number(c.total_weeks) > 0 ? Number(c.total_weeks) : 12);
           const received = Number(c.received || 0);
+          const pending = Number(c.pending || 0);
+          const isPaidStatus = c.status === 'paid';
           const weeksPaid = weeklyAmount > 0 ? Math.min(Math.floor(received / weeklyAmount), totalWeeks) : 0;
 
-          if (weeksPaid >= totalWeeks) {
+          if ((weeksPaid >= totalWeeks || isPaidStatus) && pending <= 0) {
             inactiveClientsCount++;
           } else {
             activeClientsCount++;

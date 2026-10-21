@@ -13,6 +13,7 @@ import {
 
 import AdminNavbar from '../Admin/AdminNavbar';
 import ManagerNavbar from './ManagerNavbar';
+import { isRecordNewForUser, filterPaymentsForManager, filterClientsForManager, filterAgentsForManager, getLoggedInUser } from '../../utils/staffRecordFilter';
 
 // Helper function to format payment date & time for display
 const formatPaymentDateTime = (paymentDateStr, createdAtStr) => {
@@ -74,6 +75,79 @@ const formatPaymentDateTime = (paymentDateStr, createdAtStr) => {
   };
 };
 
+// Helper function to format payment date (due date) for display
+const formatPaymentDate = (paymentDateStr, createdAtStr) => {
+  if (!paymentDateStr && !createdAtStr) return 'N/A';
+
+  const str = paymentDateStr || createdAtStr;
+
+  // If string starts with YYYY-MM-DD, extract directly to avoid UTC timezone shifts
+  if (typeof str === 'string') {
+    const match = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (match) {
+      const [, y, m, d] = match;
+      return `${d.padStart(2, '0')}/${m.padStart(2, '0')}/${y}`;
+    }
+  }
+
+  const dObj = str instanceof Date ? str : new Date(str);
+  if (isNaN(dObj.getTime())) return 'N/A';
+
+  return dObj.toLocaleDateString('en-IN', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  });
+};
+
+// Helper function to format paid date & time for display
+const formatPaidDate = (createdAtStr, paymentDateStr) => {
+  const cDate = createdAtStr ? new Date(createdAtStr) : null;
+  const pDate = paymentDateStr ? new Date(paymentDateStr) : null;
+
+  const isValidC = cDate && !isNaN(cDate.getTime());
+  const isValidP = pDate && !isNaN(pDate.getTime());
+
+  if (!isValidC && !isValidP) return 'N/A';
+
+  // Check if string has dummy time (like 12:00:00 UTC or 00:00:00 UTC)
+  const isDummy = (val, dateObj) =>
+    typeof val === 'string' &&
+    (val.includes('T12:00:00') ||
+      val.includes('T00:00:00') ||
+      (dateObj && dateObj.getUTCHours() === 12 && dateObj.getUTCMinutes() === 0 && dateObj.getUTCSeconds() === 0) ||
+      (dateObj && dateObj.getUTCHours() === 0 && dateObj.getUTCMinutes() === 0 && dateObj.getUTCSeconds() === 0));
+
+  // If createdAt is valid and not a dummy time, use it (exact payment timestamp)
+  if (isValidC && !isDummy(createdAtStr, cDate)) {
+    return cDate.toLocaleString('en-IN', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    });
+  }
+
+  // Fallback to whichever is valid
+  const targetDate = isValidC ? cDate : pDate;
+  const targetStr = isValidC ? createdAtStr : paymentDateStr;
+
+  if (isDummy(targetStr, targetDate)) {
+    return formatPaymentDate(targetStr);
+  }
+
+  return targetDate.toLocaleString('en-IN', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  });
+};
+
 // Helper function to check if a date corresponds to the current date (today)
 const isTodayDate = (dateInput) => {
   if (!dateInput) return false;
@@ -101,12 +175,18 @@ export default function MpaymentHistory() {
   });
   const [staffList, setStaffList] = useState(['All Staff']);
   const [loggedInUser, setLoggedInUser] = useState(null);
+  const [myAgents, setMyAgents] = useState([]);
   const [clientsList, setClientsList] = useState([]);
   const [showCancelConfirmModal, setShowCancelConfirmModal] = useState(false);
   const [cancelPaymentData, setCancelPaymentData] = useState(null);
   const [popup, setPopup] = useState({ visible: false, type: 'success', title: '', message: '' });
 
+  const rawPaymentsRef = useRef([]);
   const popupTimeoutRef = useRef(null);
+  // Refs to always hold the latest values inside async callbacks (avoid stale closures)
+  const myAgentsRef = useRef([]);
+  const clientsListRef = useRef([]);
+  const loggedInUserRef = useRef(null);
 
   const showPopup = (type, title, message, duration = 4000) => {
     setPopup({ visible: true, type, title, message });
@@ -124,6 +204,7 @@ export default function MpaymentHistory() {
       const userInfo = localStorage.getItem('user');
       if (userInfo) {
         const user = JSON.parse(userInfo);
+        loggedInUserRef.current = user;
         setLoggedInUser(user);
       }
     } catch (err) {
@@ -133,8 +214,14 @@ export default function MpaymentHistory() {
 
   // Fetch payment data from backend
   useEffect(() => {
-    fetchPayments();
-    fetchAllClients();
+    // Load agents first, then clients (so clients are scoped correctly),
+    // then load payments (so the filter has fresh data from refs).
+    const initLoad = async () => {
+      await fetchMyAgents();
+      await fetchAllClients();
+      fetchPayments();
+    };
+    initLoad();
 
     const handlePaymentRecorded = () => {
       fetchPaymentsWithoutLoading();
@@ -155,11 +242,32 @@ export default function MpaymentHistory() {
     };
   }, []);
 
+  // Fetch agents assigned to this manager for scoped filtering
+  const fetchMyAgents = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) return;
+      const res = await fetch('https://karanfinance.com/api/agents', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data && data.success && data.agents) {
+        const user = loggedInUserRef.current || getLoggedInUser();
+        const filtered = filterAgentsForManager(data.agents, user);
+        myAgentsRef.current = filtered;   // keep ref in sync
+        setMyAgents(filtered);
+      }
+    } catch (e) {
+      // silent fail – filter will fall back to date-only
+    }
+  };
+
   // Fetch payments with loading indicator
   const fetchPayments = async () => {
     setLoading(true);
     try {
-      await fetchPaymentsData();
+      await fetchPaymentsData(false);
     } finally {
       setLoading(false);
     }
@@ -179,7 +287,11 @@ export default function MpaymentHistory() {
       if (response.ok) {
         const data = await response.json();
         if (data.success && data.clients) {
-          setClientsList(data.clients);
+          // Use ref so we always have the latest agents even if state hasn't re-rendered yet
+          const user = loggedInUserRef.current || getLoggedInUser();
+          const scoped = filterClientsForManager(data.clients, myAgentsRef.current, user);
+          clientsListRef.current = scoped;  // keep ref in sync
+          setClientsList(scoped);
         }
       }
     } catch (err) {
@@ -187,14 +299,14 @@ export default function MpaymentHistory() {
     }
   };
 
-  const openCancelConfirmModal = (paymentId, paymentAmount, clientId) => {
-    setCancelPaymentData({ paymentId, paymentAmount, clientId });
+  const openCancelConfirmModal = (paymentId, paymentAmount, clientId, paymentCreatedAt) => {
+    setCancelPaymentData({ paymentId, paymentAmount, clientId, paymentCreatedAt });
     setShowCancelConfirmModal(true);
   };
 
   const handleConfirmCancelPayment = async () => {
     if (!cancelPaymentData) return;
-    const { paymentId, paymentAmount, clientId } = cancelPaymentData;
+    const { paymentId, paymentAmount, clientId, paymentCreatedAt } = cancelPaymentData;
     setShowCancelConfirmModal(false);
     try {
       const token = localStorage.getItem('token');
@@ -213,42 +325,51 @@ export default function MpaymentHistory() {
         throw new Error(data.message || 'Failed to cancel payment');
       }
 
-      const client = clientsList.find(c => c._id === clientId);
-      if (client) {
-        const clientLoanStart = client.loan_start_date;
-        const clientLoanEnd = client.loan_end_date;
+      // Only extend loan end date if the cancelled payment was NOT made today.
+      // If payment was made today, it's a same-day reversal — no week extension needed.
+      const wasToday = isTodayDate(paymentCreatedAt);
 
-        const currentEndDate = clientLoanEnd ? new Date(clientLoanEnd) : null;
-        let newEndDate;
+      if (!wasToday) {
+        const client = clientsList.find(c => c._id === clientId);
+        if (client) {
+          const clientLoanStart = client.loan_start_date;
+          const clientLoanEnd = client.loan_end_date;
 
-        if (currentEndDate && !isNaN(currentEndDate)) {
-          newEndDate = new Date(currentEndDate.getTime() + 7 * 24 * 60 * 60 * 1000);
-        } else if (clientLoanStart) {
-          const start = new Date(clientLoanStart);
-          newEndDate = new Date(start.getTime() + 13 * 7 * 24 * 60 * 60 * 1000);
-        }
+          const currentEndDate = clientLoanEnd ? new Date(clientLoanEnd) : null;
+          let newEndDate;
 
-        if (newEndDate && token) {
-          await fetch(`https://karanfinance.com/api/clients/${clientId}`, {
-            method: 'PUT',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${token}`
-            },
-            body: JSON.stringify({ loan_end_date: newEndDate.toISOString() })
-          });
+          if (currentEndDate && !isNaN(currentEndDate)) {
+            newEndDate = new Date(currentEndDate.getTime() + 7 * 24 * 60 * 60 * 1000);
+          } else if (clientLoanStart) {
+            const start = new Date(clientLoanStart);
+            newEndDate = new Date(start.getTime() + 13 * 7 * 24 * 60 * 60 * 1000);
+          }
 
-          window.dispatchEvent(new CustomEvent('clientLoanEndUpdated', {
-            detail: { clientId, loan_end_date: newEndDate.toISOString() }
-          }));
-          window.dispatchEvent(new CustomEvent('clientUpdated', {
-            detail: { clientId, loan_end_date: newEndDate.toISOString() }
-          }));
+          if (newEndDate && token) {
+            await fetch(`https://karanfinance.com/api/clients/${clientId}`, {
+              method: 'PUT',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+              },
+              body: JSON.stringify({ loan_end_date: newEndDate.toISOString() })
+            });
+
+            window.dispatchEvent(new CustomEvent('clientLoanEndUpdated', {
+              detail: { clientId, loan_end_date: newEndDate.toISOString() }
+            }));
+            window.dispatchEvent(new CustomEvent('clientUpdated', {
+              detail: { clientId, loan_end_date: newEndDate.toISOString() }
+            }));
+          }
         }
       }
 
       await fetchPayments();
-      showPopup('success', 'Cancelled', 'Payment cancelled successfully. Due extended by 1 week.');
+      const msg = wasToday
+        ? 'Payment cancelled successfully.'
+        : 'Payment cancelled successfully. Due extended by 1 week.';
+      showPopup('success', 'Cancelled', msg);
     } catch (error) {
       console.error('Error cancelling payment:', error);
       showPopup('error', 'Error', `Failed to cancel payment: ${error.message}`);
@@ -257,22 +378,25 @@ export default function MpaymentHistory() {
 
   // Fetch payments without showing loading indicator (for polling)
   const fetchPaymentsWithoutLoading = async () => {
-    await fetchPaymentsData();
+    await fetchPaymentsData(true); // silent=true: don't update error state on transient failures
   };
 
   // Core fetching logic
-  const fetchPaymentsData = async () => {
+  // silent=true: used for polling/background refreshes — errors are logged but never shown to the user
+  const fetchPaymentsData = async (silent = false) => {
     try {
-      // Use test endpoint (no auth required) for now
-      const response = await fetch('https://karanfinance.com/api/payments/test/all', {
+      // Use authenticated history endpoint so the backend filters by manager
+      const token = localStorage.getItem('token');
+      const response = await fetch('https://karanfinance.com/api/payments/history', {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
+        const errorData = await response.json().catch(() => ({}));
         throw new Error(errorData.message || `Failed to fetch payment history (${response.status})`);
       }
 
@@ -282,11 +406,21 @@ export default function MpaymentHistory() {
         // Map backend data to frontend format
         const formattedRecords = data.data.payments.map((payment) => {
           const dt = formatPaymentDateTime(payment.paymentDate, payment.createdAt);
+          const paymentDateDisplay = formatPaymentDate(payment.paymentDate, payment.createdAt);
+          const paidDateDisplay = formatPaidDate(payment.createdAt, payment.paymentDate);
+
           return {
             _id: payment._id,
             datetime: dt.display,
+            paymentDate: paymentDateDisplay,
+            paidDate: paidDateDisplay,
             rawDate: dt.rawDate,
             createdAt: payment.createdAt ? new Date(payment.createdAt) : null,
+            paymentDateRaw: payment.paymentDate ? new Date(payment.paymentDate) : null,
+            managerId: payment.managerId || payment.client?.managerId || payment.client?.addedBy || null,
+            agent: payment.agent,
+            collectedStaffId: payment.collectedStaffId,
+            collectedStaff: payment.collectedStaff,
             staff: (() => {
               const rawName = payment.collectedStaff || '';
               const agentName = payment.agent && (payment.agent.name || payment.agent.username);
@@ -311,6 +445,7 @@ export default function MpaymentHistory() {
               phone: payment.client?.phone || 'N/A',
               district: payment.client?.district || 'N/A',
               landmark: payment.client?.landmark || 'N/A',
+              managerId: payment.client?.managerId || payment.client?.addedBy || null,
             },
             received: payment.amount || 0,
             pending: payment.remainingDue || 0,
@@ -321,77 +456,91 @@ export default function MpaymentHistory() {
 
         // Sort: current date paid clients on top, latest payments first
         formattedRecords.sort((a, b) => {
-          const isTodayA = a.datetime !== 'N/A' && (isTodayDate(a.rawDate) || isTodayDate(a.createdAt));
-          const isTodayB = b.datetime !== 'N/A' && (isTodayDate(b.rawDate) || isTodayDate(b.createdAt));
+          const isTodayA = (a.datetime !== 'N/A' || a.paidDate !== 'N/A') && (isTodayDate(a.rawDate) || isTodayDate(a.createdAt));
+          const isTodayB = (b.datetime !== 'N/A' || b.paidDate !== 'N/A') && (isTodayDate(b.rawDate) || isTodayDate(b.createdAt));
 
           // If one is from current date and the other isn't, current date comes first
           if (isTodayA && !isTodayB) return -1;
           if (!isTodayA && isTodayB) return 1;
 
           // Within the same group, sort descending: latest payment first
-          const timeA = a.rawDate ? a.rawDate.getTime() : 0;
-          const timeB = b.rawDate ? b.rawDate.getTime() : 0;
+          const timeA = a.createdAt ? a.createdAt.getTime() : (a.rawDate ? a.rawDate.getTime() : 0);
+          const timeB = b.createdAt ? b.createdAt.getTime() : (b.rawDate ? b.rawDate.getTime() : 0);
           if (timeB !== timeA) return timeB - timeA;
           return String(b._id || '').localeCompare(String(a._id || ''));
         });
 
-        // Deduplicate records by unique payment _id
-        const uniqueRecords = [];
-        const seenKeys = new Set();
-
-        formattedRecords.forEach((record) => {
-          const idKey = record._id ? String(record._id) : null;
-          if (idKey && seenKeys.has(idKey)) return;
-
-          if (idKey) seenKeys.add(idKey);
-          uniqueRecords.push(record);
-        });
-
-        setPaymentRecords(uniqueRecords);
-        setError(null);
-
-        // Calculate stats using uniqueRecords
-        const totalCollected = uniqueRecords.reduce((sum, r) => sum + (r.received || 0), 0);
-        let todayCollected = 0;
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-
-        uniqueRecords.forEach((record) => {
-          if (record.rawDate) {
-            const paymentDate = new Date(record.rawDate);
-            paymentDate.setHours(0, 0, 0, 0);
-            if (paymentDate.getTime() === today.getTime()) {
-              todayCollected += record.received;
-            }
-          }
-        });
-
-        // Calculate total pending from all unique payments
-        const totalPending = uniqueRecords.reduce(
-          (sum, record) => sum + (record.pending || 0),
-          0
-        );
-
-        setStats({
-          totalCollected,
-          todayCollected,
-          totalPending,
-        });
-
-        // Extract unique staff names
-        const uniqueStaff = [
-          'All Staff',
-          ...new Set(uniqueRecords.map((r) => r.staff.name).filter(name => name !== 'Unknown')),
-        ];
-        setStaffList(uniqueStaff);
+        rawPaymentsRef.current = formattedRecords;
+        // Use refs so we always pass the latest agents/clients/user (not stale closure values)
+        applyScopedPayments(formattedRecords, myAgentsRef.current, clientsListRef.current, loggedInUserRef.current || loggedInUser);
       } else {
         throw new Error(data.message || 'Failed to fetch payment history');
       }
     } catch (err) {
       console.error('Error fetching payments:', err);
-      setError(err.message);
+      // Only update error state on initial load (not silent background polls)
+      // This prevents transient network errors from wiping the UI during polling
+      if (!silent) {
+        setError(err.message);
+      }
     }
   };
+
+  const applyScopedPayments = (records, currentAgents, currentClients, user) => {
+    const currentUser = user || loggedInUser || getLoggedInUser();
+    const scopedPayments = filterPaymentsForManager(records, currentAgents, currentUser, currentClients);
+    const uniqueRecords = [];
+    const seenKeys = new Set();
+
+    scopedPayments.forEach((record) => {
+      const idKey = record._id ? String(record._id) : null;
+      if (idKey && seenKeys.has(idKey)) return;
+      if (idKey) seenKeys.add(idKey);
+      uniqueRecords.push(record);
+    });
+
+    setPaymentRecords(uniqueRecords);
+    setError(null);
+
+    // Calculate stats using uniqueRecords
+    const totalCollected = uniqueRecords.reduce((sum, r) => sum + (r.received || 0), 0);
+    let todayCollected = 0;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    uniqueRecords.forEach((record) => {
+      if (isTodayDate(record.createdAt) || isTodayDate(record.rawDate)) {
+        todayCollected += record.received;
+      }
+    });
+
+    const totalPending = uniqueRecords.reduce(
+      (sum, record) => sum + (record.pending || 0),
+      0
+    );
+
+    setStats({
+      totalCollected,
+      todayCollected,
+      totalPending,
+    });
+
+    const uniqueStaff = [
+      'All Staff',
+      ...new Set(uniqueRecords.map((r) => r.staff?.name).filter(name => name && name !== 'Unknown')),
+    ];
+    setStaffList(uniqueStaff);
+  };
+
+  useEffect(() => {
+    // Keep refs in sync when state updates
+    myAgentsRef.current = myAgents;
+    clientsListRef.current = clientsList;
+    if (loggedInUser) loggedInUserRef.current = loggedInUser;
+    if (rawPaymentsRef.current && rawPaymentsRef.current.length > 0) {
+      applyScopedPayments(rawPaymentsRef.current, myAgents, clientsList, loggedInUser);
+    }
+  }, [clientsList, myAgents, loggedInUser]);
 
   const filteredRecords = paymentRecords.filter((record) => {
     const matchesSearch =
@@ -399,17 +548,25 @@ export default function MpaymentHistory() {
       (record.client?.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
       (record.client?.id || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
       (record.paymentMethod || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (record.notes || '').toLowerCase().includes(searchTerm.toLowerCase());
+      (record.notes || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (record.paymentDate || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (record.paidDate || '').toLowerCase().includes(searchTerm.toLowerCase());
 
     const matchesStaff =
       staffFilter === 'All Staff' || record.staff?.name === staffFilter;
 
-    const matchesDate = !dateFilter || (record.rawDate && (() => {
-      const year = record.rawDate.getFullYear();
-      const month = String(record.rawDate.getMonth() + 1).padStart(2, '0');
-      const day = String(record.rawDate.getDate()).padStart(2, '0');
-      return `${year}-${month}-${day}` === dateFilter;
-    })());
+    const matchesDate = !dateFilter || (() => {
+      const checkD = (d) => {
+        if (!d) return false;
+        const dObj = d instanceof Date ? d : new Date(d);
+        if (isNaN(dObj.getTime())) return false;
+        const year = dObj.getFullYear();
+        const month = String(dObj.getMonth() + 1).padStart(2, '0');
+        const day = String(dObj.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}` === dateFilter;
+      };
+      return checkD(record.rawDate) || checkD(record.createdAt) || checkD(record.paymentDateRaw);
+    })();
 
     return matchesSearch && matchesStaff && matchesDate;
   });
@@ -418,14 +575,10 @@ export default function MpaymentHistory() {
   // This ensures summary cards always reflect the active filter combination
   const filteredStats = (() => {
     const totalCollected = filteredRecords.reduce((sum, r) => sum + (r.received || 0), 0);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
     let todayCollected = 0;
     filteredRecords.forEach((record) => {
-      if (record.rawDate) {
-        const pd = new Date(record.rawDate);
-        pd.setHours(0, 0, 0, 0);
-        if (pd.getTime() === today.getTime()) todayCollected += record.received;
+      if (isTodayDate(record.createdAt) || isTodayDate(record.rawDate)) {
+        todayCollected += record.received;
       }
     });
     const totalPending = filteredRecords.reduce((sum, r) => sum + (r.pending || 0), 0);
@@ -595,10 +748,11 @@ export default function MpaymentHistory() {
         {/* Payment History Table */}
         <div className="bg-white rounded-xl shadow border border-gray-200 overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm min-w-[1000px]">
+            <table className="w-full text-sm min-w-[1100px]">
               <thead className="bg-[#16423C] text-white sticky top-0">
                 <tr>
-                  <th className="px-6 py-4 text-left font-semibold">Date & Time</th>
+                  <th className="px-6 py-4 text-left font-semibold">Payment Date</th>
+                  <th className="px-6 py-4 text-left font-semibold">Paid Date</th>
                   <th className="px-6 py-4 text-left font-semibold">Collected Staff</th>
                   <th className="px-6 py-4 text-left font-semibold">Client Name</th>
                   <th className="px-6 py-4 text-left font-semibold">Mobile</th>
@@ -612,7 +766,7 @@ export default function MpaymentHistory() {
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={9} className="py-16 text-center">
+                    <td colSpan={10} className="py-16 text-center">
                       <div className="flex items-center justify-center gap-2">
                         <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-emerald-600"></div>
                         <span className="text-gray-600">Loading payment records...</span>
@@ -621,7 +775,7 @@ export default function MpaymentHistory() {
                   </tr>
                 ) : filteredRecords.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="py-16 text-center text-gray-500">
+                    <td colSpan={10} className="py-16 text-center text-gray-500">
                       No payment records found
                     </td>
                   </tr>
@@ -631,7 +785,8 @@ export default function MpaymentHistory() {
                       key={idx}
                       className="border-t hover:bg-gray-50 transition-colors"
                     >
-                      <td className="px-6 py-4 whitespace-nowrap">{record.datetime}</td>
+                      <td className="px-6 py-4 whitespace-nowrap font-medium text-gray-900">{record.paymentDate}</td>
+                      <td className="px-6 py-4 whitespace-nowrap text-gray-700">{record.paidDate}</td>
                       <td className="px-6 py-4">
                         <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800">
                           {record.staff.name}
@@ -657,7 +812,7 @@ export default function MpaymentHistory() {
                       </td>
                       <td className="px-6 py-4 text-center">
                         <button
-                          onClick={() => openCancelConfirmModal(record._id, record.received, record.client?.id)}
+                          onClick={() => openCancelConfirmModal(record._id, record.received, record.client?.id, record.createdAt)}
                           className="bg-red-500 hover:bg-red-600 text-white px-3 py-1.5 rounded text-xs font-semibold transition-all active:scale-95 shadow-sm hover:shadow"
                         >
                           Cancel

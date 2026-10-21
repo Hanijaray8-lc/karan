@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 
 import axios from 'axios';
 import ManagerNavbar from './ManagerNavbar';
+import { filterPaymentsForUser, filterClientsForUser, filterPaymentsForManager, filterClientsForManager, filterAgentsForManager, getLoggedInUser } from '../../utils/staffRecordFilter';
 import {
   LineChart,
   Line,
@@ -63,14 +64,45 @@ const ManagerDashboard = () => {
     }
   }, [navigate]);
 
-  // Fetch collection & payment data from backend test endpoint
+  // Fetch collection & payment data from backend (authenticated endpoints)
   useEffect(() => {
     const fetchData = async () => {
       try {
         setLoadingData(true);
-        const res = await axios.get('https://karanfinance.com/api/payments/test/all');
-        const payments = (res.data && res.data.data && res.data.data.payments) || [];
-        const totalCollected = (res.data && res.data.data && res.data.data.stats && res.data.data.stats.totalCollected) || 0;
+        const loggedInUser = getLoggedInUser();
+
+        // Step 1: Fetch agents scoped to this manager
+        let myAgents = [];
+        try {
+          const token = localStorage.getItem('token');
+          const agentsRes = await axios.get('https://karanfinance.com/api/agents', {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          const allAgents = (agentsRes.data && agentsRes.data.agents) || [];
+          myAgents = filterAgentsForManager(allAgents, loggedInUser);
+        } catch (e) {
+          // silent fail – fallback to date-only filter
+        }
+
+        // Step 2: Fetch clients scoped to this manager (authenticated – backend filters by managerId)
+        const token = localStorage.getItem('token');
+        const clientsRes = await axios.get('https://karanfinance.com/api/clients/all', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const rawClients = (clientsRes.data && clientsRes.data.clients) || [];
+        // Secondary client-side filter for extra safety / legacy data without managerId
+        const clients = filterClientsForManager(rawClients, myAgents, loggedInUser);
+        const totalLent = clients.reduce((sum, c) => sum + (Number(c.amount) || 0), 0);
+        const totalPending = clients.reduce((sum, c) => sum + (Number(c.pending) || 0), 0);
+        const totalClients = clients.length;
+
+        // Step 3: Fetch payments scoped to this manager (authenticated – backend filters by managerId)
+        const res = await axios.get('https://karanfinance.com/api/payments/history', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const rawPayments = (res.data && res.data.data && res.data.data.payments) || [];
+        const payments = filterPaymentsForManager(rawPayments, myAgents, loggedInUser, clients);
+        const totalCollected = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
 
         // Helper to resolve who actually collected the payment
         const getCollectorName = (p) => {
@@ -143,13 +175,6 @@ const ManagerDashboard = () => {
           if (monthBuckets.hasOwnProperty(key)) monthBuckets[key] += (p.amount || 0);
         });
         const monthly = Object.keys(monthBuckets).map(m => ({ month: m, amount: monthBuckets[m] }));
-
-        // Fetch clients to compute total lent amount and outstanding dues
-        const clientsRes = await axios.get('https://karanfinance.com/api/clients/test/all');
-        const clients = (clientsRes.data && clientsRes.data.clients) || [];
-        const totalLent = clients.reduce((sum, c) => sum + (Number(c.amount) || 0), 0);
-        const totalPending = clients.reduce((sum, c) => sum + (Number(c.pending) || 0), 0);
-        const totalClients = clients.length;
 
         // Helper: compute weekly amount for a client when server value missing
         const computeWeeklyAmount = (client) => {
@@ -226,11 +251,16 @@ const ManagerDashboard = () => {
         let inactiveClientsCount = 0;
         clients.forEach(c => {
           const weeklyAmount = c.weekly_amount && Number(c.weekly_amount) > 0 ? Number(c.weekly_amount) : 575;
-          const totalWeeks = c.total_weeks && Number(c.total_weeks) > 0 ? Number(c.total_weeks) : 12;
+          const amt = Number(c.amount || 0);
+          const totalWeeks = (amt === 6900 || amt === 5000 || weeklyAmount === 575)
+            ? Math.max(12, Number(c.total_weeks || 12))
+            : (c.total_weeks && Number(c.total_weeks) > 0 ? Number(c.total_weeks) : 12);
           const received = Number(c.received || 0);
+          const pending = Number(c.pending || 0);
+          const isPaidStatus = c.status === 'paid';
           const weeksPaid = weeklyAmount > 0 ? Math.min(Math.floor(received / weeklyAmount), totalWeeks) : 0;
 
-          if (weeksPaid >= totalWeeks) {
+          if ((weeksPaid >= totalWeeks || isPaidStatus) && pending <= 0) {
             inactiveClientsCount++;
           } else {
             activeClientsCount++;

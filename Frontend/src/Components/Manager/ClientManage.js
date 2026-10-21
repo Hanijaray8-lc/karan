@@ -13,6 +13,7 @@ import {
   IndianRupee,
 } from 'lucide-react';
 import ManagerNavbar from './ManagerNavbar';
+import { filterClientsForUser, filterClientsForManager, filterAgentsForManager, getLoggedInUser } from '../../utils/staffRecordFilter';
 
 export default function ClientManage() {
   const [agents, setAgents] = useState([]);
@@ -116,8 +117,10 @@ export default function ClientManage() {
 
       const data = await res.json();
       if (data && data.success && data.agents) {
-        setAgents(data.agents);
-        setAllAgents(data.agents);
+        const loggedInUser = getLoggedInUser();
+        const scopedAgents = filterAgentsForManager(data.agents, loggedInUser);
+        setAgents(scopedAgents);
+        setAllAgents(scopedAgents);
       }
     } catch (err) {
       console.error('Error fetching agents:', err);
@@ -147,7 +150,8 @@ export default function ClientManage() {
 
       const data = await res.json();
       if (data && data.success) {
-        setClientsOfAgent(data.clients || []);
+        const rawClients = data.clients || [];
+        setClientsOfAgent(filterClientsForManager(rawClients, agents, getLoggedInUser()));
       }
     } catch (err) {
       console.error('Error fetching clients:', err);

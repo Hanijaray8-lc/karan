@@ -131,8 +131,18 @@ export default function AdminAproval() {
       );
 
       if (res.data && res.data.success) {
+        // Instant UI update — move agent from pending/rejected → active
+        const approvedAgent = { ...agent, status: 'Active' };
+        setPendingAgents(prev => prev.filter(a => a._id !== agent._id));
+        setRejectedAgents(prev => prev.filter(a => a._id !== agent._id));
+        setActiveAgents(prev => [approvedAgent, ...prev.filter(a => a._id !== agent._id)]);
+        setStats(prev => ({
+          ...prev,
+          pendingCount: Math.max(0, prev.pendingCount - (agent.status === 'Pending' ? 1 : 0)),
+          rejectedCount: Math.max(0, prev.rejectedCount - (agent.status !== 'Pending' && agent.status !== 'Active' ? 1 : 0)),
+          activeCount: prev.activeCount + 1
+        }));
         showToast(`✅ Agent ${agent.name || agent.username} approved! Access granted.`, 'success');
-        fetchApprovalsData();
       }
     } catch (err) {
       console.error('Error approving agent:', err);
@@ -159,8 +169,18 @@ export default function AdminAproval() {
       );
 
       if (res.data && res.data.success) {
+        // Instant UI update — move agent to rejected list
+        const rejectedAgent = { ...agent, status: 'Rejected' };
+        setPendingAgents(prev => prev.filter(a => a._id !== agent._id));
+        setActiveAgents(prev => prev.filter(a => a._id !== agent._id));
+        setRejectedAgents(prev => [rejectedAgent, ...prev.filter(a => a._id !== agent._id)]);
+        setStats(prev => ({
+          ...prev,
+          pendingCount: Math.max(0, prev.pendingCount - (agent.status === 'Pending' ? 1 : 0)),
+          activeCount: Math.max(0, prev.activeCount - (agent.status === 'Active' ? 1 : 0)),
+          rejectedCount: prev.rejectedCount + 1
+        }));
         showToast(`Agent ${agent.name || agent.username} access rejected.`, 'info');
-        fetchApprovalsData();
       }
     } catch (err) {
       console.error('Error rejecting agent:', err);
@@ -187,8 +207,16 @@ export default function AdminAproval() {
       );
 
       if (res.data && res.data.success) {
+        // Instant UI update — move agent from active → pending
+        const pendingAgent = { ...agent, status: 'Pending' };
+        setActiveAgents(prev => prev.filter(a => a._id !== agent._id));
+        setPendingAgents(prev => [pendingAgent, ...prev.filter(a => a._id !== agent._id)]);
+        setStats(prev => ({
+          ...prev,
+          activeCount: Math.max(0, prev.activeCount - 1),
+          pendingCount: prev.pendingCount + 1
+        }));
         showToast(`Agent ${agent.name || agent.username} status reset to Pending.`, 'info');
-        fetchApprovalsData();
       }
     } catch (err) {
       console.error('Error setting agent pending:', err);

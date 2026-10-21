@@ -5,6 +5,7 @@ import { Capacitor } from '@capacitor/core';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import ManagerNavbar from './ManagerNavbar';
+import { filterClientsForUser, filterClientsForManager, filterPaymentsForUser, filterPaymentsForManager, filterAgentsForManager, getLoggedInUser } from '../../utils/staffRecordFilter';
 
 // Robust native PDF saver with multiple fallbacks
 const savePdfBase64 = async (fileName, base64) => {
@@ -44,6 +45,7 @@ const MPendingClients = () => {
   });
   const [selectedEndDate, setSelectedEndDate] = useState('');
   const [notification, setNotification] = useState(null);
+  const [myAgents, setMyAgents] = useState([]);
 
   // Pay modal state
   const [showPayModal, setShowPayModal] = useState(false);
@@ -193,7 +195,26 @@ const MPendingClients = () => {
 
   useEffect(() => {
     fetchClients();
+    fetchMyAgents();
   }, []);
+
+  // Fetch agents scoped to this manager
+  const fetchMyAgents = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) return;
+      const res = await fetch('https://karanfinance.com/api/agents', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data && data.success && data.agents) {
+        setMyAgents(filterAgentsForManager(data.agents, getLoggedInUser()));
+      }
+    } catch (e) {
+      // silent fail
+    }
+  };
 
   const fetchClients = async () => {
     setLoading(true);
@@ -207,11 +228,17 @@ const MPendingClients = () => {
       const data = await res.json();
 
       if (data.success && data.clients) {
+        const loggedInUser = getLoggedInUser();
+        const validClients = filterClientsForManager(data.clients, myAgents, loggedInUser);
         // Fetch payments to map them for dynamic due calculation
         try {
-          const payRes = await fetch('https://karanfinance.com/api/payments/test/all');
+          const payToken = localStorage.getItem('token');
+          const payRes = await fetch('https://karanfinance.com/api/payments/history', {
+            headers: { 'Content-Type': 'application/json', ...(payToken ? { Authorization: `Bearer ${payToken}` } : {}) }
+          });
           const payJson = payRes.ok ? await payRes.json() : null;
-          const payments = (payJson && payJson.data && payJson.data.payments) || [];
+          const rawPayments = (payJson && payJson.data && payJson.data.payments) || [];
+          const payments = filterPaymentsForManager(rawPayments, myAgents, loggedInUser, validClients);
 
           const paymentsByClient = {};
           payments.forEach(p => {
@@ -222,7 +249,7 @@ const MPendingClients = () => {
             }
           });
 
-          const mappedClients = data.clients.map(c => {
+          const mappedClients = validClients.map(c => {
             const id = c._id ? String(c._id) : null;
             return {
               ...c,
@@ -231,7 +258,7 @@ const MPendingClients = () => {
           });
           setClients(mappedClients);
         } catch (err) {
-          setClients(data.clients);
+          setClients(validClients);
         }
       }
     } catch (error) {

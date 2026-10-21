@@ -72,6 +72,79 @@ const formatPaymentDateTime = (paymentDateStr, createdAtStr) => {
   };
 };
 
+// Helper function to format payment date (due date) for display
+const formatPaymentDate = (paymentDateStr, createdAtStr) => {
+  if (!paymentDateStr && !createdAtStr) return 'N/A';
+
+  const str = paymentDateStr || createdAtStr;
+
+  // If string starts with YYYY-MM-DD, extract directly to avoid UTC timezone shifts
+  if (typeof str === 'string') {
+    const match = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (match) {
+      const [, y, m, d] = match;
+      return `${d.padStart(2, '0')}/${m.padStart(2, '0')}/${y}`;
+    }
+  }
+
+  const dObj = str instanceof Date ? str : new Date(str);
+  if (isNaN(dObj.getTime())) return 'N/A';
+
+  return dObj.toLocaleDateString('en-IN', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  });
+};
+
+// Helper function to format paid date & time for display
+const formatPaidDate = (createdAtStr, paymentDateStr) => {
+  const cDate = createdAtStr ? new Date(createdAtStr) : null;
+  const pDate = paymentDateStr ? new Date(paymentDateStr) : null;
+
+  const isValidC = cDate && !isNaN(cDate.getTime());
+  const isValidP = pDate && !isNaN(pDate.getTime());
+
+  if (!isValidC && !isValidP) return 'N/A';
+
+  // Check if string has dummy time (like 12:00:00 UTC or 00:00:00 UTC)
+  const isDummy = (val, dateObj) =>
+    typeof val === 'string' &&
+    (val.includes('T12:00:00') ||
+      val.includes('T00:00:00') ||
+      (dateObj && dateObj.getUTCHours() === 12 && dateObj.getUTCMinutes() === 0 && dateObj.getUTCSeconds() === 0) ||
+      (dateObj && dateObj.getUTCHours() === 0 && dateObj.getUTCMinutes() === 0 && dateObj.getUTCSeconds() === 0));
+
+  // If createdAt is valid and not a dummy time, use it (exact payment timestamp)
+  if (isValidC && !isDummy(createdAtStr, cDate)) {
+    return cDate.toLocaleString('en-IN', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    });
+  }
+
+  // Fallback to whichever is valid
+  const targetDate = isValidC ? cDate : pDate;
+  const targetStr = isValidC ? createdAtStr : paymentDateStr;
+
+  if (isDummy(targetStr, targetDate)) {
+    return formatPaymentDate(targetStr);
+  }
+
+  return targetDate.toLocaleString('en-IN', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  });
+};
+
 // Helper function to check if a date corresponds to the current date (today)
 const isTodayDate = (dateInput) => {
   if (!dateInput) return false;
@@ -197,14 +270,14 @@ export default function PaymentHistory() {
   };
 
   // Open cancel confirmation modal
-  const openCancelConfirmModal = (paymentId, paymentAmount, clientId) => {
-    setCancelPaymentData({ paymentId, paymentAmount, clientId });
+  const openCancelConfirmModal = (paymentId, paymentAmount, clientId, paymentCreatedAt) => {
+    setCancelPaymentData({ paymentId, paymentAmount, clientId, paymentCreatedAt });
     setShowCancelConfirmModal(true);
   };
 
   // Handle cancel payment - reverse the payment and update client record
   const handleConfirmCancelPayment = async () => {
-    const { paymentId, paymentAmount, clientId } = cancelPaymentData;
+    const { paymentId, paymentAmount, clientId, paymentCreatedAt } = cancelPaymentData;
     setShowCancelConfirmModal(false);
     try {
       const token = localStorage.getItem('token');
@@ -233,56 +306,65 @@ export default function PaymentHistory() {
         console.error('Error clearing localStorage:', e);
       }
 
-      // Look up client details
-      const client = clientsList.find(c => c._id === clientId);
-      if (!client) {
-        throw new Error('Client details not found. Please refresh the page and try again.');
+      // Only extend loan end date if the cancelled payment was NOT made today.
+      // If payment was made today, it's a same-day reversal — no week extension needed.
+      const wasToday = isTodayDate(paymentCreatedAt);
+
+      if (!wasToday) {
+        // Look up client details
+        const client = clientsList.find(c => c._id === clientId);
+        if (!client) {
+          throw new Error('Client details not found. Please refresh the page and try again.');
+        }
+
+        const clientLoanStart = client.loan_start_date;
+        const clientLoanEnd = client.loan_end_date;
+
+        // Extend loan_end_date by 7 days since payment is cancelled
+        const currentEndDate = clientLoanEnd ? new Date(clientLoanEnd) : null;
+        let newEndDate;
+
+        if (currentEndDate && !isNaN(currentEndDate)) {
+          newEndDate = new Date(currentEndDate.getTime() + 7 * 24 * 60 * 60 * 1000);
+        } else if (clientLoanStart) {
+          const start = new Date(clientLoanStart);
+          newEndDate = new Date(start.getTime() + 13 * 7 * 24 * 60 * 60 * 1000); // push to 13 weeks
+        } else {
+          throw new Error('Unable to calculate new loan end date');
+        }
+
+        // Update client loan_end_date in backend
+        const updateRes = await fetch(`https://karanfinance.com/api/clients/${clientId}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ loan_end_date: newEndDate.toISOString() })
+        });
+
+        const updateData = await updateRes.json();
+
+        if (!updateRes.ok) {
+          throw new Error(updateData.message || 'Failed to update loan end date');
+        }
+
+        console.log('Successfully extended loan end date');
+
+        // Dispatch custom event to notify other components about the change
+        window.dispatchEvent(new CustomEvent('clientUpdated', {
+          detail: { clientId, loan_end_date: newEndDate.toISOString() }
+        }));
       }
-
-      const clientLoanStart = client.loan_start_date;
-      const clientLoanEnd = client.loan_end_date;
-
-      // Extend loan_end_date by 7 days since payment is cancelled
-      const currentEndDate = clientLoanEnd ? new Date(clientLoanEnd) : null;
-      let newEndDate;
-
-      if (currentEndDate && !isNaN(currentEndDate)) {
-        newEndDate = new Date(currentEndDate.getTime() + 7 * 24 * 60 * 60 * 1000);
-      } else if (clientLoanStart) {
-        const start = new Date(clientLoanStart);
-        newEndDate = new Date(start.getTime() + 13 * 7 * 24 * 60 * 60 * 1000); // push to 13 weeks
-      } else {
-        throw new Error('Unable to calculate new loan end date');
-      }
-
-      // Update client loan_end_date in backend
-      const updateRes = await fetch(`https://karanfinance.com/api/clients/${clientId}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ loan_end_date: newEndDate.toISOString() })
-      });
-
-      const updateData = await updateRes.json();
-
-      if (!updateRes.ok) {
-        throw new Error(updateData.message || 'Failed to update loan end date');
-      }
-
-      console.log('Successfully extended loan end date');
-
-      // Dispatch custom event to notify other components about the change
-      window.dispatchEvent(new CustomEvent('clientUpdated', {
-        detail: { clientId, loan_end_date: newEndDate.toISOString() }
-      }));
 
       // Refresh payment data after cancellation
       await fetchPayments();
 
       // Show success message
-      showPopup('success', 'Cancelled', 'Payment cancelled successfully. Due extended by 1 week.');
+      const msg = wasToday
+        ? 'Payment cancelled successfully.'
+        : 'Payment cancelled successfully. Due extended by 1 week.';
+      showPopup('success', 'Cancelled', msg);
     } catch (error) {
       console.error('Error cancelling payment:', error);
       showPopup('error', 'Error', `Failed to cancel payment: ${error.message}`);
@@ -326,11 +408,17 @@ export default function PaymentHistory() {
         // Map backend data to frontend format
         const formattedRecords = data.data.payments.map((payment) => {
           const dt = formatPaymentDateTime(payment.paymentDate, payment.createdAt);
+          const paymentDateDisplay = formatPaymentDate(payment.paymentDate, payment.createdAt);
+          const paidDateDisplay = formatPaidDate(payment.createdAt, payment.paymentDate);
+
           return {
             _id: payment._id,
             datetime: dt.display,
+            paymentDate: paymentDateDisplay,
+            paidDate: paidDateDisplay,
             rawDate: dt.rawDate,
             createdAt: payment.createdAt ? new Date(payment.createdAt) : null,
+            paymentDateRaw: payment.paymentDate ? new Date(payment.paymentDate) : null,
             staff: {
               id: payment.agent?._id || 'N/A',
               name: payment.collectedStaff || 'Unknown',
@@ -352,16 +440,16 @@ export default function PaymentHistory() {
 
         // Sort: current date paid clients on top, latest payments first
         formattedRecords.sort((a, b) => {
-          const isTodayA = a.datetime !== 'N/A' && (isTodayDate(a.rawDate) || isTodayDate(a.createdAt));
-          const isTodayB = b.datetime !== 'N/A' && (isTodayDate(b.rawDate) || isTodayDate(b.createdAt));
+          const isTodayA = (a.datetime !== 'N/A' || a.paidDate !== 'N/A') && (isTodayDate(a.rawDate) || isTodayDate(a.createdAt));
+          const isTodayB = (b.datetime !== 'N/A' || b.paidDate !== 'N/A') && (isTodayDate(b.rawDate) || isTodayDate(b.createdAt));
 
           // If one is from current date and the other isn't, current date comes first
           if (isTodayA && !isTodayB) return -1;
           if (!isTodayA && isTodayB) return 1;
 
           // Within the same group, sort descending: latest payment first
-          const timeA = a.rawDate ? a.rawDate.getTime() : 0;
-          const timeB = b.rawDate ? b.rawDate.getTime() : 0;
+          const timeA = a.createdAt ? a.createdAt.getTime() : (a.rawDate ? a.rawDate.getTime() : 0);
+          const timeB = b.createdAt ? b.createdAt.getTime() : (b.rawDate ? b.rawDate.getTime() : 0);
           if (timeB !== timeA) return timeB - timeA;
           return String(b._id || '').localeCompare(String(a._id || ''));
         });
@@ -388,12 +476,8 @@ export default function PaymentHistory() {
         today.setHours(0, 0, 0, 0);
 
         uniqueRecords.forEach((record) => {
-          if (record.rawDate) {
-            const paymentDate = new Date(record.rawDate);
-            paymentDate.setHours(0, 0, 0, 0);
-            if (paymentDate.getTime() === today.getTime()) {
-              todayCollected += record.received;
-            }
+          if (isTodayDate(record.createdAt) || isTodayDate(record.rawDate)) {
+            todayCollected += record.received;
           }
         });
 
@@ -430,17 +514,25 @@ export default function PaymentHistory() {
       (record.client?.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
       (record.client?.id || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
       (record.paymentMethod || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (record.notes || '').toLowerCase().includes(searchTerm.toLowerCase());
+      (record.notes || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (record.paymentDate || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (record.paidDate || '').toLowerCase().includes(searchTerm.toLowerCase());
 
     const matchesStaff =
       staffFilter === 'All Staff' || record.staff?.name === staffFilter;
 
-    const matchesDate = !dateFilter || (record.rawDate && (() => {
-      const year = record.rawDate.getFullYear();
-      const month = String(record.rawDate.getMonth() + 1).padStart(2, '0');
-      const day = String(record.rawDate.getDate()).padStart(2, '0');
-      return `${year}-${month}-${day}` === dateFilter;
-    })());
+    const matchesDate = !dateFilter || (() => {
+      const checkD = (d) => {
+        if (!d) return false;
+        const dObj = d instanceof Date ? d : new Date(d);
+        if (isNaN(dObj.getTime())) return false;
+        const year = dObj.getFullYear();
+        const month = String(dObj.getMonth() + 1).padStart(2, '0');
+        const day = String(dObj.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}` === dateFilter;
+      };
+      return checkD(record.rawDate) || checkD(record.createdAt) || checkD(record.paymentDateRaw);
+    })();
 
     return matchesSearch && matchesStaff && matchesDate;
   });
@@ -449,14 +541,10 @@ export default function PaymentHistory() {
   // This ensures summary cards always reflect the active filter combination
   const filteredStats = (() => {
     const totalCollected = filteredRecords.reduce((sum, r) => sum + (r.received || 0), 0);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
     let todayCollected = 0;
     filteredRecords.forEach((record) => {
-      if (record.rawDate) {
-        const pd = new Date(record.rawDate);
-        pd.setHours(0, 0, 0, 0);
-        if (pd.getTime() === today.getTime()) todayCollected += record.received;
+      if (isTodayDate(record.createdAt) || isTodayDate(record.rawDate)) {
+        todayCollected += record.received;
       }
     });
     const totalPending = filteredRecords.reduce((sum, r) => sum + (r.pending || 0), 0);
@@ -626,10 +714,11 @@ export default function PaymentHistory() {
         {/* Payment History Table */}
         <div className="bg-white rounded-xl shadow border border-gray-200 overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm min-w-[1000px]">
+            <table className="w-full text-sm min-w-[1100px]">
               <thead className="bg-[#16423C] text-white sticky top-0">
                 <tr>
-                  <th className="px-6 py-4 text-left font-semibold">Date & Time</th>
+                  <th className="px-6 py-4 text-left font-semibold">Payment Date</th>
+                  <th className="px-6 py-4 text-left font-semibold">Paid Date</th>
                   <th className="px-6 py-4 text-left font-semibold">Collected Staff</th>
                   <th className="px-6 py-4 text-left font-semibold">Client Name</th>
                   <th className="px-6 py-4 text-left font-semibold">Mobile</th>
@@ -643,7 +732,7 @@ export default function PaymentHistory() {
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={9} className="py-16 text-center">
+                    <td colSpan={10} className="py-16 text-center">
                       <div className="flex items-center justify-center gap-2">
                         <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-emerald-600"></div>
                         <span className="text-gray-600">Loading payment records...</span>
@@ -652,7 +741,7 @@ export default function PaymentHistory() {
                   </tr>
                 ) : filteredRecords.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="py-16 text-center text-gray-500">
+                    <td colSpan={10} className="py-16 text-center text-gray-500">
                       No payment records found
                     </td>
                   </tr>
@@ -662,7 +751,8 @@ export default function PaymentHistory() {
                       key={idx}
                       className="border-t hover:bg-gray-50 transition-colors"
                     >
-                      <td className="px-6 py-4 whitespace-nowrap">{record.datetime}</td>
+                      <td className="px-6 py-4 whitespace-nowrap font-medium text-gray-900">{record.paymentDate}</td>
+                      <td className="px-6 py-4 whitespace-nowrap text-gray-700">{record.paidDate}</td>
                       <td className="px-6 py-4">
                         <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800">
                           {record.staff.name}
@@ -688,7 +778,7 @@ export default function PaymentHistory() {
                       </td>
                       <td className="px-6 py-4">
                         <button
-                          onClick={() => openCancelConfirmModal(record._id, record.received, record.client.id)}
+                          onClick={() => openCancelConfirmModal(record._id, record.received, record.client.id, record.createdAt)}
                           className="bg-red-500 hover:bg-red-600 text-white px-3 py-1.5 rounded text-xs font-semibold transition-all active:scale-95 shadow-sm hover:shadow"
                         >
                           Cancel

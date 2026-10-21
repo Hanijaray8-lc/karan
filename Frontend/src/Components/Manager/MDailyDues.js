@@ -4,6 +4,7 @@ import { Capacitor } from '@capacitor/core';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import ManagerNavbar from './ManagerNavbar';
+import { filterClientsForUser, filterClientsForManager, filterPaymentsForUser, filterPaymentsForManager, filterAgentsForManager, getLoggedInUser } from '../../utils/staffRecordFilter';
 
 const parseLocalDate = (dateInput) => {
   if (!dateInput) return null;
@@ -44,9 +45,13 @@ const getClientScheduledDueDates = (client) => {
     ? parseLocalDate(client.loan_end_date)
     : new Date(start.getFullYear(), start.getMonth(), start.getDate() + (defaultWeeks - 1) * 7);
 
+  // Cap to max 12 weeks regardless of how many times the client was pushed.
+  // Pushed clients stay in week 12 slot (not week 13/14/15...) until fully paid.
+  const maxWeeks = defaultWeeks;
+
   const dueDates = [];
   let due = new Date(start);
-  while (due <= end) {
+  while (due <= end && dueDates.length < maxWeeks) {
     dueDates.push(toLocalDateStr(due));
     due.setDate(due.getDate() + 7);
   }
@@ -97,6 +102,7 @@ const MDailyDues = () => {
   const [showClientModal, setShowClientModal] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
   const [showFinalDueModal, setShowFinalDueModal] = useState(false);
+  const [myAgents, setMyAgents] = useState([]);
   const [selectedClient, setSelectedClient] = useState(null);
   const [notification, setNotification] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -210,6 +216,7 @@ const MDailyDues = () => {
   // Mock data - replace with actual API call
   useEffect(() => {
     fetchClients();
+    fetchMyAgents();
 
     // Setup polling to check for payments made by other users (every 30 seconds)
     const pollInterval = setInterval(() => {
@@ -219,6 +226,25 @@ const MDailyDues = () => {
     // Cleanup interval on unmount
     return () => clearInterval(pollInterval);
   }, []);
+
+  // Fetch agents scoped to this manager
+  const fetchMyAgents = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) return;
+      const res = await fetch('https://karanfinance.com/api/agents', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data && data.success && data.agents) {
+        const user = getLoggedInUser();
+        setMyAgents(filterAgentsForManager(data.agents, user));
+      }
+    } catch (e) {
+      // silent fail – filter falls back to date-only
+    }
+  };
 
   // Listen for client updates from other components (e.g., payment cancellation)
   useEffect(() => {
@@ -378,7 +404,9 @@ const MDailyDues = () => {
       const data = await res.json();
 
       if (data.success && data.clients) {
-        const transformedClients = data.clients.map(client => {
+        const loggedInUser = getLoggedInUser();
+        const validClients = filterClientsForManager(data.clients, myAgents, loggedInUser);
+        const transformedClients = validClients.map(client => {
           const forcedWeekly = 575;
           const display = `₹${forcedWeekly.toLocaleString('en-IN')}`;
           const rawPending = client.pending ?? ((client.amount !== undefined && client.received !== undefined) ? (client.amount - client.received) : null);
@@ -399,9 +427,12 @@ const MDailyDues = () => {
         });
         // Attach paid status by checking payment records
         try {
-          const payRes = await fetch('https://karanfinance.com/api/payments/test/all');
+          const payToken = localStorage.getItem('token');
+          const payRes = await fetch('https://karanfinance.com/api/payments/history', {
+            headers: { 'Content-Type': 'application/json', ...(payToken ? { Authorization: `Bearer ${payToken}` } : {}) }
+          });
           const payJson = payRes.ok ? await payRes.json() : null;
-          const rawPayments = (payJson && payJson.data && payJson.data.payments) || [];
+          const rawPayments = filterPaymentsForManager((payJson && payJson.data && payJson.data.payments) || [], myAgents, loggedInUser, validClients);
           const seenIds = new Set();
           const payments = [];
           rawPayments.forEach(p => {
@@ -539,8 +570,10 @@ const MDailyDues = () => {
       const data = await res.json();
 
       if (data.success && data.clients) {
+        const loggedInUser = getLoggedInUser();
+        const validClients = filterClientsForManager(data.clients, myAgents, loggedInUser);
         // Transform API data to include weekly due information
-        const transformedClients = data.clients.map(client => {
+        const transformedClients = validClients.map(client => {
           // Force weekly amount globally to 575 as requested
           const forcedWeekly = 575;
 
@@ -568,9 +601,12 @@ const MDailyDues = () => {
         });
 
         try {
-          const payRes = await fetch('https://karanfinance.com/api/payments/test/all');
+          const payToken2 = localStorage.getItem('token');
+          const payRes = await fetch('https://karanfinance.com/api/payments/history', {
+            headers: { 'Content-Type': 'application/json', ...(payToken2 ? { Authorization: `Bearer ${payToken2}` } : {}) }
+          });
           const payJson = payRes.ok ? await payRes.json() : null;
-          const rawPayments = (payJson && payJson.data && payJson.data.payments) || [];
+          const rawPayments = filterPaymentsForManager((payJson && payJson.data && payJson.data.payments) || [], myAgents, loggedInUser, validClients);
           const seenIds = new Set();
           const payments = [];
           rawPayments.forEach(p => {
@@ -991,21 +1027,39 @@ const MDailyDues = () => {
       return Math.min(pendingCap, weeklyInstallment);
     }
 
-    // Roll forward week by week: each week's due depends on the
-    // actual due vs actual paid of the PREVIOUS week only (not a flat
-    // comparison), so advance/shortfall correctly resolves after one week.
+    // Roll forward week by week using a remaining-credit pool.
+    // When a client pays more than base (575), the excess credit carries forward
+    // and covers subsequent weeks (advance payment support).
+    // If paid <= base, credit resets to 0 (no carry-over).
+    let remainingCredit = 0; // outstanding advance credit pool
     let runningDue = weeklyInstallment; // due for week 1
     for (let k = 1; k < T; k++) {
       if (Object.prototype.hasOwnProperty.call(paymentsByWeek, k)) {
         const paidThisWeek = paymentsByWeek[k];
-        const diff = paidThisWeek - weeklyInstallment;
-        runningDue = weeklyInstallment - diff;
-        if (runningDue < 0) runningDue = 0;
+        if (paidThisWeek > weeklyInstallment) {
+          // Paid more than base → accumulate credit pool
+          const effectivePaid = paidThisWeek + remainingCredit;
+          remainingCredit = Math.max(0, effectivePaid - weeklyInstallment);
+        } else {
+          // Paid base or less → reset credit pool (no carry-over)
+          remainingCredit = 0;
+        }
       } else {
-        runningDue = weeklyInstallment; // no payment record for that week — reset to default
+        // No payment this week — consume one week of credit if available
+        if (remainingCredit >= weeklyInstallment) {
+          remainingCredit -= weeklyInstallment; // advance covers this week
+        } else {
+          remainingCredit = 0; // credit exhausted
+        }
       }
+      // Compute what is due for the NEXT week (k+1)
+      runningDue = Math.max(0, weeklyInstallment - remainingCredit);
     }
     const due = runningDue;
+
+    // If advance credit fully covers this week (due === 0), return 0 so the
+    // client does NOT appear in daily dues for advance-covered weeks.
+    if (due <= 0) return 0;
 
     return Math.min(pendingCap, due);
   };

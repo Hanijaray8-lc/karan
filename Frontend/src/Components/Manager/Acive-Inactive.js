@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import ManagerNavbar from './ManagerNavbar';
+import { filterClientsForUser, filterClientsForManager, filterAgentsForManager, getLoggedInUser } from '../../utils/staffRecordFilter';
 import { User, Search, Filter, MapPin, Phone, CheckCircle, Clock, ShieldAlert, Award, Calendar, DollarSign, RefreshCw } from 'lucide-react';
 
 const AciveInactive = () => {
@@ -16,6 +17,7 @@ const AciveInactive = () => {
   const [selectedLandmark, setSelectedLandmark] = useState('');
   const [districts, setDistricts] = useState([]);
   const [landmarks, setLandmarks] = useState([]);
+  const [myAgents, setMyAgents] = useState([]);
 
   // Fetch client data
   const fetchClients = async () => {
@@ -44,7 +46,8 @@ const AciveInactive = () => {
       }
 
       const data = await response.json();
-      const clientsList = data.clients || data.data || [];
+      const rawClients = data.clients || data.data || [];
+      const clientsList = filterClientsForManager(rawClients, myAgents, getLoggedInUser());
       setClients(clientsList);
 
       // Extract unique districts
@@ -65,7 +68,26 @@ const AciveInactive = () => {
 
   useEffect(() => {
     fetchClients();
+    fetchMyAgents();
   }, []);
+
+  // Fetch agents scoped to this manager
+  const fetchMyAgents = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) return;
+      const res = await fetch('https://karanfinance.com/api/agents', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data && data.success && data.agents) {
+        setMyAgents(filterAgentsForManager(data.agents, getLoggedInUser()));
+      }
+    } catch (e) {
+      // silent fail
+    }
+  };
 
   // Filter landmarks when district selection changes
   useEffect(() => {
@@ -90,6 +112,12 @@ const AciveInactive = () => {
   };
 
   const getTotalWeeks = (client) => {
+    const amt = Number(client.amount || 0);
+    const weekly = getWeeklyAmount(client);
+    // Standard ₹5000/₹6900 loan with ₹575/wk has at least 12 weeks
+    if (amt === 6900 || amt === 5000 || weekly === 575) {
+      return Math.max(12, Number(client.total_weeks || 12));
+    }
     if (client.total_weeks && Number(client.total_weeks) > 0) {
       return Number(client.total_weeks);
     }
@@ -107,9 +135,11 @@ const AciveInactive = () => {
   const is12WeekFullyCompleted = (client) => {
     const totalWeeks = getTotalWeeks(client);
     const weeksPaid = getPaidWeeks(client);
+    const pending = Number(client.pending || 0);
+    const isPaidStatus = client.status === 'paid';
 
-    // Inactive side ONLY shows clients who have actually completed all 12 weeks of payments
-    return weeksPaid >= totalWeeks;
+    // Inactive side ONLY shows clients who have completed all weeks AND have no pending amount
+    return (weeksPaid >= totalWeeks || isPaidStatus) && pending <= 0;
   };
 
   // Split clients into Active and Inactive categories

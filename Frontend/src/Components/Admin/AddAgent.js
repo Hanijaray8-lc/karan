@@ -131,7 +131,11 @@ const AgentManagement = () => {
     if (formData.password) formDataToSend.append('password', formData.password);
     formDataToSend.append('status', formData.status);
     formDataToSend.append('department', 'Field Agent');
-    formDataToSend.append('commission', '0');
+    if (!selectedAgent) {
+      formDataToSend.append('joinDate', new Date().toISOString());
+    } else if (selectedAgent.joinDate) {
+      formDataToSend.append('joinDate', selectedAgent.joinDate);
+    }
 
     if (formData.profilePhoto instanceof File) {
       formDataToSend.append('profilePhoto', formData.profilePhoto);
@@ -155,7 +159,47 @@ const AgentManagement = () => {
       });
 
       if (response.data) {
-        await fetchAgents();
+        // Instant UI update — build agent object from form values + server response
+        const serverAgent = response.data.agent || response.data;
+        const agentId = serverAgent._id || serverAgent.id || Date.now().toString();
+
+        if (selectedAgent) {
+          // Edit: replace agent in state with merged data
+          const updatedAgent = {
+            ...selectedAgent,
+            username: formData.username,
+            name: formData.name,
+            email: formData.email,
+            phone: formData.phone,
+            status: formData.status,
+            password: formData.password || selectedAgent.password,
+            ...(serverAgent._id ? serverAgent : {})
+          };
+          setAgents(prev => prev.map(a => a._id === selectedAgent._id ? updatedAgent : a));
+        } else {
+          // Add: build new agent from form fields so table renders correctly
+          const joinDate = new Date().toISOString();
+          const newAgent = {
+            _id: agentId,
+            username: formData.username,
+            name: formData.name,
+            email: formData.email,
+            phone: formData.phone,
+            status: formData.status,
+            password: formData.password,
+            joinDate: joinDate,
+            profilePhoto: serverAgent.profilePhoto || null,
+            ...(serverAgent._id ? serverAgent : {})
+          };
+          setAgents(prev => [newAgent, ...prev]);
+          setStats(prev => ({
+            ...prev,
+            totalAgents: prev.totalAgents + 1,
+            pendingAgents: formData.status === 'Pending' ? prev.pendingAgents + 1 : prev.pendingAgents,
+            activeAgents: formData.status === 'Active' ? prev.activeAgents + 1 : prev.activeAgents,
+            newThisMonth: prev.newThisMonth + 1
+          }));
+        }
         setIsModalOpen(false);
         resetForm();
         showPopup('success', selectedAgent ? 'Updated' : 'Created', `Agent ${formData.name || formData.username} ${selectedAgent ? 'updated' : 'created'} successfully!`);
@@ -168,7 +212,7 @@ const AgentManagement = () => {
 
   const handleResetPassword = async () => {
     if (!selectedAgent) return;
-    if (!window.confirm('Generate a temporary password for this agent?')) return;
+    showPopup('info', 'Confirm', 'Generating a temporary password for this agent...');
     try {
       setResetting(true);
       const token = localStorage.getItem('token');
@@ -184,7 +228,7 @@ const AgentManagement = () => {
       }
     } catch (error) {
       console.error('Reset password error:', error);
-      alert('Failed to generate temporary password');
+      showPopup('error', 'Error', 'Failed to generate temporary password');
     } finally {
       setResetting(false);
     }
@@ -195,12 +239,20 @@ const AgentManagement = () => {
 
     try {
       const token = localStorage.getItem('token');
+      const agentToDelete = agents.find(a => a._id === agentId);
       await axios.delete(`${API_URL}/agents/${agentId}`, {
         headers: {
           Authorization: `Bearer ${token}` // Added Token
         }
       });
-      await fetchAgents();
+      // Instant UI update — remove from local state immediately
+      setAgents(prev => prev.filter(a => a._id !== agentId));
+      setStats(prev => ({
+        ...prev,
+        totalAgents: Math.max(0, prev.totalAgents - 1),
+        activeAgents: agentToDelete?.status === 'Active' ? Math.max(0, prev.activeAgents - 1) : prev.activeAgents,
+        pendingAgents: agentToDelete?.status === 'Pending' ? Math.max(0, prev.pendingAgents - 1) : prev.pendingAgents
+      }));
       showPopup('success', 'Deleted', 'Agent deleted successfully!');
     } catch (error) {
       console.error('Delete error:', error);
@@ -218,8 +270,14 @@ const AgentManagement = () => {
       });
 
       if (response.data && response.data.success) {
+        // Instant UI update — change status in local state
+        setAgents(prev => prev.map(a => a._id === agentId ? { ...a, status: 'Active' } : a));
+        setStats(prev => ({
+          ...prev,
+          activeAgents: prev.activeAgents + 1,
+          pendingAgents: Math.max(0, prev.pendingAgents - 1)
+        }));
         showPopup('success', 'Approved', `Agent ${agentName} approved successfully!`);
-        await fetchAgents();
       }
     } catch (error) {
       console.error('Approve error:', error);
@@ -243,6 +301,8 @@ const AgentManagement = () => {
 
   const resetForm = () => {
     setSelectedAgent(null);
+    setTempPassword('');
+    setShowPassword(false);
     setFormData({
       username: '',
       name: '',

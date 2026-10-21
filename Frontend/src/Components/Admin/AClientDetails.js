@@ -500,12 +500,17 @@ const AClientDetails = () => {
 
   // Apply rolling weekly adjustment logic to schedule of weeks
   // (e.g. week 1 pays 600 -> week 2 due becomes 550; week 2 pays 550 -> week 3 returns to 575)
+  // Apply rolling weekly adjustment logic to schedule of weeks.
+  // Advance payment support: if client pays > base (575), excess credit carries
+  // forward as a pool and covers subsequent weeks (pending weeks show ₹0).
+  // If paid <= base, credit resets to 0 (no carry-over).
   const applyWeeklyAdjustment = (weeks, client) => {
     if (!weeks || weeks.length === 0) return [];
     const baseWeekly = (client?.weekly_amount && Number(client.weekly_amount) > 0)
       ? Number(client.weekly_amount)
       : FORCED_WEEKLY;
 
+    let remainingCredit = 0; // outstanding advance credit pool
     let runningDue = baseWeekly;
 
     return weeks.map(week => {
@@ -515,17 +520,40 @@ const AClientDetails = () => {
       if (w.status === 'paid') {
         if (w.isForeclosed) {
           w.displayAmount = w.dueAmount;
+          remainingCredit = 0;
         } else {
           const actualPaid = (w.paidAmount !== undefined && w.paidAmount > 0) ? w.paidAmount : w.dueAmount;
           w.paidAmount = actualPaid;
           w.displayAmount = actualPaid;
-          const diff = actualPaid - runningDue;
-          runningDue = Math.max(0, baseWeekly - diff);
+          if (actualPaid > baseWeekly) {
+            // Paid more than base → accumulate credit pool
+            const effectivePaid = actualPaid + remainingCredit;
+            remainingCredit = Math.max(0, effectivePaid - baseWeekly);
+          } else {
+            // Paid base or less → reset credit pool
+            remainingCredit = 0;
+          }
         }
       } else {
-        w.displayAmount = runningDue;
-        runningDue = baseWeekly;
+        // Pending week: consume credit pool
+        if (remainingCredit >= baseWeekly) {
+          // Advance covers this week fully → show ₹0 and mark as advance paid
+          remainingCredit -= baseWeekly;
+          w.displayAmount = 0;
+          w.dueAmount = 0;
+          w.status = 'advancePaid';
+        } else if (remainingCredit > 0) {
+          // Partial credit → reduce amount
+          w.displayAmount = baseWeekly - remainingCredit;
+          w.dueAmount = baseWeekly - remainingCredit;
+          remainingCredit = 0;
+        } else {
+          w.displayAmount = runningDue;
+          remainingCredit = 0;
+        }
       }
+      // Compute due for next week
+      runningDue = Math.max(0, baseWeekly - remainingCredit);
       return w;
     });
   };
@@ -1676,11 +1704,11 @@ const AClientDetails = () => {
                                   <td className="p-2">{payment.month || `Week ${index + 1}`}</td>
                                   <td className="p-2 text-center font-semibold">{formatCurrency(payment.displayAmount ?? payment.dueAmount)}</td>
                                   <td className="p-2 text-center">
-                                    <span className={`inline-block text-sm font-semibold px-2 py-0.5 rounded ${payment.status === 'paid'
+                                    <span className={`inline-block text-sm font-semibold px-2 py-0.5 rounded ${payment.status === 'paid' || payment.status === 'advancePaid'
                                       ? 'bg-green-100 text-green-800'
                                       : 'bg-red-100 text-red-800'
                                       }`}>
-                                      {payment.status === 'paid' ? '✅ Paid' : '⏳ Pending'}
+                                      {payment.status === 'paid' || payment.status === 'advancePaid' ? '✅ Paid' : '⏳ Pending'}
                                     </span>
                                   </td>
                                   <td className="p-2 text-center text-gray-600">

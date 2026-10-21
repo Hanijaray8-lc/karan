@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 
 import AgentNavbar from './AgentNavbar';  // ← adjust path if needed
+import { isRecordNewForUser } from '../utils/staffRecordFilter';
 
 export default function AgentDashboard() {
   const [recentPayments, setRecentPayments] = useState([]);
@@ -133,12 +134,15 @@ export default function AgentDashboard() {
         const enforceAgentFilter = (paymentsArray) => {
           if (!agentId && !agentName) return paymentsArray;
           return paymentsArray.filter(p => {
+            // Exclude old payments made before the agent joined
+            if (!isRecordNewForUser(p, user)) return false;
+
             // match by stored agent reference if available
             if (agentId) {
               const payAgentId = p.agent?._id || p.agent || '';
               if (payAgentId && String(payAgentId) === String(agentId)) return true;
             }
-            // fallback to collectedStaff string (older records)
+            // fallback to collectedStaff string
             if (agentName) {
               const collectedStaff = p.collectedStaff || '';
               if (collectedStaff === agentName) return true;
@@ -203,19 +207,13 @@ export default function AgentDashboard() {
           console.log('Agent ID:', agentId);
 
           // restrict clients list to those assigned to this agent, if agentId available
-          let agentClients = clientsList;
+          let agentClients = [];
           if (agentId) {
             agentClients = clientsList.filter(c => {
-              const cid = c.agent?._id || c.agent;
+              const cid = c.assigned_agent?._id || c.assigned_agent || c.agent?._id || c.agent;
               return cid && String(cid) === String(agentId);
             });
             console.log('Filtered agent clients:', agentClients.length);
-          }
-
-          // If no clients after agent filter, log and use all clients as fallback
-          if (agentClients.length === 0 && clientsList.length > 0 && agentId) {
-            console.warn('No clients matched agent ID, using all clients as fallback');
-            agentClients = clientsList;
           }
 
           // merge some of these client-based metrics into monthly stats as well

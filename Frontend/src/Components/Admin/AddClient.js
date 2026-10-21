@@ -149,6 +149,12 @@ export default function ClientManagement() {
 
   // Calculate total weeks between loan start and end date
   const calculateTotalWeeks = () => {
+    const amount = Number(parseFloat(formData.amount) || 0);
+    const pending = Number(parseFloat(formData.pending) || 0);
+
+    // Special rule: for ₹5000 (payable ₹6900) loans, fixed total weeks is 12
+    if (amount === 5000 || amount === 6900 || pending === 5000 || pending === 6900) return 12;
+
     if (!formData.loan_start_date || !formData.loan_end_date) return 0;
 
     // Use UTC dates to avoid timezone offset issues when parsing date-only strings

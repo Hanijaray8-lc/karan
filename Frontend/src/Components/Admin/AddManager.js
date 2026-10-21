@@ -271,8 +271,9 @@ export default function AddManager() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.message || 'Failed to approve manager');
 
+      // Instant UI update — change status in local state
+      setManagers(prev => prev.map(m => m._id === managerId ? { ...m, status: 'Active' } : m));
       showPopup('success', 'Approved', `Manager ${managerName} approved successfully!`);
-      await fetchManagers();
       if (showViewModal) setShowViewModal(false);
     } catch (err) {
       console.error('Error approving manager:', err);
@@ -310,6 +311,9 @@ export default function AddManager() {
   };
 
   const resetForm = () => {
+    setCurrentManager(null);
+    setTempPassword('');
+    setFaceScanError('');
     setFormData({
       username: '',
       name: '',
@@ -353,6 +357,7 @@ export default function AddManager() {
         phone: formData.phone,
         password: formData.password,
         status: formData.status,
+        joinDate: new Date().toISOString(),
         faceDescriptor: formData.faceDescriptor || [],
         facePhoto: formData.facePhoto || ''
       };
@@ -370,9 +375,12 @@ export default function AddManager() {
 
       if (!res.ok) throw new Error(data.message || 'Failed to add manager');
 
+      // Instant UI update — prepend new manager from server response
+      const newManager = (data.manager) ? data.manager : { ...managerData, _id: data._id || Date.now().toString() };
+      setManagers(prev => [newManager, ...prev]);
+
       setShowAddModal(false);
       resetForm();
-      await fetchManagers();
       showPopup('success', 'Added', `Manager ${managerData.name || managerData.username} added successfully`);
 
     } catch (err) {
@@ -426,14 +434,17 @@ export default function AddManager() {
 
       if (!res.ok) throw new Error(data.message || 'Failed to update manager');
 
+      // Instant UI update — replace manager in local state
+      const updatedManager = (data.manager) ? data.manager : { ...currentManager, ...managerData };
+      setManagers(prev => prev.map(m => m._id === currentManager._id ? updatedManager : m));
+
       setShowEditModal(false);
       resetForm();
-      await fetchManagers();
-      alert('Manager updated successfully!');
+      showPopup('success', 'Updated', `Manager ${managerData.name || managerData.username} updated successfully!`);
 
     } catch (err) {
       console.error('Error updating manager:', err);
-      alert('Could not update manager: ' + err.message);
+      showPopup('error', 'Error', 'Could not update manager: ' + err.message);
     } finally {
       setLoading(false);
     }
@@ -487,13 +498,14 @@ export default function AddManager() {
       if (res.status === 401) handleAuthError();
       if (!res.ok) throw new Error('Failed to delete manager');
 
+      // Instant UI update — remove manager from local state immediately
+      setManagers(prev => prev.filter(m => m._id !== currentManager._id));
       setShowDeleteModal(false);
-      await fetchManagers();
-      alert('Manager deleted successfully!');
+      showPopup('success', 'Deleted', 'Manager deleted successfully!');
 
     } catch (err) {
       console.error('Error deleting manager:', err);
-      alert('Could not delete manager: ' + err.message);
+      showPopup('error', 'Error', 'Could not delete manager: ' + err.message);
     } finally {
       setLoading(false);
     }

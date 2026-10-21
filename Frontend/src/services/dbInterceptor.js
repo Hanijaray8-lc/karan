@@ -314,5 +314,15 @@ installFetchInterceptor();
 installAxiosInterceptor();
 localSqliteDb.init().catch(console.error);
 
+/**
+ * Reset the revalidation throttle maps.
+ * Call this on login so the interceptor immediately goes to the network
+ * instead of serving stale cached data for the new user.
+ */
+export function resetRevalidationThrottle() {
+  revalidatingSet.clear();
+  lastRevalidationTime.clear();
+}
+
 export { installFetchInterceptor, installAxiosInterceptor };
 export default localSqliteDb;
