@@ -298,57 +298,22 @@ export const filterPaymentsForManager = (payments, myAgents, user, scopedClients
     // Join date filter: don't show records before manager joined
     if (!isRecordNewForUser(payment, currentUser)) return false;
 
-    // 1. Direct manager ID check on payment
-    const pManagerId = String(
-      payment.managerId ||
-      payment.manager_id ||
-      (payment.manager
-        ? (typeof payment.manager === 'object' ? (payment.manager._id || payment.manager.id) : payment.manager)
-        : null) ||
-      payment.addedByManager ||
-      ''
-    ).trim();
+    // Helper: check if payment date is on/after agent's assignment date to this manager
+    const isAfterAssignment = (matchedAgent) => {
+      if (!matchedAgent || !matchedAgent.managerAssignedAt) return true;
+      const assignedAt = new Date(matchedAgent.managerAssignedAt);
+      if (isNaN(assignedAt.getTime())) return true;
+      const payDate = new Date(
+        payment.paymentDate || payment.createdAt || payment.rawDate || 0
+      );
+      if (isNaN(payDate.getTime())) return true;
+      return payDate.getTime() >= assignedAt.getTime();
+    };
 
-    if (pManagerId) {
-      if (managerId && pManagerId === managerId) return true;
-      return false;
-    }
+    // Helper: check if the collecting agent on this payment is one of this manager's assigned agents
+    const checkAgentAssignment = () => {
+      if (!hasAgents) return false;
 
-    // 2. Client-based check (a payment belongs to the manager who added the client)
-    const pClientObj = (payment.client && typeof payment.client === 'object') ? payment.client : null;
-    const pClientId = String(
-      (pClientObj ? (pClientObj._id || pClientObj.id) : payment.client) ||
-      payment.clientId ||
-      ''
-    ).trim();
-    const pClientPhone = String(payment.clientPhone || (pClientObj ? pClientObj.phone : '') || '').trim();
-
-    // If client object carries managerId
-    if (pClientObj) {
-      const cMid = String(pClientObj.managerId || pClientObj.addedBy || pClientObj.manager || '').trim();
-      if (cMid) {
-        if (managerId && cMid === managerId) return true;
-        return false;
-      }
-    }
-
-    // If scoped clients list is provided
-    if (allowedClientIds && allowedClientIds.size > 0) {
-      if (pClientId && allowedClientIds.has(pClientId)) return true;
-      if (pClientPhone && allowedClientPhones && allowedClientPhones.has(pClientPhone)) return true;
-      if (pClientId) return false;
-    }
-
-    // 3. Direct collector check (manager collected it personally)
-    const collectorId = String(payment.collectedStaffId || (payment.staff ? payment.staff.id : '') || '').trim();
-    const collectorName = String(payment.collectedStaff || (payment.staff ? payment.staff.name : '') || '').trim().toLowerCase();
-    if (managerId && collectorId === managerId) return true;
-    // Use exact name match only — partial match (includes) can cause false positives
-    // e.g. 'manager1' matching payments collected by 'manager10'
-    if (managerName && collectorName && collectorName === managerName) return true;
-
-    // 4. Agent assignment check (payment collected by one of this manager's assigned agents)
-    if (hasAgents) {
       const payAgentId = String(
         (payment.agent
           ? (typeof payment.agent === 'object' ? (payment.agent._id || payment.agent.id) : payment.agent)
@@ -365,13 +330,73 @@ export const filterPaymentsForManager = (payments, myAgents, user, scopedClients
         ''
       ).trim().toLowerCase();
 
-      if (payAgentId && myAgentIds.has(payAgentId)) return true;
-      if (payAgentName && myAgentNames.has(payAgentName)) return true;
+      if (payAgentId && myAgentIds.has(payAgentId)) {
+        const matchedAgent = myAgents.find(a => String(a._id || a.id || '').trim() === payAgentId);
+        return isAfterAssignment(matchedAgent);
+      }
+      if (payAgentName && myAgentNames.has(payAgentName)) {
+        const matchedAgent = myAgents.find(a =>
+          (a.name || a.username || '').trim().toLowerCase() === payAgentName
+        );
+        return isAfterAssignment(matchedAgent);
+      }
       return false;
+    };
+
+    // 1. Direct manager ID check on payment
+    // NOTE: payment.managerId = client's manager (set by Payment pre-save hook),
+    // NOT necessarily the collecting agent's manager. So we ALSO check agent
+    // assignment before blocking, so assigned-agent payments are never missed.
+    const pManagerId = String(
+      payment.managerId ||
+      payment.manager_id ||
+      (payment.manager
+        ? (typeof payment.manager === 'object' ? (payment.manager._id || payment.manager.id) : payment.manager)
+        : null) ||
+      payment.addedByManager ||
+      ''
+    ).trim();
+
+    if (pManagerId) {
+      if (managerId && pManagerId === managerId) return true;
+      // Client belongs to another manager — still show if OUR assigned agent collected it
+      return checkAgentAssignment();
     }
 
-    // No matching rule found — do NOT include this payment for this manager
-    return false;
+    // 2. Client-based check (a payment belongs to the manager who added the client)
+    const pClientObj = (payment.client && typeof payment.client === 'object') ? payment.client : null;
+    const pClientId = String(
+      (pClientObj ? (pClientObj._id || pClientObj.id) : payment.client) ||
+      payment.clientId ||
+      ''
+    ).trim();
+    const pClientPhone = String(payment.clientPhone || (pClientObj ? pClientObj.phone : '') || '').trim();
+
+    // If client object carries managerId
+    if (pClientObj) {
+      const cMid = String(pClientObj.managerId || pClientObj.addedBy || pClientObj.manager || '').trim();
+      if (cMid) {
+        if (managerId && cMid === managerId) return true;
+        // Client under another manager — still show if OUR assigned agent collected it
+        return checkAgentAssignment();
+      }
+    }
+
+    // If scoped clients list is provided
+    if (allowedClientIds && allowedClientIds.size > 0) {
+      if (pClientId && allowedClientIds.has(pClientId)) return true;
+      if (pClientPhone && allowedClientPhones && allowedClientPhones.has(pClientPhone)) return true;
+      if (pClientId) return checkAgentAssignment(); // fallback to agent check
+    }
+
+    // 3. Direct collector check (manager collected it personally)
+    const collectorId = String(payment.collectedStaffId || (payment.staff ? payment.staff.id : '') || '').trim();
+    const collectorName = String(payment.collectedStaff || (payment.staff ? payment.staff.name : '') || '').trim().toLowerCase();
+    if (managerId && collectorId === managerId) return true;
+    if (managerName && collectorName && collectorName === managerName) return true;
+
+    // 4. Agent assignment check
+    return checkAgentAssignment();
   });
 };
 

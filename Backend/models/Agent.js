@@ -28,6 +28,7 @@ const agentSchema = new mongoose.Schema({
   approvedByRole: { type: String },
   managerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Manager' },
   manager: { type: mongoose.Schema.Types.ObjectId, ref: 'Manager' },
+  managerAssignedAt: { type: Date, default: null }, // When agent was assigned to current manager
   profilePhoto: { type: String },
   addedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
   joinDate: { type: Date, default: Date.now }

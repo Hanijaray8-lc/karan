@@ -4,7 +4,7 @@
 import localSqliteDb from './localSqliteDb';
 import { resetRevalidationThrottle } from './dbInterceptor';
 
-const API_BASE = 'https://karanfinance.com/api';
+const API_BASE = 'http://localhost:5000/api';
 
 /**
  * Pre-warm the local SQLite database in the background when the app starts or after login

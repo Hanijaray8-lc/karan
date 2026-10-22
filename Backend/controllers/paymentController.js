@@ -472,7 +472,7 @@ const getPaymentHistory = async (req, res) => {
     }
 
     let payments = await Payment.find(query)
-      .populate('client', 'name phone district landmark')
+      .populate('client', 'name phone district landmark loan_start_date loan_end_date amount')
       .populate('agent', 'name username email') // Populate agent details (collected by)
       .sort({ paymentDate: -1, createdAt: -1, _id: -1 });
 
@@ -586,7 +586,7 @@ const getDashboardStats = async (req, res) => {
 const getAllPayments = async (req, res) => {
   try {
     let payments = await Payment.find()
-      .populate('client', 'name phone district landmark')
+      .populate('client', 'name phone district landmark loan_start_date loan_end_date amount')
       .populate('agent', 'name username')
       .sort({ paymentDate: -1, createdAt: -1, _id: -1 });
 

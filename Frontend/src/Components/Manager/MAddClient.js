@@ -101,15 +101,19 @@ export default function MClientManagement() {
   const fetchAgents = async () => {
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch('https://karanfinance.com/api/agents', {
+      const res = await fetch('http://localhost:5000/api/agents', {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (res.status === 401) { handleAuthError(); return []; }
       const data = await res.json();
-      if (data && data.success) {
-        const scopedAgents = filterAgentsForManager(data.agents || [], getLoggedInUser());
-        setAgents(scopedAgents);
-        return scopedAgents; // return fresh list for immediate use
+      const rawAgents = (data && (data.agents || data.data?.agents)) || [];
+      if (rawAgents.length > 0) {
+        const scopedAgents = filterAgentsForManager(rawAgents, getLoggedInUser());
+        // Always show ALL agents in the dropdown so the manager can assign any agent.
+        // Scoped list is only used as the return value for client-filtering logic.
+        setAgents(rawAgents);
+        // Return the scoped list for client-filtering logic (keeps other filters intact)
+        return scopedAgents.length > 0 ? scopedAgents : rawAgents;
       }
     } catch (err) {
       console.error('Error fetching agents:', err);
@@ -212,7 +216,7 @@ export default function MClientManagement() {
     try {
       setLoading(true);
       const token = localStorage.getItem('token');
-      const res = await fetch('https://karanfinance.com/api/clients', {
+      const res = await fetch('http://localhost:5000/api/clients', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
@@ -291,7 +295,7 @@ export default function MClientManagement() {
       formattedData.total_weeks = calculateTotalWeeks();
       formattedData.weekly_amount = calculateWeeklyAmount();
 
-      const res = await fetch('https://karanfinance.com/api/clients', {
+      const res = await fetch('http://localhost:5000/api/clients', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -436,7 +440,7 @@ export default function MClientManagement() {
       updatedData.total_weeks = calculateTotalWeeks();
       updatedData.weekly_amount = calculateWeeklyAmount();
 
-      const res = await fetch(`https://karanfinance.com/api/clients/${currentClient._id}`, {
+      const res = await fetch(`http://localhost:5000/api/clients/${currentClient._id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -470,7 +474,7 @@ export default function MClientManagement() {
   const handleDeleteClient = async () => {
     if (!currentClient?._id) return;
     try {
-      const res = await fetch(`https://karanfinance.com/api/clients/${currentClient._id}`, {
+      const res = await fetch(`http://localhost:5000/api/clients/${currentClient._id}`, {
         method: 'DELETE',
         headers: {
           Authorization: `Bearer ${localStorage.getItem('token')}`,

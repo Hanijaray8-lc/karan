@@ -112,7 +112,7 @@ const MPendingClients = () => {
         throw new Error('Authentication token not found. Please log in again.');
       }
 
-      const response = await fetch('https://karanfinance.com/api/payments/process', {
+      const response = await fetch('http://localhost:5000/api/payments/process', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -203,7 +203,7 @@ const MPendingClients = () => {
     try {
       const token = localStorage.getItem('token');
       if (!token) return;
-      const res = await fetch('https://karanfinance.com/api/agents', {
+      const res = await fetch('http://localhost:5000/api/agents', {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (!res.ok) return;
@@ -220,7 +220,7 @@ const MPendingClients = () => {
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch('https://karanfinance.com/api/clients/all', {
+      const res = await fetch('http://localhost:5000/api/clients/all', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
@@ -233,7 +233,7 @@ const MPendingClients = () => {
         // Fetch payments to map them for dynamic due calculation
         try {
           const payToken = localStorage.getItem('token');
-          const payRes = await fetch('https://karanfinance.com/api/payments/history', {
+          const payRes = await fetch('http://localhost:5000/api/payments/history', {
             headers: { 'Content-Type': 'application/json', ...(payToken ? { Authorization: `Bearer ${payToken}` } : {}) }
           });
           const payJson = payRes.ok ? await payRes.json() : null;

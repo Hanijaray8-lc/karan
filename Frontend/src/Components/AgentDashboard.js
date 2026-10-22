@@ -35,22 +35,42 @@ export default function AgentDashboard() {
     assignedTotalPending: 0,
   });
 
-  // Helper: compute weekly amount for a client (use stored weekly_amount if present)
+  // Helper: compute weekly amount using the ORIGINAL loan total (not pending)
+  // Using pending causes wrong values when advance payments reduce it early.
   const computeWeeklyAmount = (client) => {
     if (!client) return 0;
+    // Prefer stored weekly_amount from server
     if (client.weekly_amount && Number(client.weekly_amount) > 0) return Number(client.weekly_amount);
+    if (!client.loan_start_date) return 0;
+
+    // Use total loan amount (received + pending) as the basis so advance
+    // payments don't distort the per-week figure.
+    const received = Number(client.received || 0);
+    const pending = Number(client.pending || 0);
+    const loanTotal = received + pending; // original repayable amount
+
+    if (loanTotal <= 0) return 575; // fallback
+
+    // For ₹5000 (payable ₹6900) loans, default to 575
+    if (Number(client.amount) === 5000 || Number(client.amount) === 6900 || loanTotal === 6900) return 575;
+
     const amt = Number(client.amount || 0);
-    const derived = Math.round((amt / 12) || 0);
-    return derived > 0 ? derived : 575; // fallback to 575 if nothing else
+    const derived = Math.round((loanTotal / 12) || 0);
+    return derived > 0 ? derived : 575;
   };
 
-  // Helper: check if client is due on a specific date (matches DailyDues logic)
+  // Helper: check if client is due on a specific date AND has NOT already pre-paid
+  // that week via an advance payment.
+  // Logic: find which week-index the target date falls on, then check if
+  // client.received >= (weekIndex+1) * weeklyAmount. If yes, the client already
+  // paid ahead and is NOT due on that date.
   const isClientDueOnDate = (client, dateObj) => {
     if (!client || !client.loan_start_date) return false;
     // If no pending amount, client is not due
     if (Number(client.pending) <= 0) return false;
 
     const start = new Date(client.loan_start_date);
+    start.setHours(0, 0, 0, 0);
     const defaultWeeks = 12;
     const end = client.loan_end_date
       ? new Date(client.loan_end_date)
@@ -59,14 +79,36 @@ export default function AgentDashboard() {
     const target = new Date(dateObj);
     target.setHours(0, 0, 0, 0);
 
+    // Find if today is a scheduled due date and which week-index it is
     let due = new Date(start);
     due.setHours(0, 0, 0, 0);
-
+    let weekIndex = 0;
+    let foundDueWeek = -1;
     while (due <= end) {
-      if (due.getTime() === target.getTime()) return true;
+      if (due.getTime() === target.getTime()) {
+        foundDueWeek = weekIndex;
+        break;
+      }
       due.setDate(due.getDate() + 7);
+      weekIndex++;
     }
-    return false;
+
+    // Today is not a scheduled due date at all
+    if (foundDueWeek === -1) return false;
+
+    // Check advance payment: compare received vs what should have been received
+    // up to and including this week
+    const weeklyAmount = computeWeeklyAmount(client);
+    if (weeklyAmount <= 0) return true; // can't determine, assume due
+
+    const weeksExpected = foundDueWeek + 1;
+    const amountExpected = weeksExpected * weeklyAmount;
+    const received = Number(client.received || 0);
+
+    // If received >= amount expected up to this week, client already paid ahead
+    if (received >= amountExpected) return false;
+
+    return true;
   };
 
   useEffect(() => {
@@ -127,7 +169,7 @@ export default function AgentDashboard() {
 
         // Request recent payments; backend uses req.user to scope results to the
         // current agent, so no additional query parameter is needed.
-        const url = `https://karanfinance.com/api/payments/history?limit=6`;
+        const url = `http://localhost:5000/api/payments/history?limit=6`;
         const res = await fetch(url, { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` } });
 
         // helper that enforces agent filter regardless of server response
@@ -153,7 +195,7 @@ export default function AgentDashboard() {
 
         if (!res.ok) {
           // fallback to test endpoint
-          const fallback = await fetch('https://karanfinance.com/api/payments/test/all');
+          const fallback = await fetch('http://localhost:5000/api/payments/test/all');
           if (!fallback.ok) throw new Error('Failed to fetch payments');
           const fbData = await fallback.json();
           const payments = (fbData.data && fbData.data.payments) || fbData.data || [];
@@ -185,7 +227,7 @@ export default function AgentDashboard() {
         // Now fetch clients (agent view) to compute today's pending based on schedule
         try {
           const token = localStorage.getItem('token');
-          const clientsRes = await fetch('https://karanfinance.com/api/clients/all', {
+          const clientsRes = await fetch('http://localhost:5000/api/clients/all', {
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
           });
 

@@ -58,6 +58,247 @@ const getClientScheduledDueDates = (client) => {
   return dueDates;
 };
 
+// Helper to extract advance payment target week IDs and computed due dates
+const getAdvanceTargetDetails = (p, client) => {
+  if (!p) return null;
+  const notes = (p.notes || '').trim();
+  const isAdv = /advance/i.test(notes) || p.isAdvance === true;
+  if (!isAdv) return null;
+
+  let targetWeekIds = [];
+  const bracketMatch = notes.match(/\[weeks:([0-9,\s]+)\]/i);
+  if (bracketMatch && bracketMatch[1]) {
+    targetWeekIds = bracketMatch[1].split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+  } else {
+    const dueDatesMatch = notes.match(/\[dueDates:([0-9\-,]+)\]/i);
+    if (dueDatesMatch && dueDatesMatch[1] && client) {
+      const scheduledDates = getClientScheduledDueDates(client);
+      const dates = dueDatesMatch[1].split(',').map(d => toLocalDateStr(d.trim())).filter(Boolean);
+      dates.forEach(d => {
+        const idx = scheduledDates.indexOf(d);
+        if (idx !== -1) targetWeekIds.push(idx + 1);
+      });
+    } else {
+      const weekMatches = [...notes.matchAll(/week\s*([0-9]+)/gi)];
+      if (weekMatches.length > 0) {
+        targetWeekIds = weekMatches.map(m => parseInt(m[1], 10)).filter(n => !isNaN(n));
+      }
+    }
+  }
+
+  if (targetWeekIds.length === 0) return null;
+
+  let targetDueDates = [];
+  const dueDatesMatch = notes.match(/\[dueDates:([0-9\-,]+)\]/i);
+  if (dueDatesMatch && dueDatesMatch[1]) {
+    targetDueDates = dueDatesMatch[1].split(',').map(d => toLocalDateStr(d.trim())).filter(Boolean);
+  }
+  if (targetDueDates.length === 0 && client) {
+    const scheduledDates = getClientScheduledDueDates(client);
+    targetDueDates = targetWeekIds
+      .map(wId => scheduledDates[wId - 1])
+      .filter(Boolean);
+  }
+
+  return { targetWeekIds, targetDueDates };
+};
+
+// Build accurate week-by-week schedule and payment status for client
+const getClientWeekSchedule = (client) => {
+  if (!client) return [];
+  const scheduledDates = getClientScheduledDueDates(client);
+  if (!scheduledDates || scheduledDates.length === 0) return [];
+
+  const weeklyInstallment = (client.weekly_amount && Number(client.weekly_amount) > 0)
+    ? Number(client.weekly_amount)
+    : (client.weekly_amount_value || 575);
+
+  const pendingCap = Number(client.pending ?? ((client.amount || 6900) - (client.received || 0)));
+  const isFullyPaid = client.status === 'paid' && pendingCap <= 0;
+
+  const schedule = scheduledDates.map((dateStr, idx) => ({
+    weekIndex: idx + 1,
+    dueDate: dateStr,
+    dueAmount: isFullyPaid ? 0 : weeklyInstallment,
+    paidAmount: isFullyPaid ? weeklyInstallment : 0,
+    status: isFullyPaid ? 'paid' : 'pending',
+    isAdvance: false,
+    payments: []
+  }));
+
+  if (isFullyPaid) return schedule;
+
+  const seen = new Set();
+  const uniquePayments = [];
+  (client.payments || []).forEach(p => {
+    const pId = p._id || p.id;
+    if (pId) {
+      if (!seen.has(String(pId))) {
+        seen.add(String(pId));
+        uniquePayments.push(p);
+      }
+    } else {
+      uniquePayments.push(p);
+    }
+  });
+
+  uniquePayments.sort((a, b) => {
+    const da = new Date(a.paymentDate || a.createdAt || a.date || 0);
+    const db = new Date(b.paymentDate || b.createdAt || b.date || 0);
+    return da - db;
+  });
+
+  const usedPaymentIds = new Set();
+  const isUsed = (p) => {
+    const pId = p._id || p.id;
+    if (pId && usedPaymentIds.has(String(pId))) return true;
+    const pDate = p.paymentDate || p.createdAt || p.date;
+    if (pDate && usedPaymentIds.has(String(pDate))) return true;
+    return false;
+  };
+  const markUsed = (p) => {
+    const pId = p._id || p.id;
+    if (pId) usedPaymentIds.add(String(pId));
+    const pDate = p.paymentDate || p.createdAt || p.date;
+    if (pDate) usedPaymentIds.add(String(pDate));
+  };
+
+  // Pass 0: Advance payments targeting specific week(s) or explicit due dates
+  uniquePayments.forEach(p => {
+    const adv = getAdvanceTargetDetails(p, client);
+    if (adv && adv.targetWeekIds.length > 0) {
+      markUsed(p);
+      const pAmt = Number(p.amount || 0);
+      const perWeekAmt = (pAmt > 0 && adv.targetWeekIds.length > 0) ? (pAmt / adv.targetWeekIds.length) : weeklyInstallment;
+      adv.targetWeekIds.forEach(targetId => {
+        const weekObj = schedule.find(w => w.weekIndex === targetId);
+        if (weekObj) {
+          weekObj.status = 'paid';
+          weekObj.paidAmount = perWeekAmt || weeklyInstallment;
+          weekObj.dueAmount = 0;
+          weekObj.isAdvance = true;
+          weekObj.payments.push(p);
+        }
+      });
+    }
+  });
+
+  // Pass 1: Foreclosure payment check
+  const isForeclosurePayment = uniquePayments.some(p => {
+    const method = (p.paymentMethod || '').toLowerCase();
+    const notes = (p.notes || '').toLowerCase();
+    return method === 'foreclosure' || notes.includes('foreclose');
+  });
+  if (isForeclosurePayment) {
+    schedule.forEach(w => {
+      w.status = 'paid';
+      w.dueAmount = 0;
+      if (!w.paidAmount) w.paidAmount = weeklyInstallment;
+    });
+    return schedule;
+  }
+
+  // Pass 2: Regular payments matching exact scheduled dueDate
+  uniquePayments.forEach(p => {
+    if (isUsed(p)) return;
+    const notes = (p.notes || '').trim();
+    if (/advance/i.test(notes) || p.isAdvance === true) return;
+
+    const pDate = p.paymentDate ? toLocalDateStr(p.paymentDate) : null;
+    if (!pDate) return;
+
+    const weekObj = schedule.find(w => w.dueDate === pDate && w.status !== 'paid');
+    if (weekObj) {
+      const amt = Number(p.amount || 0);
+      weekObj.paidAmount += amt;
+      if (weekObj.paidAmount >= weeklyInstallment) {
+        weekObj.status = 'paid';
+        weekObj.dueAmount = 0;
+      } else {
+        weekObj.dueAmount = Math.max(0, weeklyInstallment - weekObj.paidAmount);
+      }
+      weekObj.payments.push(p);
+      markUsed(p);
+    }
+  });
+
+  // Pass 3: Regular payments matching week interval based on loan_start_date
+  const start = parseLocalDate(client.loan_start_date);
+  uniquePayments.forEach(p => {
+    if (isUsed(p)) return;
+    const notes = (p.notes || '').trim();
+    if (/advance/i.test(notes) || p.isAdvance === true) return;
+
+    const pDate = p.paymentDate ? parseLocalDate(p.paymentDate) : null;
+    if (!pDate || !start || pDate < start) return;
+
+    const diffDays = Math.round((pDate.getTime() - start.getTime()) / (24 * 60 * 60 * 1000));
+    const targetIdx = Math.floor(diffDays / 7) + 1;
+
+    const weekObj = schedule.find(w => w.weekIndex === targetIdx && w.status !== 'paid');
+    if (weekObj) {
+      const amt = Number(p.amount || 0);
+      weekObj.paidAmount += amt;
+      if (weekObj.paidAmount >= weeklyInstallment) {
+        weekObj.status = 'paid';
+        weekObj.dueAmount = 0;
+      } else {
+        weekObj.dueAmount = Math.max(0, weeklyInstallment - weekObj.paidAmount);
+      }
+      weekObj.payments.push(p);
+      markUsed(p);
+    }
+  });
+
+  // Pass 4: Unassigned payments (untargeted advance or excess) fill unpaid weeks in order
+  uniquePayments.forEach(p => {
+    if (isUsed(p)) return;
+    let amt = Number(p.amount || 0);
+    if (amt <= 0) return;
+    markUsed(p);
+
+    for (const weekObj of schedule) {
+      if (amt <= 0) break;
+      if (weekObj.status !== 'paid') {
+        const needed = weekObj.dueAmount > 0 ? weekObj.dueAmount : weeklyInstallment;
+        if (amt >= needed) {
+          weekObj.paidAmount += needed;
+          weekObj.status = 'paid';
+          weekObj.dueAmount = 0;
+          weekObj.payments.push(p);
+          amt -= needed;
+        } else {
+          weekObj.paidAmount += amt;
+          weekObj.dueAmount = Math.max(0, needed - amt);
+          weekObj.payments.push(p);
+          amt = 0;
+        }
+      }
+    }
+  });
+
+  // Pass 5: Excess payments on non-advance weeks roll forward to subsequent unpaid weeks
+  let excessCredit = 0;
+  for (const weekObj of schedule) {
+    if (weekObj.status === 'paid' && !weekObj.isAdvance && weekObj.paidAmount > weeklyInstallment) {
+      excessCredit += (weekObj.paidAmount - weeklyInstallment);
+    } else if (weekObj.status !== 'paid' && excessCredit > 0) {
+      if (excessCredit >= weekObj.dueAmount) {
+        excessCredit -= weekObj.dueAmount;
+        weekObj.paidAmount += weekObj.dueAmount;
+        weekObj.status = 'paid';
+        weekObj.dueAmount = 0;
+      } else {
+        weekObj.paidAmount += excessCredit;
+        weekObj.dueAmount = Math.max(0, weekObj.dueAmount - excessCredit);
+        excessCredit = 0;
+      }
+    }
+  }
+
+  return schedule;
+};
+
 // Robust native PDF saver with multiple fallbacks and mkdir attempt
 const savePdfBase64 = async (fileName, base64) => {
   const candidates = [Directory.Documents, Directory.Downloads, Directory.External];
@@ -232,7 +473,7 @@ const MDailyDues = () => {
     try {
       const token = localStorage.getItem('token');
       if (!token) return;
-      const res = await fetch('https://karanfinance.com/api/agents', {
+      const res = await fetch('http://localhost:5000/api/agents', {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (!res.ok) return;
@@ -318,54 +559,12 @@ const MDailyDues = () => {
     };
 
     const handleClientPaid = (event) => {
-      const { clientId, amount = 575 } = event.detail;
-      const todayISO = toLocalDateStr(new Date());
-      const newPayment = {
-        amount,
-        paymentDate: new Date().toISOString(),
-        collectedByRole: JSON.parse(localStorage.getItem('user') || '{}')?.role || 'manager'
-      };
-      setClients(prevClients =>
-        prevClients.map(client => {
-          if (client._id !== clientId) return client;
-          const updatedPayments = [...(client.payments || []), newPayment];
-          const updated = {
-            ...client,
-            paid: true,
-            received: (client.received || 0) + amount,
-            pending: (client.pending || 0) - amount,
-            payments: updatedPayments
-          };
-          if (updated.paidDates instanceof Set) {
-            updated.paidDates = new Set([...updated.paidDates, todayISO]);
-          } else if (Array.isArray(updated.paidDates)) {
-            updated.paidDates = [...updated.paidDates, todayISO];
-          } else {
-            updated.paidDates = new Set([todayISO]);
-          }
-          return updated;
-        })
-      );
-      setPaidTodayMap(prev => ({ ...prev, [clientId]: true }));
-      setSelectedClient(prev => {
-        if (!prev || prev._id !== clientId) return prev;
-        const updatedPayments = [...(prev.payments || []), newPayment];
-        const updated = {
-          ...prev,
-          paid: true,
-          received: (prev.received || 0) + amount,
-          pending: (prev.pending || 0) - amount,
-          payments: updatedPayments
-        };
-        if (updated.paidDates instanceof Set) {
-          updated.paidDates = new Set([...updated.paidDates, todayISO]);
-        } else if (Array.isArray(updated.paidDates)) {
-          updated.paidDates = [...updated.paidDates, todayISO];
-        } else {
-          updated.paidDates = new Set([todayISO]);
-        }
-        return updated;
-      });
+      const { clientId, isAdvance } = event.detail || {};
+      if (!clientId) return;
+      if (!isAdvance) {
+        setPaidTodayMap(prev => ({ ...prev, [clientId]: true }));
+      }
+      fetchClientsWithoutLoading();
     };
 
     const handleClientPushed = (event) => {
@@ -395,7 +594,7 @@ const MDailyDues = () => {
   const fetchClientsWithoutLoading = async () => {
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch('https://karanfinance.com/api/clients/all', {
+      const res = await fetch('http://localhost:5000/api/clients/all', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
@@ -428,7 +627,7 @@ const MDailyDues = () => {
         // Attach paid status by checking payment records
         try {
           const payToken = localStorage.getItem('token');
-          const payRes = await fetch('https://karanfinance.com/api/payments/history', {
+          const payRes = await fetch('http://localhost:5000/api/payments/history', {
             headers: { 'Content-Type': 'application/json', ...(payToken ? { Authorization: `Bearer ${payToken}` } : {}) }
           });
           const payJson = payRes.ok ? await payRes.json() : null;
@@ -460,21 +659,39 @@ const MDailyDues = () => {
                 ? String(p.client.id)
                 : (p.client ? String(p.client) : (p.clientId ? String(p.clientId) : (p.client_id ? String(p.client_id) : null))));
             const pDate = p.paymentDate ? toLocalDateStr(p.paymentDate) : null;
-            if (clientId && pDate) {
-              if (!paidDatesMap[clientId]) paidDatesMap[clientId] = new Set();
-              paidDatesMap[clientId].add(pDate);
-            }
 
             if (clientId) {
               if (!paymentsByClient[clientId]) paymentsByClient[clientId] = [];
               paymentsByClient[clientId].push(p);
-            }
 
-            if (clientId && pDate === todayISO) {
-              const role = p.collectedByRole || (p.collectedStaff || '').toString().match(/\((agent|manager|admin)\)$/)?.[1];
-              if (role) {
-                if (!collectorsMap[clientId]) collectorsMap[clientId] = new Set();
-                collectorsMap[clientId].add(role);
+              if (!paidDatesMap[clientId]) paidDatesMap[clientId] = new Set();
+
+              const clientObj = transformedClients.find(c => {
+                const cid = c._id ? String(c._id) : (c.clientId ? String(c.clientId) : (c.id ? String(c.id) : null));
+                return cid === clientId;
+              });
+
+              const advDetails = getAdvanceTargetDetails(p, clientObj);
+              if (advDetails && advDetails.targetDueDates.length > 0) {
+                advDetails.targetDueDates.forEach(d => paidDatesMap[clientId].add(d));
+                if (advDetails.targetDueDates.includes(todayISO)) {
+                  const role = p.collectedByRole || (p.collectedStaff || '').toString().match(/\((agent|manager|admin)\)$/)?.[1];
+                  if (role) {
+                    if (!collectorsMap[clientId]) collectorsMap[clientId] = new Set();
+                    collectorsMap[clientId].add(role);
+                  }
+                }
+              } else {
+                if (pDate) {
+                  paidDatesMap[clientId].add(pDate);
+                }
+                if (pDate === todayISO) {
+                  const role = p.collectedByRole || (p.collectedStaff || '').toString().match(/\((agent|manager|admin)\)$/)?.[1];
+                  if (role) {
+                    if (!collectorsMap[clientId]) collectorsMap[clientId] = new Set();
+                    collectorsMap[clientId].add(role);
+                  }
+                }
               }
             }
           });
@@ -561,7 +778,7 @@ const MDailyDues = () => {
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch('https://karanfinance.com/api/clients/all', {
+      const res = await fetch('http://localhost:5000/api/clients/all', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
@@ -602,7 +819,7 @@ const MDailyDues = () => {
 
         try {
           const payToken2 = localStorage.getItem('token');
-          const payRes = await fetch('https://karanfinance.com/api/payments/history', {
+          const payRes = await fetch('http://localhost:5000/api/payments/history', {
             headers: { 'Content-Type': 'application/json', ...(payToken2 ? { Authorization: `Bearer ${payToken2}` } : {}) }
           });
           const payJson = payRes.ok ? await payRes.json() : null;
@@ -632,21 +849,39 @@ const MDailyDues = () => {
                 ? String(p.client.id)
                 : (p.client ? String(p.client) : (p.clientId ? String(p.clientId) : (p.client_id ? String(p.client_id) : null))));
             const pDate = p.paymentDate ? toLocalDateStr(p.paymentDate) : null;
-            if (clientId && pDate) {
-              if (!paidDatesMap[clientId]) paidDatesMap[clientId] = new Set();
-              paidDatesMap[clientId].add(pDate);
-            }
 
             if (clientId) {
               if (!paymentsByClient[clientId]) paymentsByClient[clientId] = [];
               paymentsByClient[clientId].push(p);
-            }
 
-            if (clientId && pDate === todayISO) {
-              const role = p.collectedByRole || (p.collectedStaff || '').toString().match(/\((agent|manager|admin)\)$/)?.[1];
-              if (role) {
-                if (!collectorsMap[clientId]) collectorsMap[clientId] = new Set();
-                collectorsMap[clientId].add(role);
+              if (!paidDatesMap[clientId]) paidDatesMap[clientId] = new Set();
+
+              const clientObj = transformedClients.find(c => {
+                const cid = c._id ? String(c._id) : (c.clientId ? String(c.clientId) : (c.id ? String(c.id) : null));
+                return cid === clientId;
+              });
+
+              const advDetails = getAdvanceTargetDetails(p, clientObj);
+              if (advDetails && advDetails.targetDueDates.length > 0) {
+                advDetails.targetDueDates.forEach(d => paidDatesMap[clientId].add(d));
+                if (advDetails.targetDueDates.includes(todayISO)) {
+                  const role = p.collectedByRole || (p.collectedStaff || '').toString().match(/\((agent|manager|admin)\)$/)?.[1];
+                  if (role) {
+                    if (!collectorsMap[clientId]) collectorsMap[clientId] = new Set();
+                    collectorsMap[clientId].add(role);
+                  }
+                }
+              } else {
+                if (pDate) {
+                  paidDatesMap[clientId].add(pDate);
+                }
+                if (pDate === todayISO) {
+                  const role = p.collectedByRole || (p.collectedStaff || '').toString().match(/\((agent|manager|admin)\)$/)?.[1];
+                  if (role) {
+                    if (!collectorsMap[clientId]) collectorsMap[clientId] = new Set();
+                    collectorsMap[clientId].add(role);
+                  }
+                }
               }
             }
           });
@@ -809,6 +1044,20 @@ const MDailyDues = () => {
     const todayISO = toLocalDateStr(new Date());
     const id = client._id || client.clientId || client.id;
 
+    if (client.status === 'paid' && Number(client.pending) <= 0) return true;
+
+    // Use week schedule to precisely determine if target date's week is paid
+    const schedule = getClientWeekSchedule(client);
+    if (schedule && schedule.length > 0) {
+      const weekObj = schedule.find(w => w.dueDate === targetDate);
+      if (weekObj) {
+        if (weekObj.status === 'paid' || weekObj.dueAmount <= 0) return true;
+        if (targetDate === todayISO && id && paidTodayMap[id]) return true;
+        if (targetDate === todayISO && id && isLocalActionDoneToday(id, 'markedPaid')) return true;
+        return false;
+      }
+    }
+
     if (client.paidDates) {
       if (client.paidDates instanceof Set && client.paidDates.has(targetDate)) return true;
       if (Array.isArray(client.paidDates) && client.paidDates.includes(targetDate)) return true;
@@ -816,7 +1065,7 @@ const MDailyDues = () => {
 
     if (client.payments && Array.isArray(client.payments)) {
       const hasPaymentOnDate = client.payments.some(p => {
-        const pDate = p.paymentDate ? toLocalDateStr(new Date(p.paymentDate)) : null;
+        const pDate = p.paymentDate ? toLocalDateStr(p.paymentDate) : null;
         return pDate === targetDate;
       });
       if (hasPaymentOnDate) return true;
@@ -941,7 +1190,18 @@ const MDailyDues = () => {
   };
 
   const getPaidAmountOnDate = (client, dateStr) => {
-    if (!client || !client.payments) return 0;
+    if (!client) return 0;
+    const targetDate = dateStr || calendarDateFilter || toLocalDateStr(selectedDate);
+    const schedule = getClientWeekSchedule(client);
+    if (schedule && schedule.length > 0) {
+      const weekObj = schedule.find(w => w.dueDate === targetDate);
+      if (weekObj && (weekObj.status === 'paid' || weekObj.paidAmount > 0)) {
+        return weekObj.paidAmount;
+      }
+      if (weekObj) return 0;
+    }
+
+    if (!client.payments) return 0;
     const seenIds = new Set();
     const uniquePayments = [];
     client.payments.forEach(p => {
@@ -958,8 +1218,8 @@ const MDailyDues = () => {
 
     return uniquePayments
       .filter(p => {
-        const pDate = p.paymentDate ? toLocalDateStr(new Date(p.paymentDate)) : null;
-        return pDate === dateStr;
+        const pDate = p.paymentDate ? toLocalDateStr(p.paymentDate) : null;
+        return pDate === targetDate;
       })
       .reduce((sum, p) => sum + Number(p.amount || 0), 0);
   };
@@ -970,98 +1230,22 @@ const MDailyDues = () => {
     if (pendingCap <= 0) return 0;
 
     const DEFAULT_WEEKLY_DUE = 575;
-    const weeklyInstallment = DEFAULT_WEEKLY_DUE;
+    const weeklyInstallment = (client.weekly_amount && Number(client.weekly_amount) > 0)
+      ? Number(client.weekly_amount)
+      : DEFAULT_WEEKLY_DUE;
 
     const targetDateStr = dateParam || calendarDateFilter || toLocalDateStr(selectedDate);
+    if (!targetDateStr) return Math.min(pendingCap, weeklyInstallment);
 
-    if (!client.loan_start_date) {
-      return Math.min(pendingCap, weeklyInstallment);
-    }
-
-    const start = parseLocalDate(client.loan_start_date);
-    const target = parseLocalDate(targetDateStr);
-    if (!start || !target) return Math.min(pendingCap, weeklyInstallment);
-
-    // Determine target week index T (1-based)
-    let T = 1;
-    if (target > start) {
-      const diffDays = Math.round((target.getTime() - start.getTime()) / (24 * 60 * 60 * 1000));
-      T = Math.floor(diffDays / 7) + 1;
-    }
-
-    // Map payments by week index
-    const paymentsByWeek = {};
-    if (client.payments && Array.isArray(client.payments) && client.payments.length > 0) {
-      const seenIds = new Set();
-      const uniquePayments = [];
-      client.payments.forEach(p => {
-        const pId = p._id || p.id;
-        if (pId) {
-          if (!seenIds.has(pId)) {
-            seenIds.add(pId);
-            uniquePayments.push(p);
-          }
-        } else {
-          uniquePayments.push(p);
-        }
-      });
-
-      uniquePayments.forEach(p => {
-        if (!p.paymentDate) return;
-        const pDate = parseLocalDate(p.paymentDate);
-        if (!pDate) return;
-
-        // Ignore payments that occurred prior to current loan_start_date
-        if (pDate < start) return;
-
-        let weekIdx = 1;
-        if (pDate > start) {
-          const pDiffDays = Math.round((pDate.getTime() - start.getTime()) / (24 * 60 * 60 * 1000));
-          weekIdx = Math.floor(pDiffDays / 7) + 1;
-        }
-        paymentsByWeek[weekIdx] = (paymentsByWeek[weekIdx] || 0) + Number(p.amount || 0);
-      });
-    }
-
-    if (T <= 1) {
-      return Math.min(pendingCap, weeklyInstallment);
-    }
-
-    // Roll forward week by week using a remaining-credit pool.
-    // When a client pays more than base (575), the excess credit carries forward
-    // and covers subsequent weeks (advance payment support).
-    // If paid <= base, credit resets to 0 (no carry-over).
-    let remainingCredit = 0; // outstanding advance credit pool
-    let runningDue = weeklyInstallment; // due for week 1
-    for (let k = 1; k < T; k++) {
-      if (Object.prototype.hasOwnProperty.call(paymentsByWeek, k)) {
-        const paidThisWeek = paymentsByWeek[k];
-        if (paidThisWeek > weeklyInstallment) {
-          // Paid more than base → accumulate credit pool
-          const effectivePaid = paidThisWeek + remainingCredit;
-          remainingCredit = Math.max(0, effectivePaid - weeklyInstallment);
-        } else {
-          // Paid base or less → reset credit pool (no carry-over)
-          remainingCredit = 0;
-        }
-      } else {
-        // No payment this week — consume one week of credit if available
-        if (remainingCredit >= weeklyInstallment) {
-          remainingCredit -= weeklyInstallment; // advance covers this week
-        } else {
-          remainingCredit = 0; // credit exhausted
-        }
+    const schedule = getClientWeekSchedule(client);
+    if (schedule && schedule.length > 0) {
+      const weekObj = schedule.find(w => w.dueDate === targetDateStr);
+      if (weekObj) {
+        return Math.min(pendingCap, weekObj.dueAmount);
       }
-      // Compute what is due for the NEXT week (k+1)
-      runningDue = Math.max(0, weeklyInstallment - remainingCredit);
     }
-    const due = runningDue;
 
-    // If advance credit fully covers this week (due === 0), return 0 so the
-    // client does NOT appear in daily dues for advance-covered weeks.
-    if (due <= 0) return 0;
-
-    return Math.min(pendingCap, due);
+    return Math.min(pendingCap, weeklyInstallment);
   };
 
   // Handle client click
@@ -1113,7 +1297,7 @@ const MDailyDues = () => {
 
       const today = getTodayDateString();
       // Query for payments made today for this specific client
-      const res = await fetch(`https://karanfinance.com/api/payments/history?clientId=${clientId}&startDate=${today}&endDate=${today}`, {
+      const res = await fetch(`http://localhost:5000/api/payments/history?clientId=${clientId}&startDate=${today}&endDate=${today}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
@@ -1165,7 +1349,7 @@ const MDailyDues = () => {
       const targetDateStr = calendarDateFilter || toLocalDateStr(selectedDate);
       const payDateIso = targetDateStr ? `${targetDateStr}T12:00:00.000Z` : new Date().toISOString();
 
-      const res = await fetch('https://karanfinance.com/api/payments/process', {
+      const res = await fetch('http://localhost:5000/api/payments/process', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1293,7 +1477,7 @@ const MDailyDues = () => {
         return;
       }
 
-      const res = await fetch(`https://karanfinance.com/api/clients/${client._id}`, {
+      const res = await fetch(`http://localhost:5000/api/clients/${client._id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',

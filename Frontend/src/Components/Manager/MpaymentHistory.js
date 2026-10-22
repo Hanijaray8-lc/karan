@@ -76,7 +76,43 @@ const formatPaymentDateTime = (paymentDateStr, createdAtStr) => {
 };
 
 // Helper function to format payment date (due date) for display
-const formatPaymentDate = (paymentDateStr, createdAtStr) => {
+const formatPaymentDate = (paymentDateStr, createdAtStr, notes, client) => {
+  // If notes indicate advance payment targeting specific week(s) or explicit due dates
+  if (notes) {
+    // 1. Check for explicit dueDates tag: [dueDates:2026-10-28,2026-11-04]
+    const dueDatesMatch = notes.match(/\[dueDates:([0-9\-,]+)\]/i);
+    if (dueDatesMatch && dueDatesMatch[1]) {
+      const dates = dueDatesMatch[1].split(',').map(dStr => {
+        const match = dStr.trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (match) {
+          const [, y, m, d] = match;
+          return `${d.padStart(2, '0')}/${m.padStart(2, '0')}/${y}`;
+        }
+        return dStr.trim();
+      });
+      return dates.join(', ');
+    }
+
+    // 2. Check for [weeks:2] or [weeks:2,3] and compute from client loan_start_date
+    const weeksMatch = notes.match(/\[weeks:([0-9,\s]+)\]/i);
+    const loanStart = client?.loan_start_date;
+    if (weeksMatch && weeksMatch[1] && loanStart) {
+      const weekIds = weeksMatch[1].split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+      const startD = new Date(loanStart);
+      if (!isNaN(startD.getTime()) && weekIds.length > 0) {
+        const computedDates = weekIds.map(wId => {
+          const targetD = new Date(startD);
+          targetD.setDate(targetD.getDate() + (wId - 1) * 7);
+          const d = String(targetD.getDate()).padStart(2, '0');
+          const m = String(targetD.getMonth() + 1).padStart(2, '0');
+          const y = targetD.getFullYear();
+          return `${d}/${m}/${y}`;
+        });
+        return computedDates.join(', ');
+      }
+    }
+  }
+
   if (!paymentDateStr && !createdAtStr) return 'N/A';
 
   const str = paymentDateStr || createdAtStr;
@@ -161,6 +197,33 @@ const isTodayDate = (dateInput) => {
   );
 };
 
+// Helper function to get the actual date the payment was collected/paid
+// Authoritative date is createdAt (when money was physically collected).
+const getPaymentPaidDate = (record) => {
+  if (!record) return null;
+  if (record.createdAt && record.createdAt instanceof Date && !isNaN(record.createdAt.getTime())) {
+    return record.createdAt;
+  }
+  if (record.rawDate && record.rawDate instanceof Date && !isNaN(record.rawDate.getTime())) {
+    return record.rawDate;
+  }
+  if (record.paymentDateRaw && record.paymentDateRaw instanceof Date && !isNaN(record.paymentDateRaw.getTime())) {
+    return record.paymentDateRaw;
+  }
+  return null;
+};
+
+// Helper function to format Date object into YYYY-MM-DD using local time
+const formatDateToYMD = (dateInput) => {
+  if (!dateInput) return '';
+  const d = dateInput instanceof Date ? dateInput : new Date(dateInput);
+  if (isNaN(d.getTime())) return '';
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
 export default function MpaymentHistory() {
   const [searchTerm, setSearchTerm] = useState('');
   const [staffFilter, setStaffFilter] = useState('All Staff');
@@ -223,22 +286,39 @@ export default function MpaymentHistory() {
     };
     initLoad();
 
+    // Instant reload on custom payment/client events dispatched by other components
     const handlePaymentRecorded = () => {
       fetchPaymentsWithoutLoading();
     };
     window.addEventListener('paymentRecorded', handlePaymentRecorded);
     window.addEventListener('clientUpdated', handlePaymentRecorded);
 
-    // Setup polling to check for new payments (every 20 seconds)
+    // Instant reload when user switches back to this browser tab
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        fetchPaymentsWithoutLoading();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    // Instant reload when browser window is focused (e.g. alt-tab back)
+    const handleWindowFocus = () => {
+      fetchPaymentsWithoutLoading();
+    };
+    window.addEventListener('focus', handleWindowFocus);
+
+    // Background polling every 5 seconds for near-real-time updates
     const pollInterval = setInterval(() => {
       fetchPaymentsWithoutLoading();
-    }, 20000); // 20 seconds
+    }, 5000); // 5 seconds
 
-    // Cleanup interval on unmount
+    // Cleanup all listeners and interval on unmount
     return () => {
       clearInterval(pollInterval);
       window.removeEventListener('paymentRecorded', handlePaymentRecorded);
       window.removeEventListener('clientUpdated', handlePaymentRecorded);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleWindowFocus);
     };
   }, []);
 
@@ -247,7 +327,7 @@ export default function MpaymentHistory() {
     try {
       const token = localStorage.getItem('token');
       if (!token) return;
-      const res = await fetch('https://karanfinance.com/api/agents', {
+      const res = await fetch('http://localhost:5000/api/agents', {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (!res.ok) return;
@@ -277,7 +357,7 @@ export default function MpaymentHistory() {
     try {
       const token = localStorage.getItem('token');
       if (!token) return;
-      const response = await fetch('https://karanfinance.com/api/clients/all', {
+      const response = await fetch('http://localhost:5000/api/clients/all', {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
@@ -311,7 +391,7 @@ export default function MpaymentHistory() {
     try {
       const token = localStorage.getItem('token');
 
-      const res = await fetch(`https://karanfinance.com/api/payments/${paymentId}`, {
+      const res = await fetch(`http://localhost:5000/api/payments/${paymentId}`, {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
@@ -346,7 +426,7 @@ export default function MpaymentHistory() {
           }
 
           if (newEndDate && token) {
-            await fetch(`https://karanfinance.com/api/clients/${clientId}`, {
+            await fetch(`http://localhost:5000/api/clients/${clientId}`, {
               method: 'PUT',
               headers: {
                 'Content-Type': 'application/json',
@@ -387,7 +467,7 @@ export default function MpaymentHistory() {
     try {
       // Use authenticated history endpoint so the backend filters by manager
       const token = localStorage.getItem('token');
-      const response = await fetch('https://karanfinance.com/api/payments/history', {
+      const response = await fetch('http://localhost:5000/api/payments/history', {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
@@ -406,7 +486,7 @@ export default function MpaymentHistory() {
         // Map backend data to frontend format
         const formattedRecords = data.data.payments.map((payment) => {
           const dt = formatPaymentDateTime(payment.paymentDate, payment.createdAt);
-          const paymentDateDisplay = formatPaymentDate(payment.paymentDate, payment.createdAt);
+          const paymentDateDisplay = formatPaymentDate(payment.paymentDate, payment.createdAt, payment.notes, payment.client);
           const paidDateDisplay = formatPaidDate(payment.createdAt, payment.paymentDate);
 
           return {
@@ -456,8 +536,8 @@ export default function MpaymentHistory() {
 
         // Sort: current date paid clients on top, latest payments first
         formattedRecords.sort((a, b) => {
-          const isTodayA = (a.datetime !== 'N/A' || a.paidDate !== 'N/A') && (isTodayDate(a.rawDate) || isTodayDate(a.createdAt));
-          const isTodayB = (b.datetime !== 'N/A' || b.paidDate !== 'N/A') && (isTodayDate(b.rawDate) || isTodayDate(b.createdAt));
+          const isTodayA = (a.datetime !== 'N/A' || a.paidDate !== 'N/A') && isTodayDate(getPaymentPaidDate(a));
+          const isTodayB = (b.datetime !== 'N/A' || b.paidDate !== 'N/A') && isTodayDate(getPaymentPaidDate(b));
 
           // If one is from current date and the other isn't, current date comes first
           if (isTodayA && !isTodayB) return -1;
@@ -502,15 +582,14 @@ export default function MpaymentHistory() {
     setPaymentRecords(uniqueRecords);
     setError(null);
 
-    // Calculate stats using uniqueRecords
+    // Calculate stats using uniqueRecords based on actual collection date
     const totalCollected = uniqueRecords.reduce((sum, r) => sum + (r.received || 0), 0);
     let todayCollected = 0;
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
 
     uniqueRecords.forEach((record) => {
-      if (isTodayDate(record.createdAt) || isTodayDate(record.rawDate)) {
-        todayCollected += record.received;
+      const paidD = getPaymentPaidDate(record);
+      if (isTodayDate(paidD)) {
+        todayCollected += (record.received || 0);
       }
     });
 
@@ -556,29 +635,23 @@ export default function MpaymentHistory() {
       staffFilter === 'All Staff' || record.staff?.name === staffFilter;
 
     const matchesDate = !dateFilter || (() => {
-      const checkD = (d) => {
-        if (!d) return false;
-        const dObj = d instanceof Date ? d : new Date(d);
-        if (isNaN(dObj.getTime())) return false;
-        const year = dObj.getFullYear();
-        const month = String(dObj.getMonth() + 1).padStart(2, '0');
-        const day = String(dObj.getDate()).padStart(2, '0');
-        return `${year}-${month}-${day}` === dateFilter;
-      };
-      return checkD(record.rawDate) || checkD(record.createdAt) || checkD(record.paymentDateRaw);
+      const paidDate = getPaymentPaidDate(record);
+      return formatDateToYMD(paidDate) === dateFilter;
     })();
 
     return matchesSearch && matchesStaff && matchesDate;
   });
 
   // Compute stats based on BOTH staff + date filters (uses same filteredRecords)
-  // This ensures summary cards always reflect the active filter combination
+  // Advance payments are calculated on the date they were actually collected/paid,
+  // NOT on the future/advance due date.
   const filteredStats = (() => {
     const totalCollected = filteredRecords.reduce((sum, r) => sum + (r.received || 0), 0);
     let todayCollected = 0;
     filteredRecords.forEach((record) => {
-      if (isTodayDate(record.createdAt) || isTodayDate(record.rawDate)) {
-        todayCollected += record.received;
+      const paidD = getPaymentPaidDate(record);
+      if (isTodayDate(paidD)) {
+        todayCollected += (record.received || 0);
       }
     });
     const totalPending = filteredRecords.reduce((sum, r) => sum + (r.pending || 0), 0);
@@ -654,7 +727,7 @@ export default function MpaymentHistory() {
                     {dateFilter ? 'Received Amount' : staffFilter === 'All Staff' ? "Today's Collection" : `${staffFilter} — Today`}
                   </p>
                   <p className="text-lg sm:text-3xl font-bold mt-0 sm:mt-1 truncate">
-                    ₹{filteredStats.todayCollected.toLocaleString('en-IN')}
+                    ₹{(dateFilter ? filteredStats.totalCollected : filteredStats.todayCollected).toLocaleString('en-IN')}
                   </p>
                 </div>
                 <div className="bg-[#16423C]/20 p-2 sm:p-3 rounded-lg hidden sm:block">
@@ -751,7 +824,7 @@ export default function MpaymentHistory() {
             <table className="w-full text-sm min-w-[1100px]">
               <thead className="bg-[#16423C] text-white sticky top-0">
                 <tr>
-                  <th className="px-6 py-4 text-left font-semibold">Payment Date</th>
+                  <th className="px-6 py-4 text-left font-semibold">Payment Date (Due Date)</th>
                   <th className="px-6 py-4 text-left font-semibold">Paid Date</th>
                   <th className="px-6 py-4 text-left font-semibold">Collected Staff</th>
                   <th className="px-6 py-4 text-left font-semibold">Client Name</th>

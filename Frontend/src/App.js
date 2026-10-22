@@ -27,8 +27,9 @@ import AdminActiveInactive from './Components/Admin/Active-inactive';
 import AdminCredentials from './Components/Admin/AdminCredentials';
 import AdminAproval from './Components/Admin/AdminAproval';
 import ManagerAproval from './Components/Manager/ManagerAproval';
+import AssignAgents from './Components/Admin/AssignAgents';
 
-import SyncStatusBadge from './Components/SyncStatusBadge';
+import RefreshButton from './Components/RefreshButton';
 import { prewarmLocalDatabase } from './services/prewarmService';
 
 const AppContent = () => {
@@ -52,7 +53,7 @@ const AppContent = () => {
 
   return (
     <>
-      {/* <SyncStatusBadge /> */}
+      <RefreshButton />
 
       <Routes>
         <Route path="/" element={<Login />} />
@@ -70,6 +71,7 @@ const AppContent = () => {
         <Route path="/Admin/AdminAproval" element={<AdminAproval />} />
         <Route path="/Admin/AdminApproval" element={<AdminAproval />} />
         <Route path="/Admin/approval" element={<AdminAproval />} />
+        <Route path="/Admin/AssignAgents" element={<AssignAgents />} />
 
         <Route path="/Manager/ManagerAproval" element={<ManagerAproval />} />
         <Route path="/Manager/ManagerApproval" element={<ManagerAproval />} />

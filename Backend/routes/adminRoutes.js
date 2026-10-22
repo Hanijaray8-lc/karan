@@ -4,6 +4,7 @@ const router = express.Router();
 const Admin = require('../models/Admin');
 const Agent = require('../models/Agent');
 const Client = require('../models/Client');
+const Manager = require('../models/Manager');
 const { protect, authorize } = require('../middleware/auth');
 
 // @desc    Get dashboard stats for admin
@@ -208,6 +209,66 @@ router.delete('/delete-face', protect, authorize('admin'), async (req, res) => {
     });
   } catch (err) {
     console.error('Delete face registration error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// @desc    Get all managers with their assigned agents
+// @route   GET /api/admin/managers-with-agents
+router.get('/managers-with-agents', protect, authorize('admin'), async (req, res) => {
+  try {
+    const managers = await Manager.find({}).select('_id name username email phone status').sort({ name: 1 });
+    const agents = await Agent.find({ role: 'agent' }).select('_id name username email phone status managerId managerAssignedAt').sort({ name: 1 });
+
+    const managersWithAgents = managers.map(m => ({
+      ...m.toObject(),
+      assignedAgents: agents.filter(a => a.managerId && a.managerId.toString() === m._id.toString()).map(a => a._id.toString())
+    }));
+
+    res.json({
+      success: true,
+      managers: managersWithAgents,
+      agents: agents.map(a => ({
+        _id: a._id,
+        name: a.name,
+        username: a.username,
+        email: a.email,
+        phone: a.phone,
+        status: a.status,
+        managerId: a.managerId || null,
+        managerAssignedAt: a.managerAssignedAt || null
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// @desc    Assign agent to a manager
+// @route   PUT /api/admin/assign-agent
+router.put('/assign-agent', protect, authorize('admin'), async (req, res) => {
+  try {
+    const { agentId, managerId } = req.body;
+    if (!agentId) return res.status(400).json({ success: false, message: 'agentId is required' });
+
+    const agent = await Agent.findById(agentId);
+    if (!agent) return res.status(404).json({ success: false, message: 'Agent not found' });
+
+    if (managerId) {
+      const manager = await Manager.findById(managerId);
+      if (!manager) return res.status(404).json({ success: false, message: 'Manager not found' });
+      agent.managerId = managerId;
+      agent.manager = managerId;
+      agent.managerAssignedAt = new Date(); // Track assignment time for time-based filtering
+    } else {
+      agent.managerId = null;
+      agent.manager = null;
+      agent.managerAssignedAt = null;
+    }
+
+    await agent.save();
+    res.json({ success: true, message: managerId ? 'Agent assigned to manager' : 'Agent unassigned from manager', agent });
+  } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 });

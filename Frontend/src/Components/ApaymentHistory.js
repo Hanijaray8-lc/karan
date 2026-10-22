@@ -75,7 +75,43 @@ const formatPaymentDateTime = (paymentDateStr, createdAtStr) => {
 };
 
 // Helper function to format payment date (due date) for display
-const formatPaymentDate = (paymentDateStr, createdAtStr) => {
+const formatPaymentDate = (paymentDateStr, createdAtStr, notes, client) => {
+  // If notes indicate advance payment targeting specific week(s) or explicit due dates
+  if (notes) {
+    // 1. Check for explicit dueDates tag: [dueDates:2026-10-28,2026-11-04]
+    const dueDatesMatch = notes.match(/\[dueDates:([0-9\-,]+)\]/i);
+    if (dueDatesMatch && dueDatesMatch[1]) {
+      const dates = dueDatesMatch[1].split(',').map(dStr => {
+        const match = dStr.trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (match) {
+          const [, y, m, d] = match;
+          return `${d.padStart(2, '0')}/${m.padStart(2, '0')}/${y}`;
+        }
+        return dStr.trim();
+      });
+      return dates.join(', ');
+    }
+
+    // 2. Check for [weeks:2] or [weeks:2,3] and compute from client loan_start_date
+    const weeksMatch = notes.match(/\[weeks:([0-9,\s]+)\]/i);
+    const loanStart = client?.loan_start_date;
+    if (weeksMatch && weeksMatch[1] && loanStart) {
+      const weekIds = weeksMatch[1].split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+      const startD = new Date(loanStart);
+      if (!isNaN(startD.getTime()) && weekIds.length > 0) {
+        const computedDates = weekIds.map(wId => {
+          const targetD = new Date(startD);
+          targetD.setDate(targetD.getDate() + (wId - 1) * 7);
+          const d = String(targetD.getDate()).padStart(2, '0');
+          const m = String(targetD.getMonth() + 1).padStart(2, '0');
+          const y = targetD.getFullYear();
+          return `${d}/${m}/${y}`;
+        });
+        return computedDates.join(', ');
+      }
+    }
+  }
+
   if (!paymentDateStr && !createdAtStr) return 'N/A';
 
   const str = paymentDateStr || createdAtStr;
@@ -212,13 +248,40 @@ export default function ApaymentHistory() {
     fetchPayments();
     fetchAllClients();
 
-    // Setup polling to check for new payments (every 20 seconds)
+    // Instant reload on custom payment/client events dispatched by other components
+    const handlePaymentRecorded = () => {
+      fetchPaymentsWithoutLoading();
+    };
+    window.addEventListener('paymentRecorded', handlePaymentRecorded);
+    window.addEventListener('clientUpdated', handlePaymentRecorded);
+
+    // Instant reload when user switches back to this browser tab
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        fetchPaymentsWithoutLoading();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    // Instant reload when browser window is focused (e.g. alt-tab back)
+    const handleWindowFocus = () => {
+      fetchPaymentsWithoutLoading();
+    };
+    window.addEventListener('focus', handleWindowFocus);
+
+    // Background polling every 5 seconds for near-real-time updates
     const pollInterval = setInterval(() => {
       fetchPaymentsWithoutLoading();
-    }, 20000); // 20 seconds
+    }, 5000); // 5 seconds
 
-    // Cleanup interval on unmount
-    return () => clearInterval(pollInterval);
+    // Cleanup all listeners and interval on unmount
+    return () => {
+      clearInterval(pollInterval);
+      window.removeEventListener('paymentRecorded', handlePaymentRecorded);
+      window.removeEventListener('clientUpdated', handlePaymentRecorded);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleWindowFocus);
+    };
   }, []);
 
   // Fetch payments with loading indicator
@@ -240,7 +303,7 @@ export default function ApaymentHistory() {
   const fetchPaymentsData = async () => {
     try {
       // Use test endpoint (no auth required) for now
-      const response = await fetch('https://karanfinance.com/api/payments/test/all', {
+      const response = await fetch('http://localhost:5000/api/payments/test/all', {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
@@ -258,7 +321,7 @@ export default function ApaymentHistory() {
         // Map backend data to frontend format
         const formattedRecords = data.data.payments.map((payment) => {
           const dt = formatPaymentDateTime(payment.paymentDate, payment.createdAt);
-          const paymentDateDisplay = formatPaymentDate(payment.paymentDate, payment.createdAt);
+          const paymentDateDisplay = formatPaymentDate(payment.paymentDate, payment.createdAt, payment.notes, payment.client);
           const paidDateDisplay = formatPaidDate(payment.createdAt, payment.paymentDate);
 
           return {
@@ -423,7 +486,7 @@ export default function ApaymentHistory() {
         return;
       }
 
-      const response = await fetch('https://karanfinance.com/api/clients/all', {
+      const response = await fetch('http://localhost:5000/api/clients/all', {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
@@ -459,7 +522,7 @@ export default function ApaymentHistory() {
       const token = localStorage.getItem('token');
 
       // Call backend to delete payment
-      const res = await fetch(`https://karanfinance.com/api/payments/${paymentId}`, {
+      const res = await fetch(`http://localhost:5000/api/payments/${paymentId}`, {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
@@ -502,7 +565,7 @@ export default function ApaymentHistory() {
         }
 
         // Update client loan_end_date in backend
-        const updateRes = await fetch(`https://karanfinance.com/api/clients/${clientId}`, {
+        const updateRes = await fetch(`http://localhost:5000/api/clients/${clientId}`, {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
@@ -757,7 +820,7 @@ export default function ApaymentHistory() {
             <table className="w-full text-sm min-w-[1000px]">
               <thead className="bg-[#16423C] text-white sticky top-0">
                 <tr>
-                  <th className="px-6 py-4 text-left font-semibold">Payment Date</th>
+                  <th className="px-6 py-4 text-left font-semibold">Payment Date (Due Date)</th>
                   <th className="px-6 py-4 text-left font-semibold">Paid Date</th>
                   {/* <th className="px-6 py-4 text-left font-semibold">Collected Staff</th> */}
                   <th className="px-6 py-4 text-left font-semibold">Client Name</th>

@@ -3,13 +3,14 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { ArrowRightOnRectangleIcon, Bars3Icon, XMarkIcon, BellIcon } from '@heroicons/react/24/outline';
 import axios from 'axios';
 
-const API_URL = process.env.REACT_APP_API_URL || 'https://karanfinance.com/api';
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
 
 const navItems = [
   { label: 'Dashboard', path: '/Admin/AdminDashboard' },
   { label: 'Approvals', path: '/Admin/AdminAproval', isApproval: true },
   { label: 'Add Manager', path: '/Admin/AddManager' },
   { label: 'Add Agent', path: '/Admin/AddAgent' },
+  { label: 'Assign Agents', path: '/Admin/AssignAgents', isAssign: true },
   { label: 'Client Details', path: '/Admin/AClientDetails' },
   { label: 'Payment History', path: '/Admin/PaymentHistory' },
   { label: 'Pending Clients', path: '/Admin/PendingClients' },
@@ -144,11 +145,16 @@ const AdminNavbar = () => {
                   <Link
                     key={item.path}
                     to={item.path}
-                    className={`px-3 py-2 text-sm font-medium rounded-md transition-colors flex items-center gap-1.5 ${isActive
-                      ? 'bg-emerald-700 text-white'
-                      : 'hover:bg-emerald-800'
+                    className={`px-3 py-2 text-sm font-medium rounded-md transition-colors flex items-center gap-1.5 ${item.isAssign
+                        ? isActive
+                          ? 'bg-amber-500 text-gray-950 font-bold'
+                          : 'bg-amber-400 hover:bg-amber-300 text-gray-950 font-bold shadow-sm'
+                        : isActive
+                          ? 'bg-emerald-700 text-white'
+                          : 'hover:bg-emerald-800'
                       }`}
                   >
+                    {item.isAssign && <span>🔗</span>}
                     <span>{item.label}</span>
                     {item.isApproval && pendingCount > 0 && (
                       <span className="px-1.5 py-0.2 rounded-full text-[10px] font-black bg-amber-400 text-gray-950 animate-pulse">
@@ -288,12 +294,19 @@ const AdminNavbar = () => {
                     key={item.path}
                     to={item.path}
                     onClick={() => setIsMobileMenuOpen(false)}
-                    className={`flex items-center justify-between px-4 py-3 rounded-md text-base font-medium ${isActive
-                      ? 'bg-emerald-700 text-white'
-                      : 'text-white hover:bg-emerald-700'
+                    className={`flex items-center justify-between px-4 py-3 rounded-md text-base font-medium ${item.isAssign
+                        ? isActive
+                          ? 'bg-amber-500 text-gray-950 font-bold'
+                          : 'bg-amber-400 text-gray-950 font-bold'
+                        : isActive
+                          ? 'bg-emerald-700 text-white'
+                          : 'text-white hover:bg-emerald-700'
                       }`}
                   >
-                    <span>{item.label}</span>
+                    <span className="flex items-center gap-2">
+                      {item.isAssign && <span>🔗</span>}
+                      {item.label}
+                    </span>
                     {item.isApproval && pendingCount > 0 && (
                       <span className="px-2 py-0.5 rounded-full text-xs font-black bg-amber-400 text-gray-900">
                         {pendingCount} Pending

@@ -53,6 +53,14 @@ const AClientDetails = () => {
   const [payLoading, setPayLoading] = useState(false);
   const [payErrorMsg, setPayErrorMsg] = useState('');
 
+  // Advance payment modal state
+  const [showAdvanceModal, setShowAdvanceModal] = useState(false);
+  const [selectedAdvanceWeeks, setSelectedAdvanceWeeks] = useState([]);
+  const [advanceAmount, setAdvanceAmount] = useState('');
+  const [advanceNotes, setAdvanceNotes] = useState('');
+  const [advanceLoading, setAdvanceLoading] = useState(false);
+  const [advanceErrorMsg, setAdvanceErrorMsg] = useState('');
+
   const openPayModal = () => {
     if (!selectedClient) return;
     const totalAmount = selectedClient.amount || 6900;
@@ -93,7 +101,7 @@ const AClientDetails = () => {
       setPayErrorMsg('');
       const token = localStorage.getItem('token');
 
-      const response = await fetch('https://karanfinance.com/api/payments/process', {
+      const response = await fetch('http://localhost:5000/api/payments/process', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -152,6 +160,142 @@ const AClientDetails = () => {
     }
   };
 
+  // Open Advance Payment modal — shows pending/upcoming weeks to pay for
+  const openAdvanceModal = () => {
+    if (!selectedClient) return;
+    const pending = duePayments.filter(w => w.status === 'pending');
+    const firstPending = pending[0];
+    const initialWeeks = firstPending ? [String(firstPending.id)] : [];
+    setSelectedAdvanceWeeks(initialWeeks);
+    const baseWeekly = (selectedClient.weekly_amount && Number(selectedClient.weekly_amount) > 0)
+      ? Number(selectedClient.weekly_amount)
+      : FORCED_WEEKLY;
+    const initialTotal = initialWeeks.length * baseWeekly;
+    setAdvanceAmount(String(initialTotal > 0 ? initialTotal : baseWeekly));
+    setAdvanceNotes('');
+    setAdvanceErrorMsg('');
+    setShowAdvanceModal(true);
+  };
+
+  const toggleAdvanceWeek = (weekId) => {
+    const sId = String(weekId);
+    let nextSelected;
+    if (selectedAdvanceWeeks.includes(sId)) {
+      nextSelected = selectedAdvanceWeeks.filter(id => id !== sId);
+    } else {
+      nextSelected = [...selectedAdvanceWeeks, sId];
+    }
+    nextSelected.sort((a, b) => Number(a) - Number(b));
+    setSelectedAdvanceWeeks(nextSelected);
+
+    const baseWeekly = (selectedClient?.weekly_amount && Number(selectedClient.weekly_amount) > 0)
+      ? Number(selectedClient.weekly_amount)
+      : FORCED_WEEKLY;
+    const outstanding = selectedClient?.pending !== undefined && selectedClient?.pending !== null
+      ? selectedClient.pending
+      : Math.max(0, (selectedClient?.amount || 6900) - (selectedClient?.received || 0));
+
+    const totalForWeeks = nextSelected.reduce((sum, wid) => {
+      const wObj = duePayments.find(w => String(w.id) === String(wid));
+      return sum + (wObj?.dueAmount || baseWeekly);
+    }, 0);
+
+    setAdvanceAmount(String(Math.min(outstanding, totalForWeeks)));
+  };
+
+  const toggleSelectAllAdvanceWeeks = () => {
+    const pending = duePayments.filter(w => w.status === 'pending');
+    const baseWeekly = (selectedClient?.weekly_amount && Number(selectedClient.weekly_amount) > 0)
+      ? Number(selectedClient.weekly_amount)
+      : FORCED_WEEKLY;
+    const outstanding = selectedClient?.pending !== undefined && selectedClient?.pending !== null
+      ? selectedClient.pending
+      : Math.max(0, (selectedClient?.amount || 6900) - (selectedClient?.received || 0));
+
+    if (selectedAdvanceWeeks.length === pending.length) {
+      setSelectedAdvanceWeeks([]);
+      setAdvanceAmount('0');
+    } else {
+      const allIds = pending.map(w => String(w.id));
+      setSelectedAdvanceWeeks(allIds);
+      const totalAll = pending.reduce((sum, w) => sum + (w.dueAmount || baseWeekly), 0);
+      setAdvanceAmount(String(Math.min(outstanding, totalAll)));
+    }
+  };
+
+  // Handle Advance Payment submission
+  const handleAdvancePay = async () => {
+    if (!selectedClient || selectedAdvanceWeeks.length === 0) {
+      setAdvanceErrorMsg('Please select at least one week.');
+      return;
+    }
+    const numAmount = Number(advanceAmount);
+    const outstanding = selectedClient.pending !== undefined && selectedClient.pending !== null
+      ? selectedClient.pending
+      : Math.max(0, (selectedClient.amount || 6900) - (selectedClient.received || 0));
+    if (!numAmount || numAmount <= 0) { setAdvanceErrorMsg('Please enter a valid amount.'); return; }
+    if (numAmount > outstanding) { setAdvanceErrorMsg(`Amount (₹${numAmount}) cannot exceed balance (₹${outstanding}).`); return; }
+
+    const selectedWeekObjs = duePayments.filter(w => selectedAdvanceWeeks.includes(String(w.id)));
+    const weekLabels = selectedWeekObjs.map(w => `Week ${w.id}`).join(', ');
+    const weekIdsCsv = selectedAdvanceWeeks.join(',');
+    const dueDatesCsv = selectedWeekObjs.map(w => w.weekStartISO).filter(Boolean).join(',');
+    const todayDate = new Date().toISOString().split('T')[0];
+
+    const dueTag = dueDatesCsv ? ` [dueDates:${dueDatesCsv}]` : '';
+    const notePayload = advanceNotes.trim()
+      ? `Advance for ${weekLabels} [weeks:${weekIdsCsv}]${dueTag} — ${advanceNotes.trim()}`
+      : `Advance for ${weekLabels} [weeks:${weekIdsCsv}]${dueTag}`;
+
+    try {
+      setAdvanceLoading(true);
+      setAdvanceErrorMsg('');
+      const token = localStorage.getItem('token');
+      const response = await fetch('http://localhost:5000/api/payments/process', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { 'Authorization': `Bearer ${token}` } : {}) },
+        body: JSON.stringify({
+          clientId: selectedClient._id,
+          amount: numAmount,
+          paymentMethod: 'cash',
+          notes: notePayload,
+          paymentDate: todayDate
+        })
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) throw new Error(data.message || 'Failed to process advance payment');
+      const updatedClientData = data.data?.client;
+      const currentReceived = selectedClient.received || 0;
+      const totalAmount = selectedClient.amount || 6900;
+      const newReceived = currentReceived + numAmount;
+      const newPending = Math.max(0, totalAmount - newReceived);
+      const updatedClient = {
+        ...selectedClient,
+        received: updatedClientData?.received ?? newReceived,
+        pending: updatedClientData?.pending ?? newPending,
+        status: updatedClientData?.status ?? (newPending <= 0 ? 'paid' : 'partial')
+      };
+      setSelectedClient(updatedClient);
+      setClients(prev => prev.map(c => c._id === selectedClient._id ? updatedClient : c));
+      setRefreshTrigger(prev => prev + 1);
+      setShowAdvanceModal(false);
+      window.dispatchEvent(new CustomEvent('clientPaid', {
+        detail: {
+          clientId: selectedClient._id,
+          amount: numAmount,
+          isAdvance: true,
+          targetWeeks: selectedAdvanceWeeks,
+          notes: notePayload
+        }
+      }));
+      showPopup('success', '⚡ Advance Payment Recorded', `₹${numAmount.toLocaleString('en-IN')} advance for ${weekLabels} recorded. Shows in today's dashboard.`);
+    } catch (err) {
+      setAdvanceErrorMsg(err.message || 'Failed to process advance payment');
+    } finally {
+      setAdvanceLoading(false);
+    }
+  };
+
   const popupTimeoutRef = useRef(null);
 
   const showPopup = (type, title, message, duration = 4000) => {
@@ -178,7 +322,7 @@ const AClientDetails = () => {
       const token = localStorage.getItem('token');
 
       // Call backend to delete payment
-      const res = await fetch(`https://karanfinance.com/api/payments/${paymentId}`, {
+      const res = await fetch(`http://localhost:5000/api/payments/${paymentId}`, {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
@@ -224,7 +368,7 @@ const AClientDetails = () => {
       }
 
       // Update client loan_end_date in backend
-      const updateRes = await fetch(`https://karanfinance.com/api/clients/${clientId}`, {
+      const updateRes = await fetch(`http://localhost:5000/api/clients/${clientId}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -305,13 +449,13 @@ const AClientDetails = () => {
 
       // If no token, use the public test endpoint to avoid 401 when not authenticated
       if (!token) {
-        const res = await fetch('https://karanfinance.com/api/clients/test/all');
+        const res = await fetch('http://localhost:5000/api/clients/test/all');
         if (!res.ok) throw new Error('Failed to fetch clients');
         const json = await res.json();
         clientsList = json.clients || [];
       } else {
         // Try the protected endpoint when token is available
-        const response = await fetch('https://karanfinance.com/api/clients', {
+        const response = await fetch('http://localhost:5000/api/clients', {
           headers: {
             'Authorization': `Bearer ${token}`
           }
@@ -319,7 +463,7 @@ const AClientDetails = () => {
 
         // If unauthorized, fallback to public test endpoint to avoid showing 401 errors to unauthenticated users
         if (response.status === 401) {
-          const fb = await fetch('https://karanfinance.com/api/clients/test/all');
+          const fb = await fetch('http://localhost:5000/api/clients/test/all');
           if (!fb.ok) throw new Error('Failed to fetch clients');
           const fbJson = await fb.json();
           clientsList = fbJson.clients || [];
@@ -586,13 +730,15 @@ const AClientDetails = () => {
 
       try {
         const token = localStorage.getItem('token');
-        const res = await fetch(`https://karanfinance.com/api/payments/client/${selectedClient._id}`, {
+        const res = await fetch(`http://localhost:5000/api/payments/client/${selectedClient._id}`, {
           headers: { Authorization: `Bearer ${token}` }
         });
 
+        let paymentHistory = [];
+
         if (!res.ok) {
           // Try admin route as a fallback (for admins viewing any client)
-          const adminRes = await fetch(`https://karanfinance.com/api/payments/admin/all`, {
+          const adminRes = await fetch(`http://localhost:5000/api/payments/admin/all`, {
             headers: { Authorization: `Bearer ${token}` }
           });
 
@@ -603,116 +749,11 @@ const AClientDetails = () => {
 
           const adminJson = await adminRes.json();
           const allPayments = (adminJson.data && adminJson.data.payments) || [];
-          const paymentHistory = allPayments.filter(p => p.client && (p.client._id === selectedClient._id || p.client === selectedClient._id));
-
-          // Deduplicate paymentHistory by _id
-          const uniquePaymentsFallback = [];
-          const seenIdsFallback = new Set();
-          paymentHistory.forEach(p => {
-            const pId = p._id || p.id;
-            if (pId) {
-              if (!seenIdsFallback.has(pId)) {
-                seenIdsFallback.add(pId);
-                uniquePaymentsFallback.push(p);
-              }
-            } else {
-              uniquePaymentsFallback.push(p);
-            }
-          });
-
-          uniquePaymentsFallback.sort((a, b) => {
-            const dateA = new Date(a.paymentDate || a.createdAt || a.date || 0);
-            const dateB = new Date(b.paymentDate || b.createdAt || b.date || 0);
-            return dateA - dateB;
-          });
-
-          const mergedFallback = baseWeeks.map(week => ({ ...week }));
-          const usedPaymentIdsFallback = new Set();
-
-          // Pass 1: Exact date range match
-          uniquePaymentsFallback.forEach(p => {
-            const pDateStr = p.paymentDate || p.createdAt || p.date;
-            if (!pDateStr) return;
-            const pISO = new Date(pDateStr).toISOString().split('T')[0];
-            const pId = p._id || p.id || pDateStr;
-
-            const idx = mergedFallback.findIndex(w => pISO >= w.weekStartISO && pISO < w.weekEndISO && w.status !== 'paid');
-            if (idx !== -1) {
-              mergedFallback[idx].status = 'paid';
-              mergedFallback[idx].paidDate = pISO;
-              mergedFallback[idx].paidAmount = (mergedFallback[idx].paidAmount || 0) + Number(p.amount || 0);
-              mergedFallback[idx].collectedStaff = p.collectedStaff || (p.agent && (p.agent.name || p.agent.username)) || 'Unknown';
-              mergedFallback[idx].collectedByRole = p.collectedByRole || (p.agent ? 'agent' : null);
-              mergedFallback[idx].paymentId = p._id || p.id;
-              usedPaymentIdsFallback.add(pId);
-            }
-          });
-
-          // Pass 2: Unassigned payments fill remaining unpaid weeks
-          uniquePaymentsFallback.forEach(p => {
-            const pDateStr = p.paymentDate || p.createdAt || p.date;
-            if (!pDateStr) return;
-            const pId = p._id || p.id || pDateStr;
-            if (usedPaymentIdsFallback.has(pId)) return;
-
-            const pISO = new Date(pDateStr).toISOString().split('T')[0];
-            const idx = mergedFallback.findIndex(w => w.status !== 'paid' && w.weekStartISO <= pISO);
-            if (idx !== -1) {
-              mergedFallback[idx].status = 'paid';
-              mergedFallback[idx].paidDate = pISO;
-              mergedFallback[idx].paidAmount = (mergedFallback[idx].paidAmount || 0) + Number(p.amount || 0);
-              mergedFallback[idx].collectedStaff = p.collectedStaff || (p.agent && (p.agent.name || p.agent.username)) || 'Unknown';
-              mergedFallback[idx].collectedByRole = p.collectedByRole || (p.agent ? 'agent' : null);
-              mergedFallback[idx].paymentId = p._id || p.id;
-              usedPaymentIdsFallback.add(pId);
-            }
-          });
-
-          // Pass 3: If loan was foreclosed, mark remaining unpaid weeks as paid
-          const currentLoanStartFallback = selectedClient?.loan_start_date ? new Date(selectedClient.loan_start_date) : null;
-          const currentForeclosurePaymentFallback = uniquePaymentsFallback.find(p => {
-            const method = (p.paymentMethod || '').toLowerCase();
-            const notes = (p.notes || '').toLowerCase();
-            const isFp = method === 'foreclosure' || notes.includes('foreclose');
-            if (!isFp) return false;
-            if (!currentLoanStartFallback) return true;
-            const pDate = new Date(p.paymentDate || p.createdAt || p.date || 0);
-            return pDate >= currentLoanStartFallback;
-          });
-
-          const isForeclosedFallback = !!currentForeclosurePaymentFallback || (
-            selectedClient?.status === 'paid' &&
-            ((selectedClient?.notes || '').toLowerCase().includes('foreclose') || selectedClient?.isForeclosed === true)
-          );
-
-          if (isForeclosedFallback) {
-            const fp = currentForeclosurePaymentFallback;
-            const fpDateStr = fp ? (fp.paymentDate || fp.createdAt || fp.date) : (selectedClient?.updatedAt || new Date().toISOString());
-            const fpISO = fpDateStr ? new Date(fpDateStr).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
-            const fpStaff = fp ? (fp.collectedStaff || (fp.agent && (fp.agent.name || fp.agent.username)) || 'Foreclosed') : 'Foreclosed';
-            const fpRole = fp ? (fp.collectedByRole || (fp.agent ? 'agent' : null)) : null;
-            const fpId = fp ? (fp._id || fp.id) : null;
-
-            mergedFallback.forEach(week => {
-              if (week.status !== 'paid') {
-                week.status = 'paid';
-                week.paidDate = fpISO;
-                week.collectedStaff = fpStaff;
-                week.collectedByRole = fpRole;
-                week.paymentId = fpId;
-                week.isForeclosed = true;
-              } else if (fpId && week.paymentId === fpId) {
-                week.isForeclosed = true;
-              }
-            });
-          }
-
-          setDuePayments(applyWeeklyAdjustment(mergedFallback, selectedClient));
-          return;
+          paymentHistory = allPayments.filter(p => p.client && (p.client._id === selectedClient._id || p.client === selectedClient._id));
+        } else {
+          const json = await res.json();
+          paymentHistory = (json.data && json.data.paymentHistory) || [];
         }
-
-        const json = await res.json();
-        const paymentHistory = (json.data && json.data.paymentHistory) || [];
 
         // Deduplicate paymentHistory by _id
         const uniquePayments = [];
@@ -739,12 +780,85 @@ const AClientDetails = () => {
         const merged = baseWeeks.map(week => ({ ...week }));
         const usedPaymentIds = new Set();
 
-        // Pass 1: Exact date range match
+        const isUsed = (p) => {
+          if (!p) return false;
+          const pId = p._id || p.id;
+          if (pId && usedPaymentIds.has(String(pId))) return true;
+          const pDate = p.paymentDate || p.createdAt || p.date;
+          if (pDate && usedPaymentIds.has(String(pDate))) return true;
+          return false;
+        };
+
+        const markUsed = (p) => {
+          if (!p) return;
+          const pId = p._id || p.id;
+          if (pId) usedPaymentIds.add(String(pId));
+          const pDate = p.paymentDate || p.createdAt || p.date;
+          if (pDate) usedPaymentIds.add(String(pDate));
+        };
+
+        // Pass 0: Handle advance payments targeting specific week(s)
         uniquePayments.forEach(p => {
+          const notes = (p.notes || '').trim();
+          const isAdv = /advance/i.test(notes) || p.isAdvance === true;
+          if (!isAdv) return;
+
           const pDateStr = p.paymentDate || p.createdAt || p.date;
           if (!pDateStr) return;
           const pISO = new Date(pDateStr).toISOString().split('T')[0];
-          const pId = p._id || p.id || pDateStr;
+
+          let targetWeekIds = [];
+          const bracketMatch = notes.match(/\[weeks:([0-9,\s]+)\]/i);
+          if (bracketMatch && bracketMatch[1]) {
+            targetWeekIds = bracketMatch[1].split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+          } else {
+            const weekMatches = [...notes.matchAll(/week\s*([0-9]+)/gi)];
+            if (weekMatches.length > 0) {
+              targetWeekIds = weekMatches.map(m => parseInt(m[1], 10)).filter(n => !isNaN(n));
+            }
+          }
+
+          // Always mark advance payment as used so it never touches Pass 1 or Pass 2
+          markUsed(p);
+
+          if (targetWeekIds.length > 0) {
+            targetWeekIds.forEach(targetId => {
+              const weekObj = merged.find(w => Number(w.id) === targetId && w.status !== 'paid');
+              if (weekObj) {
+                weekObj.status = 'paid';
+                weekObj.paidDate = pISO;
+                weekObj.paidAmount = weekObj.dueAmount || FORCED_WEEKLY;
+                weekObj.collectedStaff = p.collectedStaff || (p.agent && (p.agent.name || p.agent.username)) || 'Staff';
+                weekObj.collectedByRole = p.collectedByRole || (p.agent ? 'agent' : null);
+                weekObj.paymentId = p._id || p.id;
+                weekObj.isAdvance = true;
+              }
+            });
+          } else {
+            // General advance payment without specific week target: apply to earliest unpaid week
+            const weekObj = merged.find(w => w.status !== 'paid');
+            if (weekObj) {
+              weekObj.status = 'paid';
+              weekObj.paidDate = pISO;
+              weekObj.paidAmount = weekObj.dueAmount || FORCED_WEEKLY;
+              weekObj.collectedStaff = p.collectedStaff || (p.agent && (p.agent.name || p.agent.username)) || 'Staff';
+              weekObj.collectedByRole = p.collectedByRole || (p.agent ? 'agent' : null);
+              weekObj.paymentId = p._id || p.id;
+              weekObj.isAdvance = true;
+            }
+          }
+        });
+
+        // Pass 1: Exact date range match (pISO between weekStartISO and weekEndISO)
+        // Skip payments that are advance payments or already used
+        uniquePayments.forEach(p => {
+          if (isUsed(p)) return;
+          const notes = (p.notes || '').trim();
+          if (/advance/i.test(notes) || p.isAdvance === true) return;
+
+          const pDateStr = p.paymentDate || p.createdAt || p.date;
+          if (!pDateStr) return;
+          const pISO = new Date(pDateStr).toISOString().split('T')[0];
 
           const idx = merged.findIndex(w => pISO >= w.weekStartISO && pISO < w.weekEndISO && w.status !== 'paid');
           if (idx !== -1) {
@@ -754,18 +868,21 @@ const AClientDetails = () => {
             merged[idx].collectedStaff = p.collectedStaff || (p.agent && (p.agent.name || p.agent.username)) || 'Unknown';
             merged[idx].collectedByRole = p.collectedByRole || (p.agent ? 'agent' : null);
             merged[idx].paymentId = p._id || p.id;
-            usedPaymentIds.add(pId);
+            markUsed(p);
           }
         });
 
-        // Pass 2: Unassigned payments fill remaining unpaid weeks
+        // Pass 2: Unassigned payments fill remaining unpaid weeks only if payment date >= week start date
+        // Skip payments that are advance payments or already used
         uniquePayments.forEach(p => {
+          if (isUsed(p)) return;
+          const notes = (p.notes || '').trim();
+          if (/advance/i.test(notes) || p.isAdvance === true) return;
+
           const pDateStr = p.paymentDate || p.createdAt || p.date;
           if (!pDateStr) return;
-          const pId = p._id || p.id || pDateStr;
-          if (usedPaymentIds.has(pId)) return;
-
           const pISO = new Date(pDateStr).toISOString().split('T')[0];
+
           const idx = merged.findIndex(w => w.status !== 'paid' && w.weekStartISO <= pISO);
           if (idx !== -1) {
             merged[idx].status = 'paid';
@@ -774,7 +891,7 @@ const AClientDetails = () => {
             merged[idx].collectedStaff = p.collectedStaff || (p.agent && (p.agent.name || p.agent.username)) || 'Unknown';
             merged[idx].collectedByRole = p.collectedByRole || (p.agent ? 'agent' : null);
             merged[idx].paymentId = p._id || p.id;
-            usedPaymentIds.add(pId);
+            markUsed(p);
           }
         });
 
@@ -870,7 +987,7 @@ const AClientDetails = () => {
       let paymentSuccess = false;
       if (givenNum > 0) {
         try {
-          const payRes = await fetch('https://karanfinance.com/api/payments/process', {
+          const payRes = await fetch('http://localhost:5000/api/payments/process', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -896,7 +1013,7 @@ const AClientDetails = () => {
       }
 
       // 2. Always update client status to paid and pending to 0
-      const updateRes = await fetch(`https://karanfinance.com/api/clients/${selectedClient._id}`, {
+      const updateRes = await fetch(`http://localhost:5000/api/clients/${selectedClient._id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -989,7 +1106,7 @@ const AClientDetails = () => {
       const token = localStorage.getItem('token');
 
       // 1. Fetch current payment records to identify foreclosure payment(s)
-      const historyRes = await fetch(`https://karanfinance.com/api/payments/history?clientId=${selectedClient._id}`, {
+      const historyRes = await fetch(`http://localhost:5000/api/payments/history?clientId=${selectedClient._id}`, {
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { 'Authorization': `Bearer ${token}` } : {})
@@ -1006,7 +1123,7 @@ const AClientDetails = () => {
       const foreclosurePayments = payments.filter(p => p.paymentMethod === 'Foreclosure');
       for (const fp of foreclosurePayments) {
         try {
-          await fetch(`https://karanfinance.com/api/payments/${fp._id}`, {
+          await fetch(`http://localhost:5000/api/payments/${fp._id}`, {
             method: 'DELETE',
             headers: {
               'Content-Type': 'application/json',
@@ -1027,7 +1144,7 @@ const AClientDetails = () => {
       const restoredStatus = restoredPending <= 0 ? 'paid' : (restoredReceived > 0 ? 'partial' : 'pending');
 
       // Update client in backend
-      const updateRes = await fetch(`https://karanfinance.com/api/clients/${selectedClient._id}`, {
+      const updateRes = await fetch(`http://localhost:5000/api/clients/${selectedClient._id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -1112,7 +1229,7 @@ const AClientDetails = () => {
         ...(reloanDistrict ? { district: reloanDistrict } : {})
       };
 
-      const res = await fetch(`https://karanfinance.com/api/clients/${selectedClient._id}`, {
+      const res = await fetch(`http://localhost:5000/api/clients/${selectedClient._id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -1373,6 +1490,15 @@ const AClientDetails = () => {
                       >
                         <i className="fas fa-money-bill-wave text-xs"></i>
                         Pay Due
+                      </button>
+                    )}
+                    {selectedClient.status !== 'paid' && (selectedClient.pending > 0 || (selectedClient.amount || 6900) - (selectedClient.received || 0) > 0) && (
+                      <button
+                        onClick={openAdvanceModal}
+                        className="bg-amber-500 hover:bg-amber-600 text-white px-3.5 py-1.5 rounded-lg text-sm font-semibold transition-all shadow-sm flex items-center gap-1.5 active:scale-95 cursor-pointer"
+                        title="Pay upcoming due in advance"
+                      >
+                        ⚡ Advance Pay
                       </button>
                     )}
                     {selectedClient.status !== 'paid' ? (
@@ -1994,6 +2120,160 @@ const AClientDetails = () => {
                 </button>
               </div>
 
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Advance Payment Modal */}
+      {showAdvanceModal && selectedClient && (() => {
+        const outstanding = selectedClient.pending !== undefined && selectedClient.pending !== null
+          ? selectedClient.pending
+          : Math.max(0, (selectedClient.amount || 6900) - (selectedClient.received || 0));
+        const pendingWeeks = duePayments.filter(w => w.status === 'pending');
+        const baseWeekly = (selectedClient.weekly_amount && Number(selectedClient.weekly_amount) > 0)
+          ? Number(selectedClient.weekly_amount) : FORCED_WEEKLY;
+        const numAdvance = Number(advanceAmount) || 0;
+        const remainingAfter = Math.max(0, outstanding - numAdvance);
+        return (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl border border-amber-100 max-h-[90vh] overflow-y-auto">
+              {/* Header */}
+              <div className="flex items-center justify-between pb-3 mb-4 border-b border-amber-100">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center text-lg font-bold">
+                    ⚡
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-bold text-[#16423C]">Advance Payment</h3>
+                    <p className="text-xs text-gray-500">Pay for upcoming due week(s) early</p>
+                  </div>
+                </div>
+                <button onClick={() => !advanceLoading && setShowAdvanceModal(false)} disabled={advanceLoading}
+                  className="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-40">
+                  <i className="fas fa-times text-lg"></i>
+                </button>
+              </div>
+
+              {/* Client Info */}
+              <div className="bg-amber-50 p-3 rounded-xl border border-amber-200 mb-4">
+                <div className="font-bold text-gray-800 text-sm">{selectedClient.name}</div>
+                <div className="text-xs text-gray-500 mt-0.5">ID: {selectedClient.clientId || 'N/A'} • Balance: ₹{outstanding.toLocaleString('en-IN')}</div>
+              </div>
+
+              {/* Due Week Selector - Multiple Weeks */}
+              <div className="mb-4">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider">
+                    Select Due Week(s) <span className="text-red-500">*</span>
+                  </label>
+                  {pendingWeeks.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={toggleSelectAllAdvanceWeeks}
+                      className="text-xs font-bold text-amber-600 hover:text-amber-800 transition-colors"
+                    >
+                      {selectedAdvanceWeeks.length === pendingWeeks.length ? '✕ Deselect All' : '✓ Select All'}
+                    </button>
+                  )}
+                </div>
+
+                {pendingWeeks.length === 0 ? (
+                  <div className="text-sm text-gray-500 bg-gray-50 p-3 rounded-lg border">No pending weeks found</div>
+                ) : (
+                  <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                    {pendingWeeks.map(w => {
+                      const isSelected = selectedAdvanceWeeks.includes(String(w.id));
+                      return (
+                        <div
+                          key={w.id}
+                          onClick={() => toggleAdvanceWeek(w.id)}
+                          className={`flex items-center gap-3 p-2.5 rounded-xl border-2 cursor-pointer transition-all ${
+                            isSelected
+                              ? 'border-amber-500 bg-amber-50 shadow-sm'
+                              : 'border-gray-200 hover:border-amber-200 bg-white'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => {}}
+                            className="w-4 h-4 text-amber-600 rounded border-gray-300 focus:ring-amber-500 cursor-pointer"
+                          />
+                          <div className="flex-1">
+                            <div className="text-sm font-semibold text-gray-800 flex items-center justify-between">
+                              <span>{w.month}</span>
+                              <span className="text-amber-700 font-bold">₹{(w.dueAmount || baseWeekly).toLocaleString('en-IN')}</span>
+                            </div>
+                            <div className="text-[11px] text-gray-500">
+                              Week #{w.id} • Due: ₹{(w.dueAmount || baseWeekly).toLocaleString('en-IN')}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {selectedAdvanceWeeks.length > 0 && (
+                  <div className="mt-2 text-xs font-semibold text-amber-800 bg-amber-50 px-2.5 py-1.5 rounded-lg border border-amber-200 flex items-center justify-between">
+                    <span>Selected: <strong>{selectedAdvanceWeeks.length} week{selectedAdvanceWeeks.length > 1 ? 's' : ''}</strong> (Week {selectedAdvanceWeeks.join(', ')})</span>
+                    <span>Total: ₹{(selectedAdvanceWeeks.length * baseWeekly).toLocaleString('en-IN')}</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Amount Field */}
+              <div className="mb-4">
+                <label className="block text-xs font-bold text-gray-700 mb-1.5 uppercase tracking-wider">Payment Amount (₹) <span className="text-red-500">*</span></label>
+                <div className="relative">
+                  <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-500 font-bold">₹</span>
+                  <input type="number" value={advanceAmount} onChange={e => setAdvanceAmount(e.target.value)}
+                    placeholder="Enter amount..."
+                    min="1" max={outstanding}
+                    className="w-full pl-8 pr-3 py-2.5 border-2 border-amber-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-400 font-bold text-lg text-[#16423C] bg-white transition-all" />
+                </div>
+                <div className="mt-2 flex items-center justify-between text-xs bg-slate-50 px-3 py-2 rounded-lg border">
+                  <span className="text-gray-600">Remaining after payment:</span>
+                  <span className="font-bold text-gray-800">₹{remainingAfter.toLocaleString('en-IN')}
+                    {numAdvance >= outstanding && outstanding > 0 && <span className="ml-1 text-emerald-600">(FULLY PAID ✓)</span>}
+                  </span>
+                </div>
+              </div>
+
+              {/* Notes */}
+              <div className="mb-4">
+                <label className="block text-xs font-bold text-gray-700 mb-1">Notes (Optional)</label>
+                <input type="text" value={advanceNotes} onChange={e => setAdvanceNotes(e.target.value)}
+                  placeholder="e.g. Paid in advance at office..."
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-amber-400" />
+              </div>
+
+              <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 p-2.5 rounded-lg mb-4">
+                ℹ️ Payment recorded with <strong>today's date</strong> — shows in today's dashboard collected amount.
+              </div>
+
+              {advanceErrorMsg && (
+                <div className="mb-3 p-3 bg-red-50 border border-red-200 text-red-700 text-xs font-semibold rounded-xl flex items-center gap-2">
+                  <i className="fas fa-exclamation-circle"></i> {advanceErrorMsg}
+                </div>
+              )}
+
+              <div className="flex gap-3 pt-2 border-t border-gray-100">
+                <button onClick={handleAdvancePay}
+                  disabled={advanceLoading || selectedAdvanceWeeks.length === 0 || !advanceAmount || Number(advanceAmount) <= 0}
+                  className="flex-1 bg-amber-500 hover:bg-amber-600 text-white py-2.5 rounded-xl font-bold text-sm transition-all shadow-md active:scale-95 disabled:opacity-50 flex items-center justify-center gap-2">
+                  {advanceLoading ? (
+                    <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>Recording...</>
+                  ) : (
+                    <>⚡ Confirm Advance Pay (₹{numAdvance.toLocaleString('en-IN')})</>
+                  )}
+                </button>
+                <button onClick={() => setShowAdvanceModal(false)} disabled={advanceLoading}
+                  className="px-5 bg-gray-100 hover:bg-gray-200 text-gray-700 py-2.5 rounded-xl font-semibold text-sm transition-all">
+                  Cancel
+                </button>
+              </div>
             </div>
           </div>
         );

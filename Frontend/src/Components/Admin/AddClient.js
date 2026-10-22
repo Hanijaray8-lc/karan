@@ -72,7 +72,7 @@ export default function ClientManagement() {
   const fetchAgents = async () => {
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch('https://karanfinance.com/api/agents', {
+      const res = await fetch('http://localhost:5000/api/agents', {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (res.status === 401) return handleAuthError();
@@ -199,7 +199,7 @@ export default function ClientManagement() {
     try {
       setLoading(true);
       const token = localStorage.getItem('token');
-      const res = await fetch('https://karanfinance.com/api/clients', {
+      const res = await fetch('http://localhost:5000/api/clients', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
@@ -267,7 +267,7 @@ export default function ClientManagement() {
       formattedData.total_weeks = calculateTotalWeeks();
       formattedData.weekly_amount = calculateWeeklyAmount();
 
-      const res = await fetch('https://karanfinance.com/api/clients', {
+      const res = await fetch('http://localhost:5000/api/clients', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -402,7 +402,7 @@ export default function ClientManagement() {
       updatedData.total_weeks = calculateTotalWeeks();
       updatedData.weekly_amount = calculateWeeklyAmount();
 
-      const res = await fetch(`https://karanfinance.com/api/clients/${currentClient._id}`, {
+      const res = await fetch(`http://localhost:5000/api/clients/${currentClient._id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -427,7 +427,7 @@ export default function ClientManagement() {
   const handleDeleteClient = async () => {
     if (!currentClient?._id) return;
     try {
-      const res = await fetch(`https://karanfinance.com/api/clients/${currentClient._id}`, {
+      const res = await fetch(`http://localhost:5000/api/clients/${currentClient._id}`, {
         method: 'DELETE',
         headers: {
           Authorization: `Bearer ${localStorage.getItem('token')}`,

@@ -37,6 +37,8 @@ const AdminDashboard = () => {
   const [todayPendingTotal, setTodayPendingTotal] = useState(0);
   const [pendingApprovalCount, setPendingApprovalCount] = useState(0);
   const [pendingAgentsList, setPendingAgentsList] = useState([]);
+  // Date picker for dashboard date-based collection view
+  const [selectedDashDate, setSelectedDashDate] = useState(new Date().toISOString().split('T')[0]);
 
   useEffect(() => {
     const user = JSON.parse(localStorage.getItem('user'));
@@ -53,7 +55,7 @@ const AdminDashboard = () => {
     const fetchData = async () => {
       try {
         setLoadingData(true);
-        const res = await axios.get('https://karanfinance.com/api/payments/test/all');
+        const res = await axios.get('http://localhost:5000/api/payments/test/all');
         const payments = (res.data && res.data.data && res.data.data.payments) || [];
         const totalCollected = (res.data && res.data.data && res.data.data.stats && res.data.data.stats.totalCollected) || 0;
 
@@ -66,17 +68,17 @@ const AdminDashboard = () => {
           return p.agent?.name || p.agent?.username || rawStaff || 'Staff';
         };
 
-        // Helper to check if payment happened today
-        const isTodayPayment = (p) => {
+        // Helper to check if payment happened on the selectedDashDate
+        const isOnSelectedDate = (p) => {
           if (!p) return false;
-          const today = new Date();
+          const target = new Date(selectedDashDate + 'T00:00:00');
           const checkDate = (dInput) => {
             if (!dInput) return false;
             const d = new Date(dInput);
             return !isNaN(d.getTime()) &&
-              d.getFullYear() === today.getFullYear() &&
-              d.getMonth() === today.getMonth() &&
-              d.getDate() === today.getDate();
+              d.getFullYear() === target.getFullYear() &&
+              d.getMonth() === target.getMonth() &&
+              d.getDate() === target.getDate();
           };
           return checkDate(p.paymentDate) || checkDate(p.createdAt);
         };
@@ -99,8 +101,8 @@ const AdminDashboard = () => {
         });
         const staffArr = Object.keys(staffMap).map(name => ({ name, collected: staffMap[name] }));
 
-        // Today's collections grouped by collector staff
-        const todayPayments = payments.filter(isTodayPayment);
+        // Selected-date collections grouped by collector staff
+        const todayPayments = payments.filter(isOnSelectedDate);
         const todayMap = {};
         todayPayments.forEach(p => {
           const name = getCollectorName(p);
@@ -130,21 +132,29 @@ const AdminDashboard = () => {
         const monthly = Object.keys(monthBuckets).map(m => ({ month: m, amount: monthBuckets[m] }));
 
         // Fetch clients to compute total lent amount and outstanding dues
-        const clientsRes = await axios.get('https://karanfinance.com/api/clients/test/all');
+        const clientsRes = await axios.get('http://localhost:5000/api/clients/test/all');
         const clients = (clientsRes.data && clientsRes.data.clients) || [];
         const totalLent = clients.reduce((sum, c) => sum + (Number(c.amount) || 0), 0);
         const totalPending = clients.reduce((sum, c) => sum + (Number(c.pending) || 0), 0);
         const totalClients = clients.length;
 
-        // Helper: compute weekly amount for a client when server value missing
+        // Helper: compute weekly amount using the ORIGINAL loan total (not pending)
+        // Using pending causes wrong values when advance payments reduce it early.
         const computeWeeklyAmount = (client) => {
           try {
-            const pendingTotal = Number(client.pending || 0);
-            if (pendingTotal <= 0) return 0;
+            // Prefer stored weekly_amount from server
+            if (client.weekly_amount && Number(client.weekly_amount) > 0) return Number(client.weekly_amount);
+
             if (!client.loan_start_date) return 0;
 
+            // Use total loan amount (received + pending) as the basis so advance
+            // payments don't distort the per-week figure.
+            const received = Number(client.received || 0);
+            const pending = Number(client.pending || 0);
+            const loanTotal = received + pending; // original repayable amount
+
             // For ₹5000 (payable ₹6900) loans, default to 575
-            if (Number(client.amount) === 5000 || Number(client.amount) === 6900 || Number(client.pending) === 5000 || Number(client.pending) === 6900) return 575;
+            if (Number(client.amount) === 5000 || Number(client.amount) === 6900 || loanTotal === 6900) return 575;
 
             const start = new Date(client.loan_start_date);
             const defaultWeeks = 12;
@@ -157,45 +167,77 @@ const AdminDashboard = () => {
             let weeks = Math.ceil(durationDays / 7);
             if (!weeks || weeks < 1) weeks = defaultWeeks;
 
-            const weekly = weeks > 0 ? (pendingTotal / weeks) : 0;
+            const weekly = weeks > 0 ? (loanTotal / weeks) : 0;
             return Math.round(weekly * 100) / 100;
           } catch (err) {
             return 0;
           }
         };
 
-        // Helper: check if client has a due on the given date (Date object, compared by yyyy-mm-dd)
+        // Helper: check if client has a due on the given date AND has NOT already
+        // pre-paid that week via an advance payment.
+        // Logic: count how many schedule slots have passed up to & including target date,
+        // then compare with how many weeks worth of payments have been received.
+        // If received >= weeksUpToTarget * weeklyAmount, the client is ahead and NOT due.
         const isClientDueOnDate = (client, dateObj) => {
           try {
             if (!client.loan_start_date) return false;
+            // If no pending amount, client is fully paid
+            if (Number(client.pending || 0) <= 0) return false;
+
             const start = new Date(client.loan_start_date);
-            const end = client.loan_end_date ? new Date(client.loan_end_date) : new Date(start.getTime() + (12 - 1) * 7 * 24 * 60 * 60 * 1000);
+            start.setHours(0, 0, 0, 0);
+            const end = client.loan_end_date
+              ? new Date(client.loan_end_date)
+              : new Date(start.getTime() + (12 - 1) * 7 * 24 * 60 * 60 * 1000);
 
             // normalize to date-only
             const target = new Date(dateObj);
             target.setHours(0, 0, 0, 0);
 
+            // Check if today falls on a scheduled due date
             let due = new Date(start);
             due.setHours(0, 0, 0, 0);
-
+            let weekIndex = 0;
+            let foundDueWeek = -1;
             while (due <= end) {
-              if (due.getTime() === target.getTime()) return true;
+              if (due.getTime() === target.getTime()) {
+                foundDueWeek = weekIndex;
+                break;
+              }
               due = new Date(due.getTime() + 7 * 24 * 60 * 60 * 1000);
+              weekIndex++;
             }
-            return false;
+
+            // Today is not a scheduled due date
+            if (foundDueWeek === -1) return false;
+
+            // Check advance payment: if client already paid for this week ahead of time
+            // weeksExpected = foundDueWeek + 1 (1-indexed number of weeks due so far)
+            const weeklyAmount = computeWeeklyAmount(client);
+            if (weeklyAmount <= 0) return true; // can't determine, assume due
+
+            const weeksExpected = foundDueWeek + 1;
+            const amountExpected = weeksExpected * weeklyAmount;
+            const received = Number(client.received || 0);
+
+            // If received >= amount expected up to this week, client already paid ahead
+            if (received >= amountExpected) return false;
+
+            return true;
           } catch (e) {
             return false;
           }
         };
 
-        // Calculate today's due based on clients schedule
-        const todayDate = new Date();
-        todayDate.setHours(0, 0, 0, 0);
+        // Calculate due based on clients schedule for selectedDashDate
+        const targetDate = new Date(selectedDashDate + 'T00:00:00');
+        targetDate.setHours(0, 0, 0, 0);
         const dueTodayTotal = clients.reduce((sum, c) => {
           const pendingNum = Number(c.pending || 0);
           if (pendingNum <= 0) return sum;
-          const weekly = (c.weekly_amount && Number(c.weekly_amount)) || computeWeeklyAmount(c) || 575;
-          if (isClientDueOnDate(c, todayDate)) return sum + weekly;
+          const weekly = computeWeeklyAmount(c) || 575;
+          if (isClientDueOnDate(c, targetDate)) return sum + weekly;
           return sum;
         }, 0);
 
@@ -251,11 +293,12 @@ const AdminDashboard = () => {
     fetchData();
 
     // Poll for pending agent login requests
+
     const checkPendingApprovals = async () => {
       try {
         const token = localStorage.getItem('token');
         if (!token) return;
-        const res = await axios.get('https://karanfinance.com/api/agents/pending-approvals', {
+        const res = await axios.get('http://localhost:5000/api/agents/pending-approvals', {
           headers: { Authorization: `Bearer ${token}` }
         });
         if (res.data && res.data.success) {
@@ -270,7 +313,7 @@ const AdminDashboard = () => {
     checkPendingApprovals();
     const pollId = setInterval(checkPendingApprovals, 4000);
     return () => clearInterval(pollId);
-  }, []);
+  }, [selectedDashDate]);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -339,53 +382,57 @@ const AdminDashboard = () => {
         {/* Today Status Card - First Section */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 lg:gap-8 mb-10 lg:mb-12">
           <div className="bg-white rounded-xl shadow-md border border-gray-200 p-6">
-            <div className="bg-gradient-to-r from-[#16423C] to-[#1f5a52] text-white px-4 py-3 rounded-lg mb-6">
-              <h3 className="text-xl font-semibold">Today Status</h3>
+            <div className="bg-gradient-to-r from-[#16423C] to-[#1f5a52] text-white px-4 py-3 rounded-lg mb-6 flex items-center justify-between gap-3">
+              <h3 className="text-xl font-semibold">Collection Status</h3>
+              <input
+                type="date"
+                value={selectedDashDate}
+                onChange={e => setSelectedDashDate(e.target.value)}
+                className="px-2 py-1 rounded text-xs text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-400 w-36 border border-white/30"
+                title="Select date to view collected amount"
+              />
             </div>
 
-            <div className="space-y-5">
-              {/* Today Due Amount */}
-              <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg p-4 border-l-4 border-blue-500 hover:shadow-md transition-shadow">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-blue-600 font-medium uppercase tracking-wide">Today Due</p>
-                    <p className="text-3xl font-bold text-blue-800 mt-2">
-                      ₹{(todayDueTotal || 0).toLocaleString()}
-                    </p>
+            {(() => {
+              const isToday = selectedDashDate === new Date().toISOString().split('T')[0];
+              const dateLabel = new Date(selectedDashDate + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+              return (
+                <div className="space-y-5">
+                  <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg p-4 border-l-4 border-blue-500 hover:shadow-md transition-shadow">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-blue-600 font-medium uppercase tracking-wide">{isToday ? 'Today Due' : `Due on ${dateLabel}`}</p>
+                        <p className="text-3xl font-bold text-blue-800 mt-2">₹{(todayDueTotal || 0).toLocaleString()}</p>
+                      </div>
+                      <div className="text-4xl opacity-30">📅</div>
+                    </div>
+                    <p className="text-xs text-blue-600 mt-2">{isToday ? 'Today' : dateLabel} total due amount</p>
                   </div>
-                  <div className="text-4xl opacity-30">📅</div>
-                </div>
-                <p className="text-xs text-blue-600 mt-2">Today total due amount</p>
-              </div>
 
-              {/* Today Payment Success */}
-              <div className="bg-gradient-to-br from-emerald-50 to-emerald-100 rounded-lg p-4 border-l-4 border-emerald-500 hover:shadow-md transition-shadow">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-emerald-600 font-medium uppercase tracking-wide">Payment Success</p>
-                    <p className="text-3xl font-bold text-emerald-800 mt-2">
-                      ₹{(todayCollectedTotal || 0).toLocaleString()}
-                    </p>
+                  <div className="bg-gradient-to-br from-emerald-50 to-emerald-100 rounded-lg p-4 border-l-4 border-emerald-500 hover:shadow-md transition-shadow">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-emerald-600 font-medium uppercase tracking-wide">Payment Collected</p>
+                        <p className="text-3xl font-bold text-emerald-800 mt-2">₹{(todayCollectedTotal || 0).toLocaleString()}</p>
+                      </div>
+                      <div className="text-4xl opacity-30">✓</div>
+                    </div>
+                    <p className="text-xs text-emerald-600 mt-2">{isToday ? 'Today' : dateLabel} collected amount</p>
                   </div>
-                  <div className="text-4xl opacity-30">✓</div>
-                </div>
-                <p className="text-xs text-emerald-600 mt-2">Today collected amount</p>
-              </div>
 
-              {/* Today Pending Amount */}
-              <div className="bg-gradient-to-br from-amber-50 to-amber-100 rounded-lg p-4 border-l-4 border-amber-500 hover:shadow-md transition-shadow">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-amber-600 font-medium uppercase tracking-wide">Today Pending</p>
-                    <p className="text-3xl font-bold text-amber-800 mt-2">
-                      ₹{(todayPendingTotal || 0).toLocaleString()}
-                    </p>
+                  <div className="bg-gradient-to-br from-amber-50 to-amber-100 rounded-lg p-4 border-l-4 border-amber-500 hover:shadow-md transition-shadow">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-amber-600 font-medium uppercase tracking-wide">Pending</p>
+                        <p className="text-3xl font-bold text-amber-800 mt-2">₹{(todayPendingTotal || 0).toLocaleString()}</p>
+                      </div>
+                      <div className="text-4xl opacity-30">⏳</div>
+                    </div>
+                    <p className="text-xs text-amber-600 mt-2">{isToday ? 'Today' : dateLabel} not collected yet</p>
                   </div>
-                  <div className="text-4xl opacity-30">⏳</div>
                 </div>
-                <p className="text-xs text-amber-600 mt-2">Today not collected yet</p>
-              </div>
-            </div>
+              );
+            })()}
           </div>
 
           {/* Recent Activity table (span 2 cols on large screens) */}
