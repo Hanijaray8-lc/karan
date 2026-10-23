@@ -697,59 +697,70 @@ const MClientDetails = () => {
   // Apply rolling weekly adjustment logic to schedule of weeks
   // (e.g. week 1 pays 600 -> week 2 due becomes 550; week 2 pays 550 -> week 3 returns to 575)
   // Apply rolling weekly adjustment logic to schedule of weeks.
-  // Advance payment support: if client pays > base (575), excess credit carries
-  // forward as a pool and covers subsequent weeks (pending weeks show ₹0).
-  // If paid <= base, credit resets to 0 (no carry-over).
+  // Supports both:
+  // 1. Deficit/shortfall (underpaid): if client pays less than target due (e.g. 400 instead of 575),
+  //    that week shows 400 paid (due 0), and the shortfall (175) rolls forward to add to the next week (575 + 175 = 750).
+  // 2. Excess/advance: if client pays more than target due, the excess rolls forward as credit to reduce subsequent weeks.
   const applyWeeklyAdjustment = (weeks, client) => {
     if (!weeks || weeks.length === 0) return [];
     const baseWeekly = (client?.weekly_amount && Number(client.weekly_amount) > 0)
       ? Number(client.weekly_amount)
       : FORCED_WEEKLY;
 
-    let remainingCredit = 0; // outstanding advance credit pool
-    let runningDue = baseWeekly;
+    let netBalance = 0; // positive = shortfall to carry forward; negative = excess credit to reduce
 
     return weeks.map(week => {
       const w = { ...week };
-      w.dueAmount = runningDue;
 
       if (w.status === 'paid') {
         if (w.isForeclosed) {
-          w.displayAmount = w.dueAmount;
-          remainingCredit = 0;
-        } else {
-          const actualPaid = (w.paidAmount !== undefined && w.paidAmount > 0) ? w.paidAmount : w.dueAmount;
+          w.displayAmount = w.paidAmount || w.dueAmount || baseWeekly;
+          w.dueAmount = 0;
+          netBalance = 0;
+        } else if (w.isAdvance) {
+          // Targeted advance payment for this specific week
+          const actualPaid = (w.paidAmount !== undefined && w.paidAmount > 0) ? w.paidAmount : baseWeekly;
           w.paidAmount = actualPaid;
           w.displayAmount = actualPaid;
-          if (actualPaid > baseWeekly) {
-            // Paid more than base → accumulate credit pool
-            const effectivePaid = actualPaid + remainingCredit;
-            remainingCredit = Math.max(0, effectivePaid - baseWeekly);
-          } else {
-            // Paid base or less → reset credit pool
-            remainingCredit = 0;
-          }
+          w.dueAmount = 0;
+        } else {
+          // Target due for this week incorporates any rolling deficit or credit
+          const targetDue = Math.max(0, baseWeekly + netBalance);
+          const actualPaid = (w.paidAmount !== undefined && w.paidAmount > 0) ? w.paidAmount : targetDue;
+          w.paidAmount = actualPaid;
+          w.displayAmount = actualPaid;
+          w.dueAmount = 0;
+          // Update net balance: positive = shortfall, negative = credit
+          netBalance = targetDue - actualPaid;
         }
       } else {
-        // Pending week: consume credit pool
-        if (remainingCredit >= baseWeekly) {
-          // Advance covers this week fully → show ₹0 and mark as advance paid
-          remainingCredit -= baseWeekly;
-          w.displayAmount = 0;
-          w.dueAmount = 0;
-          w.status = 'advancePaid';
-        } else if (remainingCredit > 0) {
-          // Partial credit → reduce amount
-          w.displayAmount = baseWeekly - remainingCredit;
-          w.dueAmount = baseWeekly - remainingCredit;
-          remainingCredit = 0;
+        // Pending week (status !== 'paid')
+        if (netBalance > 0) {
+          // Shortfall carried forward from previous week(s) attaches to this first pending week
+          const totalDue = baseWeekly + netBalance;
+          w.displayAmount = totalDue;
+          w.dueAmount = totalDue;
+          netBalance = 0; // Shortfall has been absorbed by this pending week
+        } else if (netBalance < 0) {
+          // Advance credit pool reduces this pending week
+          const credit = -netBalance;
+          if (credit >= baseWeekly) {
+            netBalance += baseWeekly;
+            w.displayAmount = 0;
+            w.dueAmount = 0;
+            w.status = 'advancePaid';
+          } else {
+            const remaining = baseWeekly - credit;
+            w.displayAmount = remaining;
+            w.dueAmount = remaining;
+            netBalance = 0;
+          }
         } else {
-          w.displayAmount = runningDue;
-          remainingCredit = 0;
+          // Normal pending week
+          w.displayAmount = baseWeekly;
+          w.dueAmount = baseWeekly;
         }
       }
-      // Compute due for next week
-      runningDue = Math.max(0, baseWeekly - remainingCredit);
       return w;
     });
   };
@@ -2284,16 +2295,15 @@ const MClientDetails = () => {
                         <div
                           key={w.id}
                           onClick={() => toggleAdvanceWeek(w.id)}
-                          className={`flex items-center gap-3 p-2.5 rounded-xl border-2 cursor-pointer transition-all ${
-                            isSelected
-                              ? 'border-amber-500 bg-amber-50 shadow-sm'
-                              : 'border-gray-200 hover:border-amber-200 bg-white'
-                          }`}
+                          className={`flex items-center gap-3 p-2.5 rounded-xl border-2 cursor-pointer transition-all ${isSelected
+                            ? 'border-amber-500 bg-amber-50 shadow-sm'
+                            : 'border-gray-200 hover:border-amber-200 bg-white'
+                            }`}
                         >
                           <input
                             type="checkbox"
                             checked={isSelected}
-                            onChange={() => {}}
+                            onChange={() => { }}
                             className="w-4 h-4 text-amber-600 rounded border-gray-300 focus:ring-amber-500 cursor-pointer"
                           />
                           <div className="flex-1">
