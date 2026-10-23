@@ -351,13 +351,20 @@ const processPayment = async (req, res) => {
       }
     }
 
+    // Determine effective manager ID for payment isolation
+    let effectiveManagerId = client.managerId || client.addedBy || (userRole === 'manager' ? userId : null);
+    if (!effectiveManagerId && userRole === 'agent') {
+      const agentUser = await Agent.findById(userId).select('managerId manager').lean();
+      effectiveManagerId = agentUser?.managerId || agentUser?.manager || null;
+    }
+
     // Create payment record with complete snapshot so it always displays cleanly in payment history
     const paymentData = {
       client: clientId,
       clientName: client.name,
       clientPhone: client.phone,
       clientAmount: client.amount,
-      managerId: client.managerId || client.addedBy || (userRole === 'manager' ? userId : null),
+      managerId: effectiveManagerId,
       agent: effectiveAgentId,
       collectedStaff: displayName,
       collectedStaffId: userId,
@@ -435,19 +442,37 @@ const getPaymentHistory = async (req, res) => {
     } else if (req.user.role === 'manager') {
       const manager = await Manager.findById(req.user.id);
       const jDate = manager && (manager.joinDate || manager.createdAt) ? new Date(manager.joinDate || manager.createdAt) : null;
-      // Get all client IDs added by this manager
-      const managerClients = await Client.find({
-        $or: [{ managerId: req.user.id }, { addedBy: req.user.id }]
+
+      // 1. Get all agents assigned to this manager
+      const myAgents = await Agent.find({
+        $or: [{ managerId: req.user.id }, { manager: req.user.id }]
       }).select('_id').lean();
+      const myAgentIds = myAgents.map(a => a._id);
+
+      // 2. Get all client IDs added by this manager or assigned to this manager's agents
+      const clientQuery = {
+        $or: [
+          { managerId: req.user.id },
+          { addedBy: req.user.id },
+          ...(myAgentIds.length > 0 ? [{ assigned_agent: { $in: myAgentIds } }] : [])
+        ]
+      };
+      const managerClients = await Client.find(clientQuery).select('_id').lean();
       const clientIds = managerClients.map(c => c._id);
 
-      const noManagerConditions = [{ managerId: { $exists: false } }];
+      // 3. Fallback for unassigned/legacy records (created on or after join date)
+      // Use $in: [null, undefined] so fields stored as null are matched correctly
+      const noManagerConditions = [{ managerId: { $in: [null, undefined] } }];
       if (jDate) {
         noManagerConditions.push({ $or: [{ createdAt: { $gte: jDate } }, { paymentDate: { $gte: jDate } }] });
       }
 
       query.$or = [
         { managerId: req.user.id },
+        ...(myAgentIds.length > 0 ? [
+          { agent: { $in: myAgentIds } },
+          { collectedStaffId: { $in: myAgentIds } }
+        ] : []),
         ...(clientIds.length > 0 ? [{ client: { $in: clientIds } }] : []),
         { $and: noManagerConditions }
       ];

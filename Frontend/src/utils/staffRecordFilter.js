@@ -215,11 +215,11 @@ export const clientBelongsToManager = (client, user, myAgents = []) => {
 
     const clientAgentId = String(
       (client.assigned_agent
-        ? (typeof client.assigned_agent === 'object' ? (client.assigned_agent._id || client.assigned_agent.id) : client.assigned_agent)
+        ? (typeof client.assigned_agent === 'object' ? (client.assigned_agent._id || client.assigned_agent.id || client.assigned_agent.$oid) : client.assigned_agent)
         : null) ||
       client.agentId || client.agent_id ||
       (client.agent
-        ? (typeof client.agent === 'object' ? (client.agent._id || client.agent.id) : client.agent)
+        ? (typeof client.agent === 'object' ? (client.agent._id || client.agent.id || client.agent.$oid) : client.agent)
         : null) ||
       ''
     ).trim();
@@ -276,7 +276,7 @@ export const filterPaymentsForManager = (payments, myAgents, user, scopedClients
   let allowedClientPhones = null;
   if (Array.isArray(scopedClients) && scopedClients.length > 0) {
     allowedClientIds = new Set(
-      scopedClients.map(c => String(c._id || c.id || c.clientId || '').trim()).filter(Boolean)
+      scopedClients.map(c => String(c._id || c.id || c.clientId || (c._id && c._id.$oid) || '').trim()).filter(Boolean)
     );
     allowedClientPhones = new Set(
       scopedClients.map(c => String(c.phone || '').trim()).filter(Boolean)
@@ -286,7 +286,7 @@ export const filterPaymentsForManager = (payments, myAgents, user, scopedClients
   // Pre-build set of allowed agent IDs/names
   const hasAgents = Array.isArray(myAgents) && myAgents.length > 0;
   const myAgentIds = hasAgents
-    ? new Set(myAgents.map(a => String(a._id || a.id || '').trim()).filter(Boolean))
+    ? new Set(myAgents.map(a => String(a._id || a.id || (a._id && a._id.$oid) || '').trim()).filter(Boolean))
     : null;
   const myAgentNames = hasAgents
     ? new Set(myAgents.map(a => (a.name || a.username || '').trim().toLowerCase()).filter(Boolean))
@@ -303,11 +303,26 @@ export const filterPaymentsForManager = (payments, myAgents, user, scopedClients
       if (!matchedAgent || !matchedAgent.managerAssignedAt) return true;
       const assignedAt = new Date(matchedAgent.managerAssignedAt);
       if (isNaN(assignedAt.getTime())) return true;
-      const payDate = new Date(
-        payment.paymentDate || payment.createdAt || payment.rawDate || 0
-      );
-      if (isNaN(payDate.getTime())) return true;
-      return payDate.getTime() >= assignedAt.getTime();
+
+      const payCreatedAt = payment.createdAt ? new Date(payment.createdAt) : null;
+      const payScheduledDate = payment.paymentDate ? new Date(payment.paymentDate) : null;
+      const payRawDate = payment.rawDate ? new Date(payment.rawDate) : null;
+
+      const validDates = [payCreatedAt, payScheduledDate, payRawDate].filter(d => d && !isNaN(d.getTime()));
+      if (validDates.length === 0) return true;
+
+      // Allow if any payment timestamp is on or after assignment timestamp
+      if (validDates.some(d => d.getTime() >= assignedAt.getTime())) return true;
+
+      // Also allow if payment was recorded/dated on the same calendar day as assignment
+      const assignedYMD = `${assignedAt.getFullYear()}-${String(assignedAt.getMonth() + 1).padStart(2, '0')}-${String(assignedAt.getDate()).padStart(2, '0')}`;
+      const isSameDay = validDates.some(d => {
+        const dYMD = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        return dYMD === assignedYMD;
+      });
+      if (isSameDay) return true;
+
+      return false;
     };
 
     // Helper: check if the collecting agent on this payment is one of this manager's assigned agents
@@ -316,7 +331,7 @@ export const filterPaymentsForManager = (payments, myAgents, user, scopedClients
 
       const payAgentId = String(
         (payment.agent
-          ? (typeof payment.agent === 'object' ? (payment.agent._id || payment.agent.id) : payment.agent)
+          ? (typeof payment.agent === 'object' ? (payment.agent._id || payment.agent.id || payment.agent.$oid) : payment.agent)
           : null) ||
         payment.collectedStaffId ||
         (payment.staff ? payment.staff.id : null) ||
@@ -331,7 +346,7 @@ export const filterPaymentsForManager = (payments, myAgents, user, scopedClients
       ).trim().toLowerCase();
 
       if (payAgentId && myAgentIds.has(payAgentId)) {
-        const matchedAgent = myAgents.find(a => String(a._id || a.id || '').trim() === payAgentId);
+        const matchedAgent = myAgents.find(a => String(a._id || a.id || (a._id && a._id.$oid) || '').trim() === payAgentId);
         return isAfterAssignment(matchedAgent);
       }
       if (payAgentName && myAgentNames.has(payAgentName)) {

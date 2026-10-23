@@ -206,16 +206,12 @@ const getClientWeekSchedule = (client) => {
     const pDate = p.paymentDate ? toLocalDateStr(p.paymentDate) : null;
     if (!pDate) return;
 
-    const weekObj = schedule.find(w => w.dueDate === pDate && w.status !== 'paid');
+    const weekObj = schedule.find(w => w.dueDate === pDate && !w.isAdvance);
     if (weekObj) {
       const amt = Number(p.amount || 0);
       weekObj.paidAmount += amt;
-      if (weekObj.paidAmount >= weeklyInstallment) {
-        weekObj.status = 'paid';
-        weekObj.dueAmount = 0;
-      } else {
-        weekObj.dueAmount = Math.max(0, weeklyInstallment - weekObj.paidAmount);
-      }
+      weekObj.status = 'paid';
+      weekObj.dueAmount = 0;
       weekObj.payments.push(p);
       markUsed(p);
     }
@@ -234,16 +230,12 @@ const getClientWeekSchedule = (client) => {
     const diffDays = Math.round((pDate.getTime() - start.getTime()) / (24 * 60 * 60 * 1000));
     const targetIdx = Math.floor(diffDays / 7) + 1;
 
-    const weekObj = schedule.find(w => w.weekIndex === targetIdx && w.status !== 'paid');
+    const weekObj = schedule.find(w => w.weekIndex === targetIdx && !w.isAdvance);
     if (weekObj) {
       const amt = Number(p.amount || 0);
       weekObj.paidAmount += amt;
-      if (weekObj.paidAmount >= weeklyInstallment) {
-        weekObj.status = 'paid';
-        weekObj.dueAmount = 0;
-      } else {
-        weekObj.dueAmount = Math.max(0, weeklyInstallment - weekObj.paidAmount);
-      }
+      weekObj.status = 'paid';
+      weekObj.dueAmount = 0;
       weekObj.payments.push(p);
       markUsed(p);
     }
@@ -258,8 +250,8 @@ const getClientWeekSchedule = (client) => {
 
     for (const weekObj of schedule) {
       if (amt <= 0) break;
-      if (weekObj.status !== 'paid') {
-        const needed = weekObj.dueAmount > 0 ? weekObj.dueAmount : weeklyInstallment;
+      if (weekObj.status !== 'paid' && !weekObj.isAdvance) {
+        const needed = weeklyInstallment;
         if (amt >= needed) {
           weekObj.paidAmount += needed;
           weekObj.status = 'paid';
@@ -268,7 +260,8 @@ const getClientWeekSchedule = (client) => {
           amt -= needed;
         } else {
           weekObj.paidAmount += amt;
-          weekObj.dueAmount = Math.max(0, needed - amt);
+          weekObj.status = 'paid';
+          weekObj.dueAmount = 0;
           weekObj.payments.push(p);
           amt = 0;
         }
@@ -276,21 +269,39 @@ const getClientWeekSchedule = (client) => {
     }
   });
 
-  // Pass 5: Excess payments on non-advance weeks roll forward to subsequent unpaid weeks
-  let excessCredit = 0;
+  // Pass 5: Rolling weekly adjustment for shortfall and excess payments
+  // Shortfall (underpaid): if client paid less than target due (e.g. 400 vs 575), shortfall (175)
+  // carries forward to add to the next week (575 + 175 = 750).
+  // Excess/credit (overpaid): excess carries forward to reduce subsequent weeks.
+  let netBalance = 0; // positive = shortfall to carry forward; negative = excess credit
   for (const weekObj of schedule) {
-    if (weekObj.status === 'paid' && !weekObj.isAdvance && weekObj.paidAmount > weeklyInstallment) {
-      excessCredit += (weekObj.paidAmount - weeklyInstallment);
-    } else if (weekObj.status !== 'paid' && excessCredit > 0) {
-      if (excessCredit >= weekObj.dueAmount) {
-        excessCredit -= weekObj.dueAmount;
-        weekObj.paidAmount += weekObj.dueAmount;
-        weekObj.status = 'paid';
-        weekObj.dueAmount = 0;
+    if (weekObj.isAdvance) {
+      continue;
+    }
+    if (weekObj.status === 'paid') {
+      const targetDue = Math.max(0, weeklyInstallment + netBalance);
+      const actualPaid = (weekObj.paidAmount !== undefined && weekObj.paidAmount > 0) ? weekObj.paidAmount : targetDue;
+      weekObj.paidAmount = actualPaid;
+      weekObj.dueAmount = 0;
+      netBalance = targetDue - actualPaid;
+    } else {
+      if (netBalance > 0) {
+        weekObj.dueAmount = weeklyInstallment + netBalance;
+        netBalance = 0;
+      } else if (netBalance < 0) {
+        const credit = -netBalance;
+        if (credit >= weeklyInstallment) {
+          netBalance += weeklyInstallment;
+          weekObj.paidAmount = weeklyInstallment;
+          weekObj.status = 'paid';
+          weekObj.dueAmount = 0;
+        } else {
+          weekObj.paidAmount = credit;
+          weekObj.dueAmount = weeklyInstallment - credit;
+          netBalance = 0;
+        }
       } else {
-        weekObj.paidAmount += excessCredit;
-        weekObj.dueAmount = Math.max(0, weekObj.dueAmount - excessCredit);
-        excessCredit = 0;
+        weekObj.dueAmount = weeklyInstallment;
       }
     }
   }

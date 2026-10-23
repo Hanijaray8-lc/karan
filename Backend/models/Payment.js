@@ -151,6 +151,13 @@ paymentSchema.pre('save', async function() {
         }
       }
     }
+    if (!this.managerId && this.agent) {
+      const Agent = require('./Agent');
+      const agentDoc = await Agent.findById(this.agent).select('managerId manager').lean();
+      if (agentDoc && (agentDoc.managerId || agentDoc.manager)) {
+        this.managerId = agentDoc.managerId || agentDoc.manager;
+      }
+    }
   } catch (err) {
     // Don't block saving payment for snapshot errors; log if needed elsewhere.
   }

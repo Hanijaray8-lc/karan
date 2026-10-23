@@ -257,9 +257,12 @@ router.put('/assign-agent', protect, authorize('admin'), async (req, res) => {
     if (managerId) {
       const manager = await Manager.findById(managerId);
       if (!manager) return res.status(404).json({ success: false, message: 'Manager not found' });
+      const isManagerChanging = !agent.managerId || agent.managerId.toString() !== managerId.toString();
       agent.managerId = managerId;
       agent.manager = managerId;
-      agent.managerAssignedAt = new Date(); // Track assignment time for time-based filtering
+      if (isManagerChanging || !agent.managerAssignedAt) {
+        agent.managerAssignedAt = new Date(); // Track assignment time for time-based filtering
+      }
     } else {
       agent.managerId = null;
       agent.manager = null;
