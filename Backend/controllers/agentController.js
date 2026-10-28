@@ -198,17 +198,35 @@ const updateAgentStatus = async (req, res) => {
 
 // @desc    Get pending agent approvals and recent login attempts
 // @route   GET /api/agents/pending-approvals
+// Role-based filtering:
+//   - admin   → sees ALL agents (general approval hub)
+//   - manager → sees only agents assigned to them (managerId or manager field)
 const getPendingApprovals = async (req, res) => {
   try {
-    const pendingAgents = await Agent.find({ role: 'agent', status: 'Pending' })
+    const { id: callerId, role: callerRole } = req.user;
+
+    // Manager: filter to only their assigned agents
+    // Admin: no filter — sees all agents (general approval section)
+    let ownershipFilter = {};
+    if (callerRole === 'manager') {
+      ownershipFilter = {
+        $or: [
+          { managerId: callerId },
+          { manager: callerId }
+        ]
+      };
+    }
+    // admin → ownershipFilter stays {} → no restriction → all agents visible
+
+    const pendingAgents = await Agent.find({ role: 'agent', status: 'Pending', ...ownershipFilter })
       .select('-password')
       .sort({ lastLoginAttempt: -1, createdAt: -1 });
 
-    const activeAgents = await Agent.find({ role: 'agent', status: 'Active' })
+    const activeAgents = await Agent.find({ role: 'agent', status: 'Active', ...ownershipFilter })
       .select('-password')
       .sort({ approvedAt: -1, joinDate: -1 });
 
-    const rejectedAgents = await Agent.find({ role: 'agent', status: { $in: ['Rejected', 'Inactive'] } })
+    const rejectedAgents = await Agent.find({ role: 'agent', status: { $in: ['Rejected', 'Inactive'] }, ...ownershipFilter })
       .select('-password')
       .sort({ updatedAt: -1 });
 
