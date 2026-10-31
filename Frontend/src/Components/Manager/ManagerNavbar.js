@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { ArrowRightOnRectangleIcon, Bars3Icon, XMarkIcon, BellIcon } from '@heroicons/react/24/outline';
 import axios from 'axios';
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+const API_URL = process.env.REACT_APP_API_URL || 'https://karanfinance.com/api';
 
 const navItems = [
   { label: 'Dashboard', path: '/Manager/managerdashboard' },
@@ -17,51 +17,87 @@ const navItems = [
   { label: 'Active / Inactive', path: '/Manager/Acive-Inactive' },
 ];
 
+// Paths that should run the RefreshButton refresh when clicked (lowercase)
+const RELOAD_PATHS = ['/manager/mdailydues'];
+
+// ---- Helpers: keep state across navbar re-mounts (no flicker / no reset) ----
+const PENDING_CACHE_KEY = 'mgrNavPending';
+
+const readPendingCache = () => {
+  try {
+    const raw = sessionStorage.getItem(PENDING_CACHE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return { count: parsed.count || 0, agents: parsed.agents || [] };
+    }
+  } catch (e) {
+    // ignore
+  }
+  return { count: 0, agents: [] };
+};
+
+const writePendingCache = (count, agents) => {
+  try {
+    sessionStorage.setItem(PENDING_CACHE_KEY, JSON.stringify({ count, agents }));
+  } catch (e) {
+    // ignore
+  }
+};
+
+const readManagerData = () => {
+  const fallback = { name: 'Manager', role: 'Staff Manager', profilePhoto: null };
+  try {
+    const savedUser = localStorage.getItem('user');
+    if (savedUser) {
+      const user = JSON.parse(savedUser);
+      return {
+        name: user.name || user.username || 'Manager',
+        role: user.role ? user.role.charAt(0).toUpperCase() + user.role.slice(1) : 'Staff Manager',
+        profilePhoto: user.profilePhoto || null
+      };
+    }
+  } catch (err) {
+    console.error('Error loading user data:', err);
+  }
+  return fallback;
+};
+
 const ManagerNavbar = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isLogoutModalOpen, setIsLogoutModalOpen] = useState(false);
-  const [managerData, setManagerData] = useState({
-    name: 'Manager',
-    role: 'Staff Manager',
-    profilePhoto: null
-  });
-  const [pendingCount, setPendingCount] = useState(0);
-  const [pendingAgents, setPendingAgents] = useState([]);
+
+  // Lazy init from localStorage / cache => no "flash" when navbar re-mounts
+  const [managerData] = useState(readManagerData);
+  const [pendingCount, setPendingCount] = useState(() => readPendingCache().count);
+  const [pendingAgents, setPendingAgents] = useState(() => readPendingCache().agents);
   const [showNotificationDropdown, setShowNotificationDropdown] = useState(false);
   const [newLoginAlert, setNewLoginAlert] = useState(null);
 
-  const prevPendingCountRef = useRef(0);
+  const prevPendingCountRef = useRef(readPendingCache().count);
   const dropdownRef = useRef(null);
-
-  // Load logged-in user's data from localStorage
-  useEffect(() => {
-    try {
-      const savedUser = localStorage.getItem('user');
-      if (savedUser) {
-        const user = JSON.parse(savedUser);
-        setManagerData({
-          name: user.name || user.username || 'Manager',
-          role: user.role ? user.role.charAt(0).toUpperCase() + user.role.slice(1) : 'Staff Manager',
-          profilePhoto: user.profilePhoto || null
-        });
-      }
-    } catch (err) {
-      console.error('Error loading user data:', err);
-    }
-  }, []);
+  const inFlightRef = useRef(false);
+  const alertTimerRef = useRef(null);
 
   // Poll for pending agent approvals & login attempts
   useEffect(() => {
-    const fetchPending = async () => {
-      try {
-        const token = localStorage.getItem('token');
-        if (!token) return;
+    let cancelled = false;
 
+    const fetchPending = async () => {
+      // Skip if tab is hidden or a request is already running
+      if (document.hidden || inFlightRef.current) return;
+
+      const token = localStorage.getItem('token');
+      if (!token) return;
+
+      inFlightRef.current = true;
+      try {
         const res = await axios.get(`${API_URL}/agents/pending-approvals`, {
           headers: { Authorization: `Bearer ${token}` }
         });
+
+        if (cancelled) return;
 
         if (res.data && res.data.success) {
           const count = res.data.pendingCount || 0;
@@ -69,22 +105,40 @@ const ManagerNavbar = () => {
 
           if (count > prevPendingCountRef.current && prevPendingCountRef.current !== 0) {
             const latest = agents[0];
-            setNewLoginAlert(latest ? `${latest.name || latest.username} is requesting login approval!` : 'New agent login approval requested!');
-            setTimeout(() => setNewLoginAlert(null), 5000);
+            setNewLoginAlert(
+              latest
+                ? `${latest.name || latest.username} is requesting login approval!`
+                : 'New agent login approval requested!'
+            );
+            if (alertTimerRef.current) clearTimeout(alertTimerRef.current);
+            alertTimerRef.current = setTimeout(() => setNewLoginAlert(null), 5000);
           }
           prevPendingCountRef.current = count;
 
-          setPendingCount(count);
-          setPendingAgents(agents);
+          // Only update state when something actually changed (avoids needless re-renders)
+          setPendingCount((prev) => (prev === count ? prev : count));
+          setPendingAgents((prev) => {
+            const same =
+              prev.length === agents.length &&
+              prev.every((p, i) => p._id === agents[i]._id);
+            return same ? prev : agents;
+          });
+          writePendingCache(count, agents);
         }
       } catch (err) {
         // silent fail
+      } finally {
+        inFlightRef.current = false;
       }
     };
 
     fetchPending();
     const interval = setInterval(fetchPending, 4000);
-    return () => clearInterval(interval);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      if (alertTimerRef.current) clearTimeout(alertTimerRef.current);
+    };
   }, []);
 
   // Close dropdown on outside click
@@ -112,7 +166,41 @@ const ManagerNavbar = () => {
     setIsLogoutModalOpen(false);
     localStorage.removeItem('token');
     localStorage.removeItem('user');
+    try {
+      sessionStorage.removeItem(PENDING_CACHE_KEY);
+    } catch (e) {
+      // ignore
+    }
     navigate('/');
+  };
+
+  const isItemActive = (item) => {
+    const p = location.pathname.toLowerCase();
+    return (
+      p === item.path.toLowerCase() ||
+      (item.isApproval && (p.includes('approval') || p.includes('aproval')))
+    );
+  };
+
+  // KEY FIX: clicking the link of the page you're already on must NOT navigate again
+  // (a same-path navigation creates a new location key and re-mounts/refreshes the page)
+  const handleNavClick = (e, path, closeMobile = false) => {
+    // Weekly Dues: run the RefreshButton refresh (clear cache + reload).
+    // Other links are untouched.
+    if (RELOAD_PATHS.includes(path.toLowerCase())) {
+      e.preventDefault();
+      if (closeMobile) setIsMobileMenuOpen(false);
+      if (location.pathname.toLowerCase() !== path.toLowerCase()) {
+        navigate(path);
+      }
+      // RefreshButton.js listens for this and runs its refresh function
+      window.dispatchEvent(new Event('triggerAppRefresh'));
+      return;
+    }
+    if (location.pathname.toLowerCase() === path.toLowerCase()) {
+      e.preventDefault();
+    }
+    if (closeMobile) setIsMobileMenuOpen(false);
   };
 
   return (
@@ -124,7 +212,10 @@ const ManagerNavbar = () => {
           <span>🔔 {newLoginAlert}</span>
           <Link
             to="/Manager/ManagerAproval"
-            onClick={() => setNewLoginAlert(null)}
+            onClick={(e) => {
+              handleNavClick(e, '/Manager/ManagerAproval');
+              setNewLoginAlert(null);
+            }}
             className="ml-2 bg-gray-900 text-white px-2.5 py-1 rounded-lg text-[10px] hover:bg-black transition"
           >
             Review Now
@@ -144,13 +235,13 @@ const ManagerNavbar = () => {
             {/* Desktop Nav Links */}
             <div className="hidden md:flex items-center space-x-1">
               {navItems.map((item) => {
-                const isActive = location.pathname.toLowerCase() === item.path.toLowerCase() ||
-                  (item.isApproval && (location.pathname.toLowerCase().includes('approval') || location.pathname.toLowerCase().includes('aproval')));
+                const isActive = isItemActive(item);
 
                 return (
                   <Link
                     key={item.path}
                     to={item.path}
+                    onClick={(e) => handleNavClick(e, item.path)}
                     className={`px-3 py-2 text-sm font-medium rounded-md transition-colors flex items-center gap-1.5 ${isActive
                       ? 'bg-emerald-700 text-white'
                       : 'hover:bg-emerald-800'
@@ -204,7 +295,10 @@ const ManagerNavbar = () => {
                           <Link
                             key={agent._id}
                             to="/Manager/ManagerAproval"
-                            onClick={() => setShowNotificationDropdown(false)}
+                            onClick={(e) => {
+                              handleNavClick(e, '/Manager/ManagerAproval');
+                              setShowNotificationDropdown(false);
+                            }}
                             className="p-3 flex items-center justify-between hover:bg-emerald-50/60 transition block"
                           >
                             <div className="text-left">
@@ -222,7 +316,10 @@ const ManagerNavbar = () => {
                     <div className="p-2 bg-gray-50 text-center border-t border-gray-100">
                       <Link
                         to="/Manager/ManagerAproval"
-                        onClick={() => setShowNotificationDropdown(false)}
+                        onClick={(e) => {
+                          handleNavClick(e, '/Manager/ManagerAproval');
+                          setShowNotificationDropdown(false);
+                        }}
                         className="text-xs font-bold text-emerald-800 hover:underline block py-1"
                       >
                         Open Approval Management →
@@ -262,6 +359,7 @@ const ManagerNavbar = () => {
               {pendingCount > 0 && (
                 <Link
                   to="/Manager/ManagerAproval"
+                  onClick={(e) => handleNavClick(e, '/Manager/ManagerAproval')}
                   className="p-1 text-amber-300 relative"
                   title="Pending Approvals"
                 >
@@ -307,14 +405,13 @@ const ManagerNavbar = () => {
           {isMobileMenuOpen && (
             <div className="md:hidden bg-emerald-800 py-4 px-2 space-y-2 border-t border-emerald-700" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>
               {navItems.map((item) => {
-                const isActive = location.pathname.toLowerCase() === item.path.toLowerCase() ||
-                  (item.isApproval && (location.pathname.toLowerCase().includes('approval') || location.pathname.toLowerCase().includes('aproval')));
+                const isActive = isItemActive(item);
 
                 return (
                   <Link
                     key={item.path}
                     to={item.path}
-                    onClick={() => setIsMobileMenuOpen(false)}
+                    onClick={(e) => handleNavClick(e, item.path, true)}
                     className={`flex items-center justify-between px-4 py-3 rounded-md text-base font-medium ${isActive
                       ? 'bg-emerald-700 text-white'
                       : 'text-white hover:bg-emerald-700'

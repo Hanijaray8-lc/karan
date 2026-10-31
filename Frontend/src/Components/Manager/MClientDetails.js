@@ -100,7 +100,7 @@ const MClientDetails = () => {
       setPayErrorMsg('');
       const token = localStorage.getItem('token');
 
-      const response = await fetch('http://localhost:5000/api/payments/process', {
+      const response = await fetch('https://karanfinance.com/api/payments/process', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -250,7 +250,7 @@ const MClientDetails = () => {
       setAdvanceLoading(true);
       setAdvanceErrorMsg('');
       const token = localStorage.getItem('token');
-      const response = await fetch('http://localhost:5000/api/payments/process', {
+      const response = await fetch('https://karanfinance.com/api/payments/process', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(token ? { 'Authorization': `Bearer ${token}` } : {}) },
         body: JSON.stringify({
@@ -322,7 +322,7 @@ const MClientDetails = () => {
       if (!silent) setLoading(true);
 
       // Use test endpoint (no auth required)
-      const response = await fetch('http://localhost:5000/api/clients/test/all', {
+      const response = await fetch('https://karanfinance.com/api/clients/test/all', {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
@@ -376,7 +376,7 @@ const MClientDetails = () => {
     try {
       const token = localStorage.getItem('token');
       if (!token) return;
-      const res = await fetch('http://localhost:5000/api/agents', {
+      const res = await fetch('https://karanfinance.com/api/agents', {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (!res.ok) return;
@@ -423,23 +423,30 @@ const MClientDetails = () => {
 
   // Helper: check if a client has a weekly due that falls exactly on the selected date
   const isClientDueOnDate = (client, selectedDateStr) => {
-    if (!client.loan_start_date) return false;
+    if (!client || !client.loan_start_date || !selectedDateStr) return false;
     const loanStart = new Date(client.loan_start_date);
     loanStart.setHours(0, 0, 0, 0);
+    const targetDate = new Date(selectedDateStr + 'T00:00:00');
+    if (isNaN(targetDate.getTime()) || targetDate < loanStart) return false;
+
+    // Check weekly cycle: must fall on the client's recurring weekday (loan_start_date day)
+    if (targetDate.getDay() !== loanStart.getDay()) return false;
+
+    const diffDays = Math.round((targetDate.getTime() - loanStart.getTime()) / (24 * 60 * 60 * 1000));
+    if (diffDays % 7 !== 0) return false;
+
+    const balance = Number(client.pending ?? ((client.amount || 6900) - (client.received || 0)));
+    // If client has pending dues, they are due on this recurring weekday even past loan_end_date
+    if (balance > 0 && client.status !== 'paid') return true;
+
+    // If client is already fully paid, check if selectedDate was within their scheduled loan period
     const loanEnd = client.loan_end_date ? new Date(client.loan_end_date) : null;
-    const totalWeeks = client.total_weeks || 12;
-
-    for (let w = 0; w < totalWeeks; w++) {
-      const dueDate = new Date(loanStart);
-      dueDate.setDate(loanStart.getDate() + w * 7);
-      const dueDateStr = dueDate.toISOString().split('T')[0];
-
-      // Stop if past loan end date
-      if (loanEnd && dueDate > loanEnd) break;
-
-      if (dueDateStr === selectedDateStr) return true;
+    if (loanEnd) {
+      loanEnd.setHours(23, 59, 59, 999);
+      return targetDate <= loanEnd;
     }
-    return false;
+    const maxEnd = new Date(loanStart.getTime() + 12 * 7 * 24 * 60 * 60 * 1000);
+    return targetDate <= maxEnd;
   };
 
   // Helper to check if a client's loan end date has arrived or passed and has unpaid balance
@@ -495,7 +502,7 @@ const MClientDetails = () => {
       const token = localStorage.getItem('token');
 
       // Call backend to delete payment
-      const res = await fetch(`http://localhost:5000/api/payments/${paymentId}`, {
+      const res = await fetch(`https://karanfinance.com/api/payments/${paymentId}`, {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
@@ -541,7 +548,7 @@ const MClientDetails = () => {
       }
 
       // Update client loan_end_date in backend
-      const updateRes = await fetch(`http://localhost:5000/api/clients/${clientId}`, {
+      const updateRes = await fetch(`https://karanfinance.com/api/clients/${clientId}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -791,14 +798,14 @@ const MClientDetails = () => {
 
       try {
         const token = localStorage.getItem('token');
-        let res = await fetch(`http://localhost:5000/api/payments/client/${selectedClient._id}`, {
+        let res = await fetch(`https://karanfinance.com/api/payments/client/${selectedClient._id}`, {
           headers: { Authorization: `Bearer ${token}` }
         });
 
         let paymentHistory = [];
 
         if (!res.ok) {
-          const historyRes = await fetch(`http://localhost:5000/api/payments/history?clientId=${selectedClient._id}`, {
+          const historyRes = await fetch(`https://karanfinance.com/api/payments/history?clientId=${selectedClient._id}`, {
             headers: { Authorization: `Bearer ${token}` }
           });
 
@@ -1046,7 +1053,7 @@ const MClientDetails = () => {
       let paymentSuccess = false;
       if (givenNum > 0) {
         try {
-          const payRes = await fetch('http://localhost:5000/api/payments/process', {
+          const payRes = await fetch('https://karanfinance.com/api/payments/process', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -1072,7 +1079,7 @@ const MClientDetails = () => {
       }
 
       // 2. Always update client status to paid and pending to 0
-      const updateRes = await fetch(`http://localhost:5000/api/clients/${selectedClient._id}`, {
+      const updateRes = await fetch(`https://karanfinance.com/api/clients/${selectedClient._id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -1165,7 +1172,7 @@ const MClientDetails = () => {
       const token = localStorage.getItem('token');
 
       // 1. Fetch current payment records to identify foreclosure payment(s)
-      const historyRes = await fetch(`http://localhost:5000/api/payments/history?clientId=${selectedClient._id}`, {
+      const historyRes = await fetch(`https://karanfinance.com/api/payments/history?clientId=${selectedClient._id}`, {
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { 'Authorization': `Bearer ${token}` } : {})
@@ -1182,7 +1189,7 @@ const MClientDetails = () => {
       const foreclosurePayments = payments.filter(p => p.paymentMethod === 'Foreclosure');
       for (const fp of foreclosurePayments) {
         try {
-          await fetch(`http://localhost:5000/api/payments/${fp._id}`, {
+          await fetch(`https://karanfinance.com/api/payments/${fp._id}`, {
             method: 'DELETE',
             headers: {
               'Content-Type': 'application/json',
@@ -1203,7 +1210,7 @@ const MClientDetails = () => {
       const restoredStatus = restoredPending <= 0 ? 'paid' : (restoredReceived > 0 ? 'partial' : 'pending');
 
       // Update client in backend
-      const updateRes = await fetch(`http://localhost:5000/api/clients/${selectedClient._id}`, {
+      const updateRes = await fetch(`https://karanfinance.com/api/clients/${selectedClient._id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -1288,7 +1295,7 @@ const MClientDetails = () => {
         ...(reloanDistrict ? { district: reloanDistrict } : {})
       };
 
-      const res = await fetch(`http://localhost:5000/api/clients/${selectedClient._id}`, {
+      const res = await fetch(`https://karanfinance.com/api/clients/${selectedClient._id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -1591,7 +1598,7 @@ const MClientDetails = () => {
                 {selectedClient.name ? selectedClient.name.substring(0, 2).toUpperCase() : 'CL'}
               </div>
 
-              <div className="flex-1 w-full">
+              <div className="flex-1 w-full min-w-0">
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
                   <div>
                     <h2 className="text-2xl md:text-3xl font-bold text-[#16423C] mb-1">
@@ -1606,11 +1613,11 @@ const MClientDetails = () => {
                       Client ID: {selectedClient.clientId || 'N/A'}
                     </p>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
                     {selectedClient.status !== 'paid' && (selectedClient.pending > 0 || (selectedClient.amount || 6900) - (selectedClient.received || 0) > 0) && (
                       <button
                         onClick={openPayModal}
-                        className="bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-1.5 rounded-lg text-sm font-semibold transition-all shadow-sm flex items-center gap-1.5 active:scale-95 cursor-pointer"
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 md:px-3.5 py-1.5 rounded-lg text-xs md:text-sm whitespace-nowrap font-semibold transition-all shadow-sm flex items-center gap-1.5 active:scale-95 cursor-pointer"
                         title="Collect / Process Custom Payment"
                       >
                         <i className="fas fa-money-bill-wave text-xs"></i>
@@ -1620,7 +1627,7 @@ const MClientDetails = () => {
                     {selectedClient.status !== 'paid' && (selectedClient.pending > 0 || (selectedClient.amount || 6900) - (selectedClient.received || 0) > 0) && (
                       <button
                         onClick={openAdvanceModal}
-                        className="bg-amber-500 hover:bg-amber-600 text-white px-3.5 py-1.5 rounded-lg text-sm font-semibold transition-all shadow-sm flex items-center gap-1.5 active:scale-95 cursor-pointer"
+                        className="bg-amber-500 hover:bg-amber-600 text-white px-3 md:px-3.5 py-1.5 rounded-lg text-xs md:text-sm whitespace-nowrap font-semibold transition-all shadow-sm flex items-center gap-1.5 active:scale-95 cursor-pointer"
                         title="Pay upcoming due in advance"
                       >
                         ⚡ Advance Pay
@@ -1629,7 +1636,7 @@ const MClientDetails = () => {
                     {selectedClient.status !== 'paid' ? (
                       <button
                         onClick={openForecloseModal}
-                        className="bg-amber-600 hover:bg-amber-700 text-white px-3.5 py-1.5 rounded-lg text-sm font-semibold transition-all shadow-sm flex items-center gap-1.5 active:scale-95 cursor-pointer"
+                        className="bg-amber-600 hover:bg-amber-700 text-white px-3 md:px-3.5 py-1.5 rounded-lg text-xs md:text-sm whitespace-nowrap font-semibold transition-all shadow-sm flex items-center gap-1.5 active:scale-95 cursor-pointer"
                         title="Foreclose Loan"
                       >
                         <i className="fas fa-hand-holding-dollar text-xs"></i>
@@ -1638,7 +1645,7 @@ const MClientDetails = () => {
                     ) : (
                       <button
                         onClick={openCancelForecloseModal}
-                        className="bg-red-600 hover:bg-red-700 text-white px-3.5 py-1.5 rounded-lg text-sm font-semibold transition-all shadow-sm flex items-center gap-1.5 active:scale-95 cursor-pointer"
+                        className="bg-red-600 hover:bg-red-700 text-white px-3 md:px-3.5 py-1.5 rounded-lg text-xs md:text-sm whitespace-nowrap font-semibold transition-all shadow-sm flex items-center gap-1.5 active:scale-95 cursor-pointer"
                         title="Cancel Foreclosure and Reopen Loan"
                       >
                         <i className="fas fa-rotate-left text-xs"></i>
@@ -1647,13 +1654,13 @@ const MClientDetails = () => {
                     )}
                     <button
                       onClick={openReloanModal}
-                      className="bg-[#16423C] hover:bg-[#1f5a52] text-white px-3.5 py-1.5 rounded-lg text-sm font-semibold transition-all shadow-sm flex items-center gap-1.5 active:scale-95 cursor-pointer"
+                      className="bg-[#16423C] hover:bg-[#1f5a52] text-white px-3 md:px-3.5 py-1.5 rounded-lg text-xs md:text-sm whitespace-nowrap font-semibold transition-all shadow-sm flex items-center gap-1.5 active:scale-95 cursor-pointer"
                       title="Start New Loan (Reloan)"
                     >
                       <i className="fas fa-rotate-right text-xs"></i>
                       Reloan
                     </button>
-                    <span className={`inline-block px-3 py-1 rounded text-base font-semibold text-white ${selectedClient.status === 'paid' ? 'bg-green-500' :
+                    <span className={`inline-block px-3 py-1 rounded text-sm md:text-base font-semibold text-white ${selectedClient.status === 'paid' ? 'bg-green-500' :
                       isClientOverdue(selectedClient) ? 'bg-red-600' :
                         selectedClient.status === 'partial' ? 'bg-amber-500' :
                           'bg-red-500'

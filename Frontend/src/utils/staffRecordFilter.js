@@ -180,7 +180,40 @@ export const clientBelongsToManager = (client, user, myAgents = []) => {
     const cManagerId = String(rawManagerId).trim();
     if (cManagerId) {
       if (managerId && cManagerId === managerId) return true;
-      // Belongs to a different manager — do NOT show
+      // If managerId doesn't match, check if client is assigned to one of THIS manager's agents
+      // (matches payment filter checkAgentAssignment logic)
+      if (Array.isArray(myAgents) && myAgents.length > 0) {
+        const myAgentIds = new Set(
+          myAgents.map(a => String(a._id || a.id || '').trim()).filter(Boolean)
+        );
+        const myAgentNames = new Set(
+          myAgents.map(a => (a.name || a.username || '').trim().toLowerCase()).filter(Boolean)
+        );
+        const clientAgentId = String(
+          (client.assigned_agent
+            ? (typeof client.assigned_agent === 'object' ? (client.assigned_agent._id || client.assigned_agent.id || client.assigned_agent.$oid) : client.assigned_agent)
+            : null) ||
+          client.agentId || client.agent_id ||
+          (client.agent
+            ? (typeof client.agent === 'object' ? (client.agent._id || client.agent.id || client.agent.$oid) : client.agent)
+            : null) ||
+          ''
+        ).trim();
+        const clientAgentName = String(
+          client.assigned_agent_name || client.agentName ||
+          (client.assigned_agent && typeof client.assigned_agent === 'object' ? (client.assigned_agent.name || client.assigned_agent.username) : '') ||
+          (client.agent && typeof client.agent === 'object' ? (client.agent.name || client.agent.username) : '') ||
+          ''
+        ).trim().toLowerCase();
+
+        if (clientAgentId && myAgentIds.has(clientAgentId)) {
+          return isRecordNewForUser(client, currentUser);
+        }
+        if (clientAgentName && myAgentNames.has(clientAgentName)) {
+          return isRecordNewForUser(client, currentUser);
+        }
+      }
+      // Belongs to a different manager and not assigned to our agents — do NOT show
       return false;
     }
   }
@@ -454,4 +487,111 @@ export const filterClientsForAgent = (clients, user) => {
     if (cAgentName && agentName && cAgentName.includes(agentName)) return true;
     return !cAgentId && !cAgentName;
   });
+};
+
+export const getClientRoleExclusionReason = (client, user, myAgents = []) => {
+  if (!client) return "invalid client";
+  const currentUser = user || getLoggedInUser();
+  if (!currentUser) return null;
+  const role = (currentUser.role || "").toLowerCase();
+  if (role === "admin") return null;
+
+  if (role === "manager") {
+    const managerId = String(currentUser._id || currentUser.id || "").trim();
+    const rawManagerId =
+      client.managerId ||
+      client.addedBy ||
+      (client.manager
+        ? (typeof client.manager === "object" ? (client.manager._id || client.manager.id) : client.manager)
+        : undefined) ||
+      client.manager_id ||
+      client.createdBy ||
+      undefined;
+
+    const hasAgents = Array.isArray(myAgents) && myAgents.length > 0;
+    const myAgentIds = hasAgents
+      ? new Set(myAgents.map(a => String(a._id || a.id || "").trim()).filter(Boolean))
+      : null;
+    const myAgentNames = hasAgents
+      ? new Set(myAgents.map(a => (a.name || a.username || "").trim().toLowerCase()).filter(Boolean))
+      : null;
+
+    const clientAgentId = String(
+      (client.assigned_agent
+        ? (typeof client.assigned_agent === "object" ? (client.assigned_agent._id || client.assigned_agent.id || client.assigned_agent.$oid) : client.assigned_agent)
+        : null) ||
+      client.agentId || client.agent_id ||
+      (client.agent
+        ? (typeof client.agent === "object" ? (client.agent._id || client.agent.id || client.agent.$oid) : client.agent)
+        : null) ||
+      ""
+    ).trim();
+
+    const clientAgentName = String(
+      client.assigned_agent_name || client.agentName ||
+      (client.assigned_agent && typeof client.assigned_agent === "object" ? (client.assigned_agent.name || client.assigned_agent.username) : "") ||
+      (client.agent && typeof client.agent === "object" ? (client.agent.name || client.agent.username) : "") ||
+      ""
+    ).trim().toLowerCase();
+
+    const isAssignedToOurAgent = hasAgents && (
+      (clientAgentId && myAgentIds.has(clientAgentId)) ||
+      (clientAgentName && myAgentNames.has(clientAgentName))
+    );
+
+    if (rawManagerId !== undefined && rawManagerId !== null && rawManagerId !== "") {
+      const cManagerId = String(rawManagerId).trim();
+      if (cManagerId) {
+        if (managerId && cManagerId === managerId) {
+          if (!isRecordNewForUser(client, currentUser)) return "join-date filter";
+          return null;
+        }
+        if (isAssignedToOurAgent) {
+          if (!isRecordNewForUser(client, currentUser)) return "join-date filter";
+          return null;
+        }
+        return "manager ID mismatch";
+      }
+    }
+
+    if (isAssignedToOurAgent) {
+      if (!isRecordNewForUser(client, currentUser)) return "join-date filter";
+      return null;
+    }
+    if (clientAgentId || clientAgentName) return "agent assignment mismatch";
+
+    if (!isRecordNewForUser(client, currentUser)) return "join-date filter";
+    return null;
+  }
+
+  if (role === "agent") {
+    if (!isRecordNewForUser(client, currentUser)) return "join-date filter";
+
+    const agentId = String(currentUser._id || currentUser.id || "").trim();
+    const agentName = (currentUser.name || currentUser.username || "").trim().toLowerCase();
+
+    const cAgentId = String(
+      (client.assigned_agent ? (typeof client.assigned_agent === "object"
+        ? (client.assigned_agent._id || client.assigned_agent.id || client.assigned_agent.$oid) : client.assigned_agent) : null) ||
+      client.agentId || client.agent_id ||
+      (client.agent ? (typeof client.agent === "object"
+        ? (client.agent._id || client.agent.id || client.agent.$oid) : client.agent) : null) || ""
+    ).trim();
+
+    const cAgentName = String(
+      client.assigned_agent_name || client.agentName ||
+      (client.assigned_agent && typeof client.assigned_agent === "object"
+        ? (client.assigned_agent.name || client.assigned_agent.username) : "") ||
+      (client.agent && typeof client.agent === "object"
+        ? (client.agent.name || client.agent.username) : "") || ""
+    ).trim().toLowerCase();
+
+    if (cAgentId && agentId && cAgentId === agentId) return null;
+    if (cAgentName && agentName && cAgentName.includes(agentName)) return null;
+    if (!cAgentId && !cAgentName) return null;
+
+    return "agent assignment mismatch";
+  }
+
+  return null;
 };

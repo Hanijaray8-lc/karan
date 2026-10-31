@@ -77,7 +77,7 @@ const ManagerDashboard = () => {
         let myAgents = [];
         try {
           const token = localStorage.getItem('token');
-          const agentsRes = await axios.get('http://localhost:5000/api/agents', {
+          const agentsRes = await axios.get('https://karanfinance.com/api/agents', {
             headers: { Authorization: `Bearer ${token}` }
           });
           const allAgents = (agentsRes.data && agentsRes.data.agents) || [];
@@ -88,7 +88,7 @@ const ManagerDashboard = () => {
 
         // Step 2: Fetch clients scoped to this manager (authenticated – backend filters by managerId)
         const token = localStorage.getItem('token');
-        const clientsRes = await axios.get('http://localhost:5000/api/clients/all', {
+        const clientsRes = await axios.get('https://karanfinance.com/api/clients/all', {
           headers: { Authorization: `Bearer ${token}` }
         });
         const rawClients = (clientsRes.data && clientsRes.data.clients) || [];
@@ -99,7 +99,7 @@ const ManagerDashboard = () => {
         const totalClients = clients.length;
 
         // Step 3: Fetch payments scoped to this manager (authenticated – backend filters by managerId)
-        const res = await axios.get('http://localhost:5000/api/payments/history', {
+        const res = await axios.get('https://karanfinance.com/api/payments/history', {
           headers: { Authorization: `Bearer ${token}` }
         });
         const rawPayments = (res.data && res.data.data && res.data.data.payments) || [];
@@ -337,7 +337,7 @@ const ManagerDashboard = () => {
       try {
         const token = localStorage.getItem('token');
         if (!token) return;
-        const res = await axios.get('http://localhost:5000/api/agents/pending-approvals', {
+        const res = await axios.get('https://karanfinance.com/api/agents/pending-approvals', {
           headers: { Authorization: `Bearer ${token}` }
         });
         if (res.data && res.data.success) {

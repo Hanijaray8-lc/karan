@@ -49,7 +49,12 @@ function getCacheKey(urlStr) {
 }
 
 /**
- * Detect mutations and invalidate corresponding local database tables
+ * Detect mutations and invalidate corresponding local database tables.
+ * OPTIMIZED: Instead of wiping the full cache (which forces a slow network
+ * re-fetch on the next read), we use a throttle-reset so the background
+ * revalidation fires immediately on the very next GET for that endpoint.
+ * This keeps the cached data serving instantly while the fresh data loads
+ * silently in the background — zero UI lag.
  */
 async function handleMutation(urlStr, method, responseData) {
   const upperMethod = (method || '').toUpperCase();
@@ -57,13 +62,20 @@ async function handleMutation(urlStr, method, responseData) {
     const key = (urlStr || '').toLowerCase();
 
     if (key.includes('/payments')) {
+      // Reset throttle so background revalidation fires on next GET (fast path)
+      lastRevalidationTime.delete('/api/payments/test/all');
+      lastRevalidationTime.delete('/api/clients/all');
+      // Full invalidate only for payments (smaller cache, needs fresh data)
       await localSqliteDb.invalidateCache('payments');
-      await localSqliteDb.invalidateCache('clients');
       localSqliteDb.markSynced();
     } else if (key.includes('/clients')) {
+      // Reset throttle for client cache so next poll gets fresh data
+      lastRevalidationTime.delete('/api/clients/all');
+      // Full invalidate so next read goes to network
       await localSqliteDb.invalidateCache('clients');
       localSqliteDb.markSynced();
     } else if (key.includes('/agents')) {
+      lastRevalidationTime.delete('/api/agents');
       await localSqliteDb.invalidateCache('agents');
       localSqliteDb.markSynced();
     }

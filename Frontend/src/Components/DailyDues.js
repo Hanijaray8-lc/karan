@@ -34,23 +34,18 @@ const toLocalDateStr = (dateInput) => {
 };
 
 // Helper for generating scheduled weekly due dates
-const getClientScheduledDueDates = (client) => {
+// Fixed 12-week schedule only (week 1..12). Never extend to 13, 14, 15...
+// even if loan_end_date was pushed or the client still has pending dues.
+const getClientScheduledDueDates = (client, targetDate = null) => {
   if (!client || !client.loan_start_date) return [];
   const start = parseLocalDate(client.loan_start_date);
   if (!start) return [];
 
   const defaultWeeks = 12;
-  const end = client.loan_end_date
-    ? parseLocalDate(client.loan_end_date)
-    : new Date(start.getFullYear(), start.getMonth(), start.getDate() + (defaultWeeks - 1) * 7);
-
-  // Cap to max 12 weeks regardless of how many times the client was pushed.
-  // Pushed clients stay in week 12 slot (not week 13/14/15...) until fully paid.
-  const maxWeeks = defaultWeeks;
 
   const dueDates = [];
   let due = new Date(start);
-  while (due <= end && dueDates.length < maxWeeks) {
+  for (let i = 0; i < defaultWeeks; i++) {
     dueDates.push(toLocalDateStr(due));
     due.setDate(due.getDate() + 7);
   }
@@ -103,9 +98,9 @@ const getAdvanceTargetDetails = (p, client) => {
 };
 
 // Build accurate week-by-week schedule and payment status for client
-const getClientWeekSchedule = (client) => {
+const getClientWeekSchedule = (client, targetDate = null) => {
   if (!client) return [];
-  const scheduledDates = getClientScheduledDueDates(client);
+  const scheduledDates = getClientScheduledDueDates(client, targetDate);
   if (!scheduledDates || scheduledDates.length === 0) return [];
 
   const weeklyInstallment = (client.weekly_amount && Number(client.weekly_amount) > 0)
@@ -146,6 +141,17 @@ const getClientWeekSchedule = (client) => {
     const db = new Date(b.paymentDate || b.createdAt || b.date || 0);
     return da - db;
   });
+
+  // FIX: ignore payments made BEFORE this loan cycle started (old-cycle payments).
+  // Otherwise Pass 4 spreads them into future weeks and marks those weeks as paid,
+  // which hides the client from the Daily Dues list.
+  const _cycleStart = parseLocalDate(client.loan_start_date);
+  for (let i = uniquePayments.length - 1; i >= 0; i--) {
+    const pp = uniquePayments[i];
+    const pd = pp.paymentDate ? parseLocalDate(pp.paymentDate) : null;
+    const isAdv = getAdvanceTargetDetails(pp, client);
+    if (pd && _cycleStart && pd < _cycleStart && !isAdv) uniquePayments.splice(i, 1);
+  }
 
   const usedPaymentIds = new Set();
   const isUsed = (p) => {
@@ -309,10 +315,65 @@ const getClientWeekSchedule = (client) => {
   return schedule;
 };
 
+// Keep the date the user picked after the Refresh button reloads the page.
+// Saved per tab (sessionStorage) and only valid for the same day, so a new day always opens on today.
+const VIEW_KEY = 'dailyDuesView_agent';
+const loadSavedView = () => {
+  try {
+    const raw = sessionStorage.getItem(VIEW_KEY);
+    if (!raw) return null;
+    const v = JSON.parse(raw);
+    return v && v.savedOn === toLocalDateStr(new Date()) ? v : null;
+  } catch (e) { return null; }
+};
+
+// Day the money was actually RECEIVED (local calendar day of createdAt).
+// Falls back to paymentDate when createdAt is missing (e.g. a payment just added locally).
+// Example: Week 2 (due 17-Oct) paid on 31-Oct is saved with paymentDate 17-Oct (so the 17-Oct card hides),
+// but it was received on 31-Oct, so it must appear in 31-Oct "Paid", not 17-Oct.
+const getPaymentReceivedDateStr = (p) => {
+  if (!p) return '';
+  const paymentDay = p.paymentDate ? toLocalDateStr(p.paymentDate) : '';
+  if (!p.createdAt) return paymentDay;
+  const created = new Date(p.createdAt);
+  const createdDay = isNaN(created.getTime()) ? '' : toLocalDateStr(created);
+  return createdDay || paymentDay;
+};
+
+// Total cash received by a client on a given date (current, previous-due and advance payments).
+// Foreclosure payments are skipped to keep the existing Paid behaviour unchanged.
+// Agent page: only agent-collected payments are counted (manager-collected ones are excluded).
+const getCashReceivedOnDate = (client, dateStr) => {
+  if (!client || !dateStr || !Array.isArray(client.payments)) return 0;
+  const seen = new Set();
+  let total = 0;
+  client.payments.forEach(p => {
+    const pId = p._id || p.id;
+    if (pId) {
+      if (seen.has(String(pId))) return;
+      seen.add(String(pId));
+    }
+    const method = (p.paymentMethod || '').toLowerCase();
+    const notes = (p.notes || '').toLowerCase();
+    if (method === 'foreclosure' || notes.includes('foreclose')) return;
+    // AGENT side: show only money collected by the agent. Manager / admin collections are not agent "Paid".
+    const collectorRole = String(p.collectedByRole || (p.collectedStaff || '').toString().match(/\((agent|manager|admin)\)$/)?.[1] || '').toLowerCase();
+    if (collectorRole && collectorRole !== 'agent') return;
+    if (getPaymentReceivedDateStr(p) === dateStr) total += Number(p.amount || 0);
+  });
+  return total;
+};
+
 const DailyDues = () => {
   const [clients, setClients] = useState([]);
-  const [selectedDate, setSelectedDate] = useState(new Date());
-  const [weekStartDate, setWeekStartDate] = useState(new Date());
+  const [selectedDate, setSelectedDate] = useState(() => {
+    const v = loadSavedView();
+    return (v && parseLocalDate(v.selectedDate)) || new Date();
+  });
+  const [weekStartDate, setWeekStartDate] = useState(() => {
+    const v = loadSavedView();
+    return (v && parseLocalDate(v.weekStartDate)) || new Date();
+  });
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedDistrict, setSelectedDistrict] = useState(() => {
     // Load from localStorage on mount
@@ -330,7 +391,10 @@ const DailyDues = () => {
   const [selectedClient, setSelectedClient] = useState(null);
   const [notification, setNotification] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [calendarDateFilter, setCalendarDateFilter] = useState('');
+  const [calendarDateFilter, setCalendarDateFilter] = useState(() => {
+    const v = loadSavedView();
+    return (v && v.calendarDateFilter) || '';
+  });
   // Track per-client actions done today (frontend-only + server check for payments)
   const [paidTodayMap, setPaidTodayMap] = useState({}); // localStorage marker for Mark Paid
   const [notPaidTodayMap, setNotPaidTodayMap] = useState({}); // localStorage marker for Not Paid
@@ -432,6 +496,18 @@ const DailyDues = () => {
   useEffect(() => {
     localStorage.setItem('selectedLandmark', selectedLandmark);
   }, [selectedLandmark]);
+
+  // Save selected date / week / calendar filter so they survive a page refresh
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(VIEW_KEY, JSON.stringify({
+        savedOn: toLocalDateStr(new Date()),
+        selectedDate: toLocalDateStr(selectedDate),
+        weekStartDate: toLocalDateStr(weekStartDate),
+        calendarDateFilter
+      }));
+    } catch (e) { }
+  }, [selectedDate, weekStartDate, calendarDateFilter]);
 
   // Mock data - replace with actual API call
   useEffect(() => {
@@ -559,7 +635,7 @@ const DailyDues = () => {
   const fetchClientsWithoutLoading = async () => {
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch('http://localhost:5000/api/clients/all', {
+      const res = await fetch('https://karanfinance.com/api/clients/all', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
@@ -591,7 +667,7 @@ const DailyDues = () => {
         });
         // Attach paid status by checking payment records
         try {
-          const payRes = await fetch('http://localhost:5000/api/payments/test/all');
+          const payRes = await fetch('https://karanfinance.com/api/payments/test/all');
           const payJson = payRes.ok ? await payRes.json() : null;
           const rawPayments = filterPaymentsForUser((payJson && payJson.data && payJson.data.payments) || [], loggedInUser);
           const seenIds = new Set();
@@ -740,7 +816,7 @@ const DailyDues = () => {
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch('http://localhost:5000/api/clients/all', {
+      const res = await fetch('https://karanfinance.com/api/clients/all', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
@@ -780,7 +856,7 @@ const DailyDues = () => {
         });
 
         try {
-          const payRes = await fetch('http://localhost:5000/api/payments/test/all');
+          const payRes = await fetch('https://karanfinance.com/api/payments/test/all');
           const payJson = payRes.ok ? await payRes.json() : null;
           const rawPayments = filterPaymentsForUser((payJson && payJson.data && payJson.data.payments) || [], loggedInUser);
           const seenIds = new Set();
@@ -936,15 +1012,26 @@ const DailyDues = () => {
   // Calculate if client is due in the given week
   const isClientDueInWeek = (client, weekStartDate, weekEndDate) => {
     // use total pending amount (client.pending) to determine if loan is active
-    if (!client || !client.loan_start_date || Number(client.pending) <= 0) {
+    if (!client || !client.loan_start_date || Number(client.pending) <= 0 || client.status === 'paid') {
       return false;
     }
-    const wStartStr = toLocalDateStr(weekStartDate);
-    const wEndStr = toLocalDateStr(weekEndDate);
-    if (!wStartStr || !wEndStr) return false;
+    const wStart = parseLocalDate(weekStartDate);
+    const wEnd = parseLocalDate(weekEndDate);
+    if (!wStart || !wEnd) return false;
 
-    const scheduledDates = getClientScheduledDueDates(client);
-    return scheduledDates.some(d => d >= wStartStr && d <= wEndStr);
+    const start = parseLocalDate(client.loan_start_date);
+    if (!start) return false;
+
+    // Check if client's weekly collection day falls within this week window and is >= loan_start_date
+    const clientDay = start.getDay();
+    let cur = new Date(wStart);
+    while (cur <= wEnd) {
+      if (cur.getDay() === clientDay && cur >= start) {
+        return true;
+      }
+      cur.setDate(cur.getDate() + 1);
+    }
+    return false;
   };
 
   // Get week start and end dates
@@ -1002,7 +1089,7 @@ const DailyDues = () => {
     if (client.status === 'paid' && Number(client.pending) <= 0) return true;
 
     // Use week schedule to precisely determine if target date's week is paid
-    const schedule = getClientWeekSchedule(client);
+    const schedule = getClientWeekSchedule(client, targetDate);
     if (schedule && schedule.length > 0) {
       const weekObj = schedule.find(w => w.dueDate === targetDate);
       if (weekObj) {
@@ -1103,12 +1190,18 @@ const DailyDues = () => {
 
     filtered.forEach(client => {
       const remainingDue = calculateCurrentDue(client, statsDate);
-      const paidOnDate = getPaidAmountOnDate(client, statsDate);
-
-      totalPaid += paidOnDate;
       if (!isClientPaidOnDate(client, statsDate)) {
         totalDue += remainingDue;
       }
+    });
+
+    // PAID = cash actually received on this date (any due week: current, previous or advance).
+    // Counted by the day it was received, not by the due date it settled, and includes clients
+    // that are not due on this date.
+    clients.forEach(client => {
+      if (selectedDistrict && client.district !== selectedDistrict) return;
+      if (selectedLandmark && client.landmark !== selectedLandmark) return;
+      totalPaid += getCashReceivedOnDate(client, statsDate);
     });
 
     return { totalDue, totalPaid };
@@ -1117,7 +1210,7 @@ const DailyDues = () => {
   const getPaidAmountOnDate = (client, dateStr) => {
     if (!client) return 0;
     const targetDate = dateStr || calendarDateFilter || toLocalDateStr(selectedDate);
-    const schedule = getClientWeekSchedule(client);
+    const schedule = getClientWeekSchedule(client, targetDate);
     if (schedule && schedule.length > 0) {
       const weekObj = schedule.find(w => w.dueDate === targetDate);
       if (weekObj && (weekObj.status === 'paid' || weekObj.paidAmount > 0)) {
@@ -1162,7 +1255,7 @@ const DailyDues = () => {
     const targetDateStr = dateParam || calendarDateFilter || toLocalDateStr(selectedDate);
     if (!targetDateStr) return Math.min(pendingCap, weeklyInstallment);
 
-    const schedule = getClientWeekSchedule(client);
+    const schedule = getClientWeekSchedule(client, targetDateStr);
     if (schedule && schedule.length > 0) {
       const weekObj = schedule.find(w => w.dueDate === targetDateStr);
       if (weekObj) {
@@ -1223,7 +1316,7 @@ const DailyDues = () => {
 
       const today = getTodayDateString();
       // Query for payments made today for this specific client
-      const res = await fetch(`http://localhost:5000/api/payments/history?clientId=${clientId}&startDate=${today}&endDate=${today}`, {
+      const res = await fetch(`https://karanfinance.com/api/payments/history?clientId=${clientId}&startDate=${today}&endDate=${today}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
@@ -1297,7 +1390,7 @@ const DailyDues = () => {
       const targetDateStr = calendarDateFilter || toLocalDateStr(selectedDate);
       const payDateIso = targetDateStr ? `${targetDateStr}T12:00:00.000Z` : new Date().toISOString();
 
-      const res = await fetch('http://localhost:5000/api/payments/process', {
+      const res = await fetch('https://karanfinance.com/api/payments/process', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1425,7 +1518,7 @@ const DailyDues = () => {
         return;
       }
 
-      const res = await fetch(`http://localhost:5000/api/clients/${client._id}`, {
+      const res = await fetch(`https://karanfinance.com/api/clients/${client._id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -1851,12 +1944,26 @@ const DailyDues = () => {
   // Check if client has a due on the exact date string (yyyy-MM-dd)
   const isClientDueOnDate = (client, dateStr) => {
     if (!client || !client.loan_start_date) return false;
-    if (Number(client.pending) <= 0) return false;
+    if (Number(client.pending) <= 0 || client.status === 'paid') return false;
     const targetStr = toLocalDateStr(dateStr);
     if (!targetStr) return false;
 
-    const scheduledDates = getClientScheduledDueDates(client);
-    return scheduledDates.includes(targetStr);
+    const start = parseLocalDate(client.loan_start_date);
+    const target = parseLocalDate(targetStr);
+    if (!start || !target || target < start) return false;
+
+    // Day of week check: client due day is recurring weekly on loan_start_date weekday
+    if (start.getDay() !== target.getDay()) return false;
+
+    const diffDays = Math.round((target.getTime() - start.getTime()) / (24 * 60 * 60 * 1000));
+    if (diffDays % 7 !== 0) return false;
+
+    // Cap at 12 weeks: only weeks 1-12 are valid scheduled due dates.
+    // Week index = (diffDays / 7) + 1; must be <= 12.
+    const weekIndex = Math.floor(diffDays / 7) + 1;
+    if (weekIndex > 12) return false;
+
+    return true;
   };
 
   // Calculate which due-week index (1-based) the given date corresponds to for the client
@@ -1866,9 +1973,16 @@ const DailyDues = () => {
     const targetStr = toLocalDateStr(dateStr);
     if (!targetStr) return null;
 
-    const scheduledDates = getClientScheduledDueDates(client);
-    const idx = scheduledDates.indexOf(targetStr);
-    return idx !== -1 ? idx + 1 : null;
+    const start = parseLocalDate(client.loan_start_date);
+    const target = parseLocalDate(targetStr);
+    if (!start || !target || target < start) return null;
+
+    if (start.getDay() !== target.getDay()) return null;
+
+    const diffDays = Math.round((target.getTime() - start.getTime()) / (24 * 60 * 60 * 1000));
+    if (diffDays % 7 !== 0) return null;
+
+    return Math.floor(diffDays / 7) + 1;
   };
 
   // Drag handlers for reordering landmarks

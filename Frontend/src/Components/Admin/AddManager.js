@@ -229,7 +229,7 @@ export default function AddManager() {
     try {
       setLoading(true);
       const token = localStorage.getItem('token');
-      const res = await fetch('http://localhost:5000/api/managers', {
+      const res = await fetch('https://karanfinance.com/api/managers', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
@@ -256,7 +256,7 @@ export default function AddManager() {
     try {
       setLoading(true);
       const token = localStorage.getItem('token');
-      const res = await fetch(`http://localhost:5000/api/managers/${managerId}/approve`, {
+      const res = await fetch(`https://karanfinance.com/api/managers/${managerId}/approve`, {
         method: 'PUT',
         headers: {
           'Authorization': `Bearer ${token}`
@@ -362,7 +362,7 @@ export default function AddManager() {
         facePhoto: formData.facePhoto || ''
       };
 
-      const res = await fetch('http://localhost:5000/api/managers', {
+      const res = await fetch('https://karanfinance.com/api/managers', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -421,7 +421,7 @@ export default function AddManager() {
         managerData.password = formData.password;
       }
 
-      const res = await fetch(`http://localhost:5000/api/managers/${currentManager._id}`, {
+      const res = await fetch(`https://karanfinance.com/api/managers/${currentManager._id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -456,7 +456,7 @@ export default function AddManager() {
     try {
       setResetting(true);
       const token = localStorage.getItem('token');
-      const res = await fetch(`http://localhost:5000/api/managers/${currentManager._id}/reset-password`, {
+      const res = await fetch(`https://karanfinance.com/api/managers/${currentManager._id}/reset-password`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` }
       });
@@ -488,7 +488,7 @@ export default function AddManager() {
       setLoading(true);
       const token = localStorage.getItem('token');
 
-      const res = await fetch(`http://localhost:5000/api/managers/${currentManager._id}`, {
+      const res = await fetch(`https://karanfinance.com/api/managers/${currentManager._id}`, {
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${token}`,

@@ -16,6 +16,7 @@ const AClientDetails = () => {
   const [selectedDistrict, setSelectedDistrict] = useState('');
   const [selectedLandmark, setSelectedLandmark] = useState('');
   const [selectedStatus, setSelectedStatus] = useState('');
+  const [weekDateFilter, setWeekDateFilter] = useState(''); // date filter: show clients due on this exact date
   const [districts, setDistricts] = useState([]);
   const [landmarks, setLandmarks] = useState([]);
   // Fixed weekly amount used across this view (do not change other components)
@@ -101,7 +102,7 @@ const AClientDetails = () => {
       setPayErrorMsg('');
       const token = localStorage.getItem('token');
 
-      const response = await fetch('http://localhost:5000/api/payments/process', {
+      const response = await fetch('https://karanfinance.com/api/payments/process', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -251,7 +252,7 @@ const AClientDetails = () => {
       setAdvanceLoading(true);
       setAdvanceErrorMsg('');
       const token = localStorage.getItem('token');
-      const response = await fetch('http://localhost:5000/api/payments/process', {
+      const response = await fetch('https://karanfinance.com/api/payments/process', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(token ? { 'Authorization': `Bearer ${token}` } : {}) },
         body: JSON.stringify({
@@ -322,7 +323,7 @@ const AClientDetails = () => {
       const token = localStorage.getItem('token');
 
       // Call backend to delete payment
-      const res = await fetch(`http://localhost:5000/api/payments/${paymentId}`, {
+      const res = await fetch(`https://karanfinance.com/api/payments/${paymentId}`, {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
@@ -368,7 +369,7 @@ const AClientDetails = () => {
       }
 
       // Update client loan_end_date in backend
-      const updateRes = await fetch(`http://localhost:5000/api/clients/${clientId}`, {
+      const updateRes = await fetch(`https://karanfinance.com/api/clients/${clientId}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -449,13 +450,13 @@ const AClientDetails = () => {
 
       // If no token, use the public test endpoint to avoid 401 when not authenticated
       if (!token) {
-        const res = await fetch('http://localhost:5000/api/clients/test/all');
+        const res = await fetch('https://karanfinance.com/api/clients/test/all');
         if (!res.ok) throw new Error('Failed to fetch clients');
         const json = await res.json();
         clientsList = json.clients || [];
       } else {
         // Try the protected endpoint when token is available
-        const response = await fetch('http://localhost:5000/api/clients', {
+        const response = await fetch('https://karanfinance.com/api/clients', {
           headers: {
             'Authorization': `Bearer ${token}`
           }
@@ -463,7 +464,7 @@ const AClientDetails = () => {
 
         // If unauthorized, fallback to public test endpoint to avoid showing 401 errors to unauthenticated users
         if (response.status === 401) {
-          const fb = await fetch('http://localhost:5000/api/clients/test/all');
+          const fb = await fetch('https://karanfinance.com/api/clients/test/all');
           if (!fb.ok) throw new Error('Failed to fetch clients');
           const fbJson = await fb.json();
           clientsList = fbJson.clients || [];
@@ -541,6 +542,34 @@ const AClientDetails = () => {
     }
   }, [selectedDistrict, clients]);
 
+  // Helper: check if a client has a weekly due that falls exactly on the selected date (timezone-safe)
+  const isClientDueOnDate = (client, selectedDateStr) => {
+    if (!client || !client.loan_start_date || !selectedDateStr) return false;
+    const loanStart = new Date(client.loan_start_date);
+    loanStart.setHours(0, 0, 0, 0);
+    const targetDate = new Date(selectedDateStr + 'T00:00:00');
+    if (isNaN(targetDate.getTime()) || targetDate < loanStart) return false;
+
+    // Check weekly cycle: must fall on the client's recurring weekday (loan_start_date day)
+    if (targetDate.getDay() !== loanStart.getDay()) return false;
+
+    const diffDays = Math.round((targetDate.getTime() - loanStart.getTime()) / (24 * 60 * 60 * 1000));
+    if (diffDays % 7 !== 0) return false;
+
+    const balance = Number(client.pending ?? ((client.amount || 6900) - (client.received || 0)));
+    // If client has pending dues, they are due on this recurring weekday even past loan_end_date
+    if (balance > 0 && client.status !== 'paid') return true;
+
+    // If client is already fully paid, check if selectedDate was within their scheduled loan period
+    const loanEnd = client.loan_end_date ? new Date(client.loan_end_date) : null;
+    if (loanEnd) {
+      loanEnd.setHours(23, 59, 59, 999);
+      return targetDate <= loanEnd;
+    }
+    const maxEnd = new Date(loanStart.getTime() + 12 * 7 * 24 * 60 * 60 * 1000);
+    return targetDate <= maxEnd;
+  };
+
   // Helper to check if a client's loan end date has arrived or passed and has unpaid balance
   const isClientOverdue = (client) => {
     if (!client || !client.loan_end_date) return false;
@@ -571,7 +600,13 @@ const AClientDetails = () => {
       matchesStatus = client.status === 'paid';
     }
 
-    return matchesSearch && matchesDistrict && matchesLandmark && matchesStatus;
+    // Date filter: show only clients whose weekly due date is exactly the selected date
+    let matchesWeekDate = true;
+    if (weekDateFilter) {
+      matchesWeekDate = isClientDueOnDate(client, weekDateFilter);
+    }
+
+    return matchesSearch && matchesDistrict && matchesLandmark && matchesStatus && matchesWeekDate;
   });
 
   // Generate 12 weekly due payments based on loan dates (12 weeks)
@@ -741,7 +776,7 @@ const AClientDetails = () => {
 
       try {
         const token = localStorage.getItem('token');
-        const res = await fetch(`http://localhost:5000/api/payments/client/${selectedClient._id}`, {
+        const res = await fetch(`https://karanfinance.com/api/payments/client/${selectedClient._id}`, {
           headers: { Authorization: `Bearer ${token}` }
         });
 
@@ -749,7 +784,7 @@ const AClientDetails = () => {
 
         if (!res.ok) {
           // Try admin route as a fallback (for admins viewing any client)
-          const adminRes = await fetch(`http://localhost:5000/api/payments/admin/all`, {
+          const adminRes = await fetch(`https://karanfinance.com/api/payments/admin/all`, {
             headers: { Authorization: `Bearer ${token}` }
           });
 
@@ -998,7 +1033,7 @@ const AClientDetails = () => {
       let paymentSuccess = false;
       if (givenNum > 0) {
         try {
-          const payRes = await fetch('http://localhost:5000/api/payments/process', {
+          const payRes = await fetch('https://karanfinance.com/api/payments/process', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -1024,7 +1059,7 @@ const AClientDetails = () => {
       }
 
       // 2. Always update client status to paid and pending to 0
-      const updateRes = await fetch(`http://localhost:5000/api/clients/${selectedClient._id}`, {
+      const updateRes = await fetch(`https://karanfinance.com/api/clients/${selectedClient._id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -1117,7 +1152,7 @@ const AClientDetails = () => {
       const token = localStorage.getItem('token');
 
       // 1. Fetch current payment records to identify foreclosure payment(s)
-      const historyRes = await fetch(`http://localhost:5000/api/payments/history?clientId=${selectedClient._id}`, {
+      const historyRes = await fetch(`https://karanfinance.com/api/payments/history?clientId=${selectedClient._id}`, {
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { 'Authorization': `Bearer ${token}` } : {})
@@ -1130,21 +1165,19 @@ const AClientDetails = () => {
         payments = historyData.data?.payments || [];
       }
 
-      // Delete any foreclosure payment records
+      // Delete any foreclosure payment records in parallel (Promise.all is much faster than sequential await)
       const foreclosurePayments = payments.filter(p => p.paymentMethod === 'Foreclosure');
-      for (const fp of foreclosurePayments) {
-        try {
-          await fetch(`http://localhost:5000/api/payments/${fp._id}`, {
+      if (foreclosurePayments.length > 0) {
+        await Promise.all(foreclosurePayments.map(fp =>
+          fetch(`https://karanfinance.com/api/payments/${fp._id}`, {
             method: 'DELETE',
             headers: {
               'Content-Type': 'application/json',
               ...(token ? { 'Authorization': `Bearer ${token}` } : {})
             },
             body: JSON.stringify({ clientId: selectedClient._id, amount: fp.amount })
-          });
-        } catch (e) {
-          console.warn('Error deleting foreclosure payment record:', e);
-        }
+          }).catch(e => console.warn('Error deleting foreclosure payment record:', e))
+        ));
       }
 
       // Calculate restored received from standard payments
@@ -1155,7 +1188,7 @@ const AClientDetails = () => {
       const restoredStatus = restoredPending <= 0 ? 'paid' : (restoredReceived > 0 ? 'partial' : 'pending');
 
       // Update client in backend
-      const updateRes = await fetch(`http://localhost:5000/api/clients/${selectedClient._id}`, {
+      const updateRes = await fetch(`https://karanfinance.com/api/clients/${selectedClient._id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -1240,7 +1273,7 @@ const AClientDetails = () => {
         ...(reloanDistrict ? { district: reloanDistrict } : {})
       };
 
-      const res = await fetch(`http://localhost:5000/api/clients/${selectedClient._id}`, {
+      const res = await fetch(`https://karanfinance.com/api/clients/${selectedClient._id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -1383,10 +1416,42 @@ const AClientDetails = () => {
                   </div>
                 </div>
 
+                {/* Exact Due Date Filter */}
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <div className="flex items-center gap-1.5 flex-1 min-w-[220px]">
+                    <label className="text-xs font-semibold text-[#16423C] whitespace-nowrap flex items-center gap-1">
+                      <i className="fas fa-calendar-day text-[#6A9C89]"></i>
+                      Due Date:
+                    </label>
+                    <input
+                      type="date"
+                      value={weekDateFilter}
+                      onChange={(e) => setWeekDateFilter(e.target.value)}
+                      className="flex-1 px-2 py-1.5 rounded-lg border-2 border-[#16423C]/20 focus:outline-none focus:ring-2 focus:ring-[#16423C] text-xs bg-white cursor-pointer"
+                      title="Show only clients whose weekly due date falls exactly on this date"
+                    />
+                    {weekDateFilter && (
+                      <button
+                        onClick={() => setWeekDateFilter('')}
+                        className="text-xs text-red-500 hover:text-red-700 font-semibold px-1.5 py-1 rounded border border-red-200 hover:border-red-400 transition-colors whitespace-nowrap"
+                        title="Clear date filter"
+                      >
+                        ✕ Clear
+                      </button>
+                    )}
+                  </div>
+                  {weekDateFilter && (
+                    <span className="text-xs text-[#6A9C89] font-medium bg-emerald-50 border border-emerald-200 px-2 py-1 rounded-lg">
+                      Due on: {new Date(weekDateFilter).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                    </span>
+                  )}
+                </div>
+
                 {/* Results Count */}
                 <div className="mt-2 text-xs text-[#16423C]">
                   <i className="fas fa-list text-[#16423C] mr-1"></i>
                   Showing {filteredClients.length} of {clients.length} clients
+                  {weekDateFilter && <span className="ml-1 text-[#6A9C89] font-medium">(weekly due filter active)</span>}
                 </div>
               </div>
             </div>
@@ -1450,7 +1515,7 @@ const AClientDetails = () => {
               <div className="bg-white rounded-lg p-8 shadow text-center">
                 <i className="fas fa-search text-gray-300 text-3xl mb-3 block"></i>
                 <p className="text-gray-600 text-sm">
-                  {searchQuery || selectedDistrict || selectedLandmark
+                  {searchQuery || selectedDistrict || selectedLandmark || weekDateFilter
                     ? 'No clients found matching your filters'
                     : 'No clients found'}
                 </p>

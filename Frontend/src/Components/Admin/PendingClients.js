@@ -56,6 +56,13 @@ const PendingClients = () => {
   const [payErrorMsg, setPayErrorMsg] = useState('');
   const [paySuccessMsg, setPaySuccessMsg] = useState('');
 
+  // Pagination: 20 clients per page
+  const PAGE_SIZE = 20;
+  const [currentPage, setCurrentPage] = useState(1);
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, selectedDistrict, selectedLandmark, selectedAgent, selectedEndDate]);
+
   const showNotification = (message, type = 'success') => {
     setNotification({ message, type });
     setTimeout(() => setNotification(null), 3000);
@@ -110,7 +117,7 @@ const PendingClients = () => {
         throw new Error('Authentication token not found. Please log in again.');
       }
 
-      const response = await fetch('http://localhost:5000/api/payments/process', {
+      const response = await fetch('https://karanfinance.com/api/payments/process', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -199,7 +206,7 @@ const PendingClients = () => {
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch('http://localhost:5000/api/clients/all', {
+      const res = await fetch('https://karanfinance.com/api/clients/all', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
@@ -209,7 +216,7 @@ const PendingClients = () => {
       if (data.success && data.clients) {
         // Fetch payments to map them for dynamic due calculation
         try {
-          const payRes = await fetch('http://localhost:5000/api/payments/test/all');
+          const payRes = await fetch('https://karanfinance.com/api/payments/test/all');
           const payJson = payRes.ok ? await payRes.json() : null;
           const payments = (payJson && payJson.data && payJson.data.payments) || [];
 
@@ -696,27 +703,43 @@ const PendingClients = () => {
     avgPending: filteredList.length > 0 ? Math.round(filteredList.reduce((sum, c) => sum + getClientOutstanding(c), 0) / filteredList.length) : 0
   };
 
+  // Pagination (metrics above still use the full filtered list)
+  const totalPages = Math.max(1, Math.ceil(filteredList.length / PAGE_SIZE));
+  const safePage = Math.min(currentPage, totalPages);
+  const pageOffset = (safePage - 1) * PAGE_SIZE;
+  const paginatedList = filteredList.slice(pageOffset, pageOffset + PAGE_SIZE);
+  const pageNumbers = (() => {
+    const maxButtons = 5;
+    let start = Math.max(1, safePage - Math.floor(maxButtons / 2));
+    const end = Math.min(totalPages, start + maxButtons - 1);
+    start = Math.max(1, end - maxButtons + 1);
+    const pages = [];
+    for (let p = start; p <= end; p++) pages.push(p);
+    return pages;
+  })();
+  const pageBtnClass = "px-3 py-1.5 text-sm rounded-lg border border-gray-200 text-[#16423C] hover:bg-emerald-50 disabled:opacity-40 disabled:cursor-not-allowed";
+
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
       <AdminNavbar />
 
       {notification && (
-        <div className={`fixed top-4 right-4 z-50 px-4 py-3 rounded-lg shadow-xl text-white font-semibold transition-all ${notification.type === 'error' ? 'bg-red-500' : notification.type === 'warning' ? 'bg-yellow-500' : 'bg-emerald-600'
+        <div className={`fixed top-4 right-4 left-4 sm:left-auto text-center sm:text-left z-50 px-4 py-3 rounded-lg shadow-xl text-white font-semibold transition-all ${notification.type === 'error' ? 'bg-red-500' : notification.type === 'warning' ? 'bg-yellow-500' : 'bg-emerald-600'
           }`}>
           {notification.message}
         </div>
       )}
 
-      <div className="flex-1 px-4 py-6 w-full">
+      <div className="flex-1 px-3 sm:px-4 py-4 sm:py-6 w-full">
         {/* Header */}
         <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-6 gap-4">
           <div>
-            <h1 className="text-3xl font-extrabold text-[#16423C]">Pending Clients</h1>
+            <h1 className="text-2xl sm:text-3xl font-extrabold text-[#16423C]">Pending Clients</h1>
             <p className="text-gray-500 text-sm mt-1">Clients with unpaid loans past end date</p>
           </div>
           <button
             onClick={handleExportPDF}
-            className="bg-gradient-to-r from-emerald-600 to-[#16423C] text-white px-5 py-3 rounded-xl font-bold flex items-center justify-center gap-2 hover:-translate-y-0.5 hover:shadow-lg transition-all active:scale-95 shadow cursor-pointer"
+            className="w-full md:w-auto bg-gradient-to-r from-emerald-600 to-[#16423C] text-white px-5 py-3 rounded-xl font-bold flex items-center justify-center gap-2 hover:-translate-y-0.5 hover:shadow-lg transition-all active:scale-95 shadow cursor-pointer"
           >
             <i className="fas fa-file-pdf"></i>
             Export PDF Report
@@ -756,7 +779,7 @@ const PendingClients = () => {
         </div>
 
         {/* Filter Section */}
-        <div className="bg-white p-5 rounded-2xl border border-gray-100 shadow-sm mb-6 flex flex-col gap-4">
+        <div className="bg-white p-4 sm:p-5 rounded-2xl border border-gray-100 shadow-sm mb-6 flex flex-col gap-4">
           <div className="flex flex-col md:flex-row gap-4">
             <div className="flex-1 relative">
               <input
@@ -768,11 +791,11 @@ const PendingClients = () => {
               />
             </div>
 
-            <div className="flex flex-wrap gap-3">
+            <div className="flex flex-col sm:flex-row sm:flex-wrap gap-3">
               <select
                 value={selectedDistrict}
                 onChange={handleDistrictChange}
-                className="px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-600 focus:bg-white text-gray-700 font-medium cursor-pointer"
+                className="w-full sm:w-auto px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-600 focus:bg-white text-gray-700 font-medium cursor-pointer"
               >
                 <option value="">All Districts</option>
                 {getUniqueDistricts().map(d => (
@@ -783,7 +806,7 @@ const PendingClients = () => {
               <select
                 value={selectedLandmark}
                 onChange={handleLandmarkChange}
-                className="px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-600 focus:bg-white text-gray-700 font-medium cursor-pointer"
+                className="w-full sm:w-auto px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-600 focus:bg-white text-gray-700 font-medium cursor-pointer"
               >
                 <option value="">All Areas/Landmarks</option>
                 {getAvailableLandmarks().map(lm => (
@@ -794,7 +817,7 @@ const PendingClients = () => {
               <select
                 value={selectedAgent}
                 onChange={handleAgentChange}
-                className="px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-600 focus:bg-white text-gray-700 font-medium cursor-pointer"
+                className="w-full sm:w-auto px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-600 focus:bg-white text-gray-700 font-medium cursor-pointer"
               >
                 <option value="">All Agents</option>
                 {getUniqueAgents().map(a => (
@@ -803,7 +826,7 @@ const PendingClients = () => {
               </select>
 
               {/* Loan End Date Filter */}
-              <div className="flex items-center gap-2 bg-slate-50 border-2 border-slate-100 rounded-xl px-3 py-2">
+              <div className="flex items-center justify-between sm:justify-start gap-2 w-full sm:w-auto bg-slate-50 border-2 border-slate-100 rounded-xl px-3 py-2">
                 <span className="text-xs font-bold text-gray-500 whitespace-nowrap flex items-center gap-1">
                   <i className="fas fa-calendar-alt text-emerald-600"></i>
                   End Date:
@@ -841,94 +864,197 @@ const PendingClients = () => {
               🎉 No pending clients match the selected filters.
             </div>
           ) : (
-            <div className="w-full overflow-x-auto">
-              <table className="w-full min-w-[950px] text-left border-collapse">
-                <thead>
-                  <tr className="bg-gradient-to-r from-emerald-800 to-[#16423C] text-white text-xs font-bold uppercase tracking-wider">
-                    <th className="px-5 py-4">S.No</th>
-                    <th className="px-5 py-4">Client Name</th>
-                    <th className="px-5 py-4">Client ID</th>
-                    <th className="px-5 py-4">Landmark / District</th>
-                    <th className="px-5 py-4 text-center">Loan End Date</th>
-                    <th className="px-5 py-4 text-right">Outstanding</th>
-                    <th className="px-5 py-4 text-center">Overdue / Pushes</th>
-                    <th className="px-5 py-4 text-center">Next Due</th>
-                    <th className="px-5 py-4 text-center">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100 text-sm text-gray-700">
-                  {filteredList.map((client, idx) => {
-                    const outstanding = getClientOutstanding(client);
-                    const pushes = getClientOverdueOrPushedWeeks(client);
-                    const currentDue = calculateCurrentDue(client);
-                    const isPast = isLoanPastEndDate(client);
-
-                    return (
-                      <tr
-                        key={client._id}
-                        onClick={() => navigate(`/Admin/AClientDetails?clientId=${client._id}`)}
-                        className="hover:bg-slate-50/80 transition-colors cursor-pointer group"
-                        title="Click to view client details"
-                      >
-                        <td className="px-5 py-4 font-semibold text-gray-500">{idx + 1}</td>
-                        <td className="px-5 py-4">
-                          <div className="font-bold text-gray-800 group-hover:text-emerald-700 transition-colors">{client.name}</div>
-                          <div className="text-xs text-gray-400 mt-0.5">{client.phone}</div>
-                        </td>
-                        <td className="px-5 py-4 font-mono text-xs font-semibold text-gray-600">{client.clientId || 'N/A'}</td>
-                        <td className="px-5 py-4">
-                          <div className="font-semibold text-gray-700">{client.landmark || 'N/A'}</div>
-                          <div className="text-xs text-gray-400 mt-0.5">{client.district || 'N/A'}</div>
-                        </td>
-                        <td className="px-5 py-4 text-center">
-                          <span className={`inline-block px-2.5 py-1 rounded-lg text-xs font-bold ${isPast ? 'bg-red-50 text-red-600 border border-red-200' : 'bg-slate-100 text-slate-700'
-                            }`}>
-                            {formatDate(client.loan_end_date)}
-                          </span>
-                        </td>
-                        <td className="px-5 py-4 text-right font-extrabold text-red-600">
-                          ₹{outstanding.toLocaleString('en-IN')}
-                        </td>
-                        <td className="px-5 py-4 text-center font-bold text-yellow-600">
-                          {pushes} Weeks
-                        </td>
-                        <td className="px-5 py-4 text-center">
-                          <span className={`px-3 py-1.5 rounded-full font-bold text-xs ${currentDue > 0 ? 'bg-orange-50 text-orange-600 border border-orange-100' : 'bg-green-50 text-green-600 border border-green-100'
-                            }`}>
-                            ₹{currentDue.toLocaleString('en-IN')}
-                          </span>
-                        </td>
-                        <td className="px-5 py-4 text-center">
-                          <div className="flex items-center justify-center gap-2">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleOpenPayModal(client);
-                              }}
-                              className="bg-[#16423C] hover:bg-[#1f5a52] text-white px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm active:scale-95 flex items-center gap-1.5"
-                              title="Make a custom payment for this client"
-                            >
-                              <i className="fas fa-money-bill-wave text-xs"></i>
-                              Pay
-                            </button>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                navigate(`/Admin/AClientDetails?clientId=${client._id}`);
-                              }}
-                              className="bg-emerald-50 hover:bg-emerald-600 text-emerald-700 hover:text-white border border-emerald-200 hover:border-emerald-600 px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm active:scale-95"
-                              title="View client details"
-                            >
-                              View
-                            </button>
+            <>
+              {/* Mobile cards (below md) */}
+              <div className="md:hidden divide-y divide-gray-100">
+                {paginatedList.map((client, idx) => {
+                  const outstanding = getClientOutstanding(client);
+                  const pushes = getClientOverdueOrPushedWeeks(client);
+                  const currentDue = calculateCurrentDue(client);
+                  const isPast = isLoanPastEndDate(client);
+                  return (
+                    <div
+                      key={client._id}
+                      onClick={() => navigate(`/Admin/AClientDetails?clientId=${client._id}`)}
+                      className="p-4 active:bg-slate-50 cursor-pointer"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="font-bold text-gray-800 break-words">
+                            <span className="text-gray-400 font-semibold mr-1.5">{pageOffset + idx + 1}.</span>
+                            {client.name}
                           </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                          <div className="text-xs text-gray-400 mt-0.5">{client.phone}</div>
+                          <div className="font-mono text-[11px] font-semibold text-gray-500 mt-0.5">ID: {client.clientId || 'N/A'}</div>
+                        </div>
+                        <div className="text-right flex-shrink-0">
+                          <div className="text-[11px] text-gray-400 uppercase font-semibold">Outstanding</div>
+                          <div className="font-extrabold text-red-600">₹{outstanding.toLocaleString('en-IN')}</div>
+                        </div>
+                      </div>
+
+                      <div className="text-xs text-gray-600 mt-2">
+                        <span className="font-semibold text-gray-700">{client.landmark || 'N/A'}</span>
+                        <span className="text-gray-400"> • {client.district || 'N/A'}</span>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2 mt-3">
+                        <div className="bg-slate-50 rounded-lg p-2 text-center">
+                          <div className="text-[10px] text-gray-400 uppercase font-semibold">End Date</div>
+                          <div className={`text-xs font-bold mt-0.5 ${isPast ? 'text-red-600' : 'text-slate-700'}`}>{formatDate(client.loan_end_date)}</div>
+                        </div>
+                        <div className="bg-slate-50 rounded-lg p-2 text-center">
+                          <div className="text-[10px] text-gray-400 uppercase font-semibold">Overdue</div>
+                          <div className="text-xs font-bold text-yellow-600 mt-0.5">{pushes} Weeks</div>
+                        </div>
+                        <div className="bg-slate-50 rounded-lg p-2 text-center">
+                          <div className="text-[10px] text-gray-400 uppercase font-semibold">Next Due</div>
+                          <div className={`text-xs font-bold mt-0.5 ${currentDue > 0 ? 'text-orange-600' : 'text-green-600'}`}>₹{currentDue.toLocaleString('en-IN')}</div>
+                        </div>
+                      </div>
+
+                      <div className="flex gap-2 mt-3">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleOpenPayModal(client);
+                          }}
+                          className="flex-1 bg-[#16423C] hover:bg-[#1f5a52] text-white px-3 py-2 rounded-lg text-xs font-bold transition-all shadow-sm active:scale-95 flex items-center justify-center gap-1.5"
+                        >
+                          <i className="fas fa-money-bill-wave text-xs"></i>
+                          Pay
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigate(`/Admin/AClientDetails?clientId=${client._id}`);
+                          }}
+                          className="flex-1 bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-2 rounded-lg text-xs font-bold transition-all shadow-sm active:scale-95"
+                        >
+                          View
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Desktop / tablet table (md and up) */}
+              <div className="hidden md:block w-full overflow-x-auto">
+                <table className="w-full min-w-[950px] text-left border-collapse">
+                  <thead>
+                    <tr className="bg-gradient-to-r from-emerald-800 to-[#16423C] text-white text-xs font-bold uppercase tracking-wider">
+                      <th className="px-5 py-4">S.No</th>
+                      <th className="px-5 py-4">Client Name</th>
+                      <th className="px-5 py-4">Client ID</th>
+                      <th className="px-5 py-4">Landmark / District</th>
+                      <th className="px-5 py-4 text-center">Loan End Date</th>
+                      <th className="px-5 py-4 text-right">Outstanding</th>
+                      <th className="px-5 py-4 text-center">Overdue / Pushes</th>
+                      <th className="px-5 py-4 text-center">Next Due</th>
+                      <th className="px-5 py-4 text-center">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100 text-sm text-gray-700">
+                    {paginatedList.map((client, idx) => {
+                      const outstanding = getClientOutstanding(client);
+                      const pushes = getClientOverdueOrPushedWeeks(client);
+                      const currentDue = calculateCurrentDue(client);
+                      const isPast = isLoanPastEndDate(client);
+
+                      return (
+                        <tr
+                          key={client._id}
+                          onClick={() => navigate(`/Admin/AClientDetails?clientId=${client._id}`)}
+                          className="hover:bg-slate-50/80 transition-colors cursor-pointer group"
+                          title="Click to view client details"
+                        >
+                          <td className="px-5 py-4 font-semibold text-gray-500">{pageOffset + idx + 1}</td>
+                          <td className="px-5 py-4">
+                            <div className="font-bold text-gray-800 group-hover:text-emerald-700 transition-colors">{client.name}</div>
+                            <div className="text-xs text-gray-400 mt-0.5">{client.phone}</div>
+                          </td>
+                          <td className="px-5 py-4 font-mono text-xs font-semibold text-gray-600">{client.clientId || 'N/A'}</td>
+                          <td className="px-5 py-4">
+                            <div className="font-semibold text-gray-700">{client.landmark || 'N/A'}</div>
+                            <div className="text-xs text-gray-400 mt-0.5">{client.district || 'N/A'}</div>
+                          </td>
+                          <td className="px-5 py-4 text-center">
+                            <span className={`inline-block px-2.5 py-1 rounded-lg text-xs font-bold ${isPast ? 'bg-red-50 text-red-600 border border-red-200' : 'bg-slate-100 text-slate-700'
+                              }`}>
+                              {formatDate(client.loan_end_date)}
+                            </span>
+                          </td>
+                          <td className="px-5 py-4 text-right font-extrabold text-red-600">
+                            ₹{outstanding.toLocaleString('en-IN')}
+                          </td>
+                          <td className="px-5 py-4 text-center font-bold text-yellow-600">
+                            {pushes} Weeks
+                          </td>
+                          <td className="px-5 py-4 text-center">
+                            <span className={`px-3 py-1.5 rounded-full font-bold text-xs ${currentDue > 0 ? 'bg-orange-50 text-orange-600 border border-orange-100' : 'bg-green-50 text-green-600 border border-green-100'
+                              }`}>
+                              ₹{currentDue.toLocaleString('en-IN')}
+                            </span>
+                          </td>
+                          <td className="px-5 py-4 text-center">
+                            <div className="flex items-center justify-center gap-2">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleOpenPayModal(client);
+                                }}
+                                className="bg-[#16423C] hover:bg-[#1f5a52] text-white px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm active:scale-95 flex items-center gap-1.5"
+                                title="Make a custom payment for this client"
+                              >
+                                <i className="fas fa-money-bill-wave text-xs"></i>
+                                Pay
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  navigate(`/Admin/AClientDetails?clientId=${client._id}`);
+                                }}
+                                className="bg-emerald-50 hover:bg-emerald-600 text-emerald-700 hover:text-white border border-emerald-200 hover:border-emerald-600 px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm active:scale-95"
+                                title="View client details"
+                              >
+                                View
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Pagination */}
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3 border-t border-gray-100 bg-slate-50/60">
+                <p className="text-xs sm:text-sm text-gray-500 text-center">
+                  Showing {pageOffset + 1}–{Math.min(pageOffset + PAGE_SIZE, filteredList.length)} of {filteredList.length} clients
+                </p>
+                {totalPages > 1 && (
+                  <div className="flex flex-wrap items-center justify-center gap-1">
+                    <button onClick={() => setCurrentPage(1)} disabled={safePage === 1} className={pageBtnClass}>«</button>
+                    <button onClick={() => setCurrentPage(Math.max(1, safePage - 1))} disabled={safePage === 1} className={pageBtnClass}>Prev</button>
+                    {pageNumbers.map(p => (
+                      <button
+                        key={p}
+                        onClick={() => setCurrentPage(p)}
+                        className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${p === safePage
+                          ? 'bg-[#16423C] text-white border-[#16423C]'
+                          : 'border-gray-200 text-[#16423C] hover:bg-emerald-50'}`}
+                      >
+                        {p}
+                      </button>
+                    ))}
+                    <button onClick={() => setCurrentPage(Math.min(totalPages, safePage + 1))} disabled={safePage === totalPages} className={pageBtnClass}>Next</button>
+                    <button onClick={() => setCurrentPage(totalPages)} disabled={safePage === totalPages} className={pageBtnClass}>»</button>
+                  </div>
+                )}
+              </div>
+            </>
           )}
         </div>
       </div>
@@ -946,7 +1072,7 @@ const PendingClients = () => {
 
         return (
           <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fadeIn">
-            <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl border border-gray-100 max-h-[92vh] overflow-y-auto">
+            <div className="bg-white rounded-2xl p-4 sm:p-6 w-full max-w-lg shadow-2xl border border-gray-100 max-h-[92vh] overflow-y-auto">
 
               {/* Modal Header */}
               <div className="flex items-center justify-between pb-3 mb-4 border-b border-gray-100">
@@ -1011,7 +1137,7 @@ const PendingClients = () => {
                 <label className="block text-xs font-bold text-gray-600 mb-1.5 uppercase tracking-wider">
                   Quick Amount Presets
                 </label>
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                   <button
                     type="button"
                     onClick={() => setPayAmount(String(outstanding))}
@@ -1076,7 +1202,7 @@ const PendingClients = () => {
               </div>
 
               {/* Payment Method & Date */}
-              <div className="grid grid-cols-2 gap-3 mb-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
                 <div>
                   <label className="block text-xs font-bold text-gray-600 mb-1">
                     Payment Method

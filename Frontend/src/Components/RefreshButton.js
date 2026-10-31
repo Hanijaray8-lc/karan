@@ -59,6 +59,19 @@ export default function RefreshButton() {
     }
   };
 
+  // Let other components (e.g. the navbar "Weekly Dues" button) trigger this
+  // exact refresh by dispatching: window.dispatchEvent(new Event('triggerAppRefresh'))
+  const handleRefreshRef = useRef(handleRefresh);
+  handleRefreshRef.current = handleRefresh;
+
+  useEffect(() => {
+    const onTriggerRefresh = () => {
+      if (handleRefreshRef.current) handleRefreshRef.current();
+    };
+    window.addEventListener('triggerAppRefresh', onTriggerRefresh);
+    return () => window.removeEventListener('triggerAppRefresh', onTriggerRefresh);
+  }, []);
+
   // --- DRAG / TOUCH HANDLERS ---
   const handlePointerDown = (clientX, clientY) => {
     isDraggingRef.current = true;

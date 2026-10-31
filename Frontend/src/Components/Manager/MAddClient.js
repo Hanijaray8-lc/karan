@@ -101,7 +101,7 @@ export default function MClientManagement() {
   const fetchAgents = async () => {
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch('http://localhost:5000/api/agents', {
+      const res = await fetch('https://karanfinance.com/api/agents', {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (res.status === 401) { handleAuthError(); return []; }
@@ -109,9 +109,21 @@ export default function MClientManagement() {
       const rawAgents = (data && (data.agents || data.data?.agents)) || [];
       if (rawAgents.length > 0) {
         const scopedAgents = filterAgentsForManager(rawAgents, getLoggedInUser());
-        // Always show ALL agents in the dropdown so the manager can assign any agent.
+        // Dropdown shows ONLY the agents the admin has assigned to THIS manager
+        // (agent.managerId === logged-in manager's id). Unassigned agents and
+        // agents under other managers are hidden.
         // Scoped list is only used as the return value for client-filtering logic.
-        setAgents(rawAgents);
+        const me = getLoggedInUser();
+        const myId = String((me && (me._id || me.id)) || '').trim();
+        const getAgentMgrId = (a) => {
+          const m = a.managerId || a.manager_id || a.manager || null;
+          if (!m) return '';
+          return String(typeof m === 'object' ? (m._id || m.id || m.$oid || '') : m).trim();
+        };
+        const assignedToMe = myId
+          ? rawAgents.filter(a => getAgentMgrId(a) === myId)
+          : [];
+        setAgents(assignedToMe);
         // Return the scoped list for client-filtering logic (keeps other filters intact)
         return scopedAgents.length > 0 ? scopedAgents : rawAgents;
       }
@@ -216,7 +228,7 @@ export default function MClientManagement() {
     try {
       setLoading(true);
       const token = localStorage.getItem('token');
-      const res = await fetch('http://localhost:5000/api/clients', {
+      const res = await fetch('https://karanfinance.com/api/clients', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
@@ -295,7 +307,7 @@ export default function MClientManagement() {
       formattedData.total_weeks = calculateTotalWeeks();
       formattedData.weekly_amount = calculateWeeklyAmount();
 
-      const res = await fetch('http://localhost:5000/api/clients', {
+      const res = await fetch('https://karanfinance.com/api/clients', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -359,6 +371,37 @@ export default function MClientManagement() {
       return matchesSearch && matchesStatus && matchesDateStart && matchesDateEnd;
     });
   }, [clients, searchTerm, statusFilter, dateStart, dateEnd]);
+
+  // ---- Pagination: 20 clients per page ----
+  const PAGE_SIZE = 20;
+  const [currentPage, setCurrentPage] = useState(1);
+  const totalPages = Math.max(1, Math.ceil(filteredClients.length / PAGE_SIZE));
+
+  // Back to page 1 whenever search / filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, statusFilter, dateStart, dateEnd]);
+
+  // Keep page valid if the list shrinks (e.g. after deleting the last client on a page)
+  useEffect(() => {
+    if (currentPage > totalPages) setCurrentPage(totalPages);
+  }, [currentPage, totalPages]);
+
+  const paginatedClients = useMemo(() => {
+    const startIdx = (currentPage - 1) * PAGE_SIZE;
+    return filteredClients.slice(startIdx, startIdx + PAGE_SIZE);
+  }, [filteredClients, currentPage]);
+
+  const pageNumbers = useMemo(() => {
+    // Show up to 5 page buttons around the current page
+    const maxButtons = 5;
+    let start = Math.max(1, currentPage - Math.floor(maxButtons / 2));
+    let end = Math.min(totalPages, start + maxButtons - 1);
+    start = Math.max(1, end - maxButtons + 1);
+    const pages = [];
+    for (let p = start; p <= end; p++) pages.push(p);
+    return pages;
+  }, [currentPage, totalPages]);
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
@@ -440,7 +483,7 @@ export default function MClientManagement() {
       updatedData.total_weeks = calculateTotalWeeks();
       updatedData.weekly_amount = calculateWeeklyAmount();
 
-      const res = await fetch(`http://localhost:5000/api/clients/${currentClient._id}`, {
+      const res = await fetch(`https://karanfinance.com/api/clients/${currentClient._id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -474,7 +517,7 @@ export default function MClientManagement() {
   const handleDeleteClient = async () => {
     if (!currentClient?._id) return;
     try {
-      const res = await fetch(`http://localhost:5000/api/clients/${currentClient._id}`, {
+      const res = await fetch(`https://karanfinance.com/api/clients/${currentClient._id}`, {
         method: 'DELETE',
         headers: {
           Authorization: `Bearer ${localStorage.getItem('token')}`,
@@ -738,7 +781,7 @@ export default function MClientManagement() {
                     </td>
                   </tr>
                 ) : (
-                  filteredClients.map((client) => (
+                  paginatedClients.map((client) => (
                     <tr key={client._id} className="hover:bg-[#16423C]/5 transition-colors duration-200">
                       <td className="px-3 py-4 font-medium text-[#16423C] whitespace-nowrap">
                         {client.clientId || `#${client._id?.slice(-6)}`}
@@ -793,6 +836,32 @@ export default function MClientManagement() {
                 )}
               </tbody>
             </table>
+            {filteredClients.length > 0 && (
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3 border-t border-[#16423C]/10 bg-white/60">
+                <p className="text-sm text-gray-600">
+                  Showing {(currentPage - 1) * PAGE_SIZE + 1}–{Math.min(currentPage * PAGE_SIZE, filteredClients.length)} of {filteredClients.length} clients
+                </p>
+                {totalPages > 1 && (
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => setCurrentPage(1)} disabled={currentPage === 1} className="px-3 py-1.5 text-sm rounded-lg border border-[#16423C]/20 text-[#16423C] hover:bg-[#16423C]/10 disabled:opacity-40 disabled:cursor-not-allowed">«</button>
+                    <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="px-3 py-1.5 text-sm rounded-lg border border-[#16423C]/20 text-[#16423C] hover:bg-[#16423C]/10 disabled:opacity-40 disabled:cursor-not-allowed">Prev</button>
+                    {pageNumbers.map(p => (
+                      <button
+                        key={p}
+                        onClick={() => setCurrentPage(p)}
+                        className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${p === currentPage
+                          ? 'bg-[#16423C] text-white border-[#16423C]'
+                          : 'border-[#16423C]/20 text-[#16423C] hover:bg-[#16423C]/10'}`}
+                      >
+                        {p}
+                      </button>
+                    ))}
+                    <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="px-3 py-1.5 text-sm rounded-lg border border-[#16423C]/20 text-[#16423C] hover:bg-[#16423C]/10 disabled:opacity-40 disabled:cursor-not-allowed">Next</button>
+                    <button onClick={() => setCurrentPage(totalPages)} disabled={currentPage === totalPages} className="px-3 py-1.5 text-sm rounded-lg border border-[#16423C]/20 text-[#16423C] hover:bg-[#16423C]/10 disabled:opacity-40 disabled:cursor-not-allowed">»</button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -14,6 +14,52 @@ import {
 import AgentNavbar from './AgentNavbar';  // ← adjust path if needed
 import { isRecordNewForUser } from '../utils/staffRecordFilter';
 
+// ---------------------------------------------------------------------------
+// Who collected the payment? Agent dashboard must show AGENT-collected
+// payments only — manager/admin collected payments are excluded everywhere
+// (recent list, today collected, totals, today pending).
+// Rule: only payments collected by an AGENT are shown.
+// ---------------------------------------------------------------------------
+const getCollectorRole = (p) => {
+  if (!p) return '';
+  const direct = (p.collectedByRole || '').toString().trim().toLowerCase();
+  if (direct) return direct;
+  const staff = (p.collectedStaff || '').toString().trim();
+  // backend sometimes stores only a role label ("Manager") or "Name (manager)"
+  if (['agent', 'manager', 'admin'].includes(staff.toLowerCase())) return staff.toLowerCase();
+  const m = staff.match(/\((agent|manager|admin)\)\s*$/i);
+  return m ? m[1].toLowerCase() : '';
+};
+
+// STRICT: true only when an AGENT collected the payment.
+//  - role 'agent'            -> yes
+//  - role 'manager'/'admin'  -> no
+//  - role missing (legacy)   -> yes only if collectedStaff is empty or is this agent's name
+const isAgentCollected = (p, agentName = '') => {
+  const role = getCollectorRole(p);
+  if (role === 'agent') return true;
+  if (role) return false; // manager / admin / anything else
+  const staff = (p.collectedStaff || p.staff?.name || '').toString().trim().toLowerCase();
+  if (!staff) return true;
+  const me = (agentName || '').toString().trim().toLowerCase();
+  return !!me && (staff === me || staff.includes(me) || me.includes(staff));
+};
+
+// Safely read the assigned-agent id from a client (string / object / {$oid})
+const getClientAgentId = (c) => {
+  if (!c) return '';
+  const raw =
+    (c.assigned_agent && typeof c.assigned_agent === 'object'
+      ? (c.assigned_agent._id || c.assigned_agent.id || c.assigned_agent.$oid)
+      : c.assigned_agent) ||
+    c.agentId || c.agent_id ||
+    (c.agent && typeof c.agent === 'object'
+      ? (c.agent._id || c.agent.id || c.agent.$oid)
+      : c.agent) ||
+    '';
+  return String(raw).trim();
+};
+
 export default function AgentDashboard() {
   const [recentPayments, setRecentPayments] = useState([]);
   const [loadingPayments, setLoadingPayments] = useState(true);
@@ -169,7 +215,7 @@ export default function AgentDashboard() {
 
         // Request recent payments; backend uses req.user to scope results to the
         // current agent, so no additional query parameter is needed.
-        const url = `http://localhost:5000/api/payments/history?limit=6`;
+        const url = `https://karanfinance.com/api/payments/history?limit=500`;
         const res = await fetch(url, { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` } });
 
         // helper that enforces agent filter regardless of server response
@@ -178,6 +224,9 @@ export default function AgentDashboard() {
           return paymentsArray.filter(p => {
             // Exclude old payments made before the agent joined
             if (!isRecordNewForUser(p, user)) return false;
+
+            // Show ONLY agent-collected payments (no manager / admin collections)
+            if (!isAgentCollected(p, agentName)) return false;
 
             // match by stored agent reference if available
             if (agentId) {
@@ -195,7 +244,7 @@ export default function AgentDashboard() {
 
         if (!res.ok) {
           // fallback to test endpoint
-          const fallback = await fetch('http://localhost:5000/api/payments/test/all');
+          const fallback = await fetch('https://karanfinance.com/api/payments/test/all');
           if (!fallback.ok) throw new Error('Failed to fetch payments');
           const fbData = await fallback.json();
           const payments = (fbData.data && fbData.data.payments) || fbData.data || [];
@@ -227,7 +276,7 @@ export default function AgentDashboard() {
         // Now fetch clients (agent view) to compute today's pending based on schedule
         try {
           const token = localStorage.getItem('token');
-          const clientsRes = await fetch('http://localhost:5000/api/clients/all', {
+          const clientsRes = await fetch('https://karanfinance.com/api/clients/all', {
             headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
           });
 
@@ -252,8 +301,11 @@ export default function AgentDashboard() {
           let agentClients = [];
           if (agentId) {
             agentClients = clientsList.filter(c => {
-              const cid = c.assigned_agent?._id || c.assigned_agent || c.agent?._id || c.agent;
-              return cid && String(cid) === String(agentId);
+              // only clients assigned to THIS agent (manager-owned / unassigned clients excluded)
+              const cid = getClientAgentId(c);
+              if (!cid || cid !== String(agentId).trim()) return false;
+              // keep join-date rule consistent with other agent pages
+              return isRecordNewForUser(c, user);
             });
             console.log('Filtered agent clients:', agentClients.length);
           }
@@ -277,6 +329,7 @@ export default function AgentDashboard() {
 
               // check if a payment exists for this client with today's date
               const paidToday = filteredPayments.some(p => {
+                if (!isAgentCollected(p, agentName)) return false;
                 const clientId = p.client?._id || p.client || p.clientName || '';
                 const payClientId = p.client && p.client._id ? p.client._id : (p.client || '');
                 // try match by id or name fallback

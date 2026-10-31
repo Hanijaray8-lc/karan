@@ -3,7 +3,6 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import {
   FiBarChart2,
-  FiUsers,
   FiFileText,
   FiDollarSign,
   FiMenu,
@@ -12,7 +11,40 @@ import {
   FiUser
 } from 'react-icons/fi';
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+const API_URL = process.env.REACT_APP_API_URL || 'https://karanfinance.com/api';
+
+// Remember when the backend status was last verified, so navigating between pages
+// (which re-mounts this navbar) doesn't hit the API / redirect every single time.
+let lastStatusCheckAt = 0;
+const STATUS_CHECK_INTERVAL_MS = 60 * 1000;
+
+// Paths that should run the RefreshButton refresh when clicked
+const RELOAD_PATHS = ['/DailyDues'];
+
+const readAgentData = () => {
+  const fallback = { name: 'Staff', role: 'Loan Officer', profilePhoto: null };
+  try {
+    const savedUser = localStorage.getItem('user');
+    if (savedUser) {
+      const user = JSON.parse(savedUser);
+      return {
+        name: user.name || user.username || 'Staff',
+        role: user.role ? user.role.charAt(0).toUpperCase() + user.role.slice(1) : 'Loan Officer',
+        profilePhoto: user.profilePhoto || null
+      };
+    }
+  } catch (e) {
+    // ignore
+  }
+  return fallback;
+};
+
+const navItems = [
+  { path: '/AgentDashboard', label: 'Dashboard', icon: FiBarChart2 },
+  { path: '/DailyDues', label: 'Weekly Dues', icon: FiFileText },
+  { path: '/ClientDetails', label: 'Client Profile', icon: FiUser },
+  { path: '/ApaymentHistory', label: 'Payment', icon: FiDollarSign },
+];
 
 const Navbar = () => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -21,12 +53,10 @@ const Navbar = () => {
   const location = useLocation();
   const navigate = useNavigate();
 
-  const [agentData, setAgentData] = useState({
-    name: "Staff",
-    role: "Loan Officer",
-    profilePhoto: null
-  });
+  // Lazy init => no "Staff" flash when navbar re-mounts
+  const [agentData] = useState(readAgentData);
 
+  // Run the auth / status check once per mount (NOT on every navigation)
   useEffect(() => {
     const token = localStorage.getItem('token');
     const savedUser = localStorage.getItem('user');
@@ -37,17 +67,21 @@ const Navbar = () => {
     }
 
     if (savedUser) {
-      const user = JSON.parse(savedUser);
-      if (user.status === 'Pending') {
-        navigate('/');
-        return;
+      try {
+        const user = JSON.parse(savedUser);
+        if (user.status === 'Pending') {
+          navigate('/');
+          return;
+        }
+      } catch (e) {
+        // ignore bad JSON
       }
-      setAgentData({
-        name: user.name || user.username || "Staff",
-        role: user.role ? user.role.charAt(0).toUpperCase() + user.role.slice(1) : "Loan Officer",
-        profilePhoto: user.profilePhoto || null
-      });
     }
+
+    // Skip the backend call if we verified very recently
+    const now = Date.now();
+    if (now - lastStatusCheckAt < STATUS_CHECK_INTERVAL_MS) return;
+    lastStatusCheckAt = now;
 
     // Verify live status with backend
     axios.get(`${API_URL}/auth/check-status`, {
@@ -57,6 +91,7 @@ const Navbar = () => {
         if (res.data.status !== 'Active') {
           localStorage.removeItem('token');
           localStorage.removeItem('user');
+          lastStatusCheckAt = 0;
           navigate('/');
         }
       }
@@ -64,10 +99,12 @@ const Navbar = () => {
       if (err.response?.status === 401 || err.response?.status === 403) {
         localStorage.removeItem('token');
         localStorage.removeItem('user');
+        lastStatusCheckAt = 0;
         navigate('/');
       }
     });
-  }, [navigate]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleLogout = async () => {
     const token = localStorage.getItem('token');
@@ -82,6 +119,7 @@ const Navbar = () => {
     }
     localStorage.removeItem('token');
     localStorage.removeItem('user');
+    lastStatusCheckAt = 0;
     setIsLogoutModalOpen(false);
     navigate('/');
   };
@@ -92,20 +130,34 @@ const Navbar = () => {
 
   const initials = getInitials(agentData.name);
 
-  const navItems = [
-    { path: '/AgentDashboard', label: 'Dashboard', icon: FiBarChart2 },
-    { path: '/DailyDues', label: 'Weekly Dues', icon: FiFileText },
-    { path: '/ClientDetails', label: 'Client Profile', icon: FiUser },
-    { path: '/ApaymentHistory', label: 'Payment', icon: FiDollarSign },
-  ];
-
   const isActive = (path) => {
     return location.pathname === path;
   };
 
+  // KEY FIX: clicking the link of the page you're already on must NOT navigate again
+  // (a same-path navigation creates a new location key and re-mounts/refreshes the page)
+  const handleNavClick = (e, path, closeMobile = false) => {
+    // Weekly Dues: run the RefreshButton refresh (clear cache + reload).
+    // Other links are untouched.
+    if (RELOAD_PATHS.includes(path)) {
+      e.preventDefault();
+      if (closeMobile) setIsMobileMenuOpen(false);
+      if (location.pathname !== path) {
+        navigate(path);
+      }
+      // RefreshButton.js listens for this and runs its refresh function
+      window.dispatchEvent(new Event('triggerAppRefresh'));
+      return;
+    }
+    if (location.pathname === path) {
+      e.preventDefault();
+    }
+    if (closeMobile) setIsMobileMenuOpen(false);
+  };
+
   return (
     <>
-      {/* Navbar - Full Width Maatrapattullathu */}
+      {/* Navbar - Full Width */}
       <nav
         className="sticky top-0 z-50 bg-[#16423C] backdrop-blur-sm border-b border-white/10 shadow-lg w-full"
         style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
@@ -113,18 +165,23 @@ const Navbar = () => {
         <div className="w-full px-6 h-16 flex items-center justify-between">
 
           {/* Brand Logo */}
-          <Link to="/dashboard" className="flex items-center gap-2 text-white font-bold text-xl min-w-fit">
+          <Link
+            to="/AgentDashboard"
+            onClick={(e) => handleNavClick(e, '/AgentDashboard')}
+            className="flex items-center gap-2 text-white font-bold text-xl min-w-fit"
+          >
             <img src="/karanLogo.jpeg" alt="Karan Finance" className="h-11 w-11 rounded-full object-cover" />
             <span>Karan Finance</span>
           </Link>
 
-          {/* Centered Navigation - Exact Card Model */}
+          {/* Centered Navigation */}
           <div className="hidden lg:flex items-center justify-center flex-1 mx-10">
             <ul className="flex gap-4">
               {navItems.map((item) => (
                 <li key={item.path}>
                   <Link
                     to={item.path}
+                    onClick={(e) => handleNavClick(e, item.path)}
                     className={`group relative flex items-center gap-3 px-5 py-2 rounded-lg transition-all duration-300 min-w-[145px] ${isActive(item.path)
                       ? 'bg-white/20 border border-white/30 text-white shadow-md'
                       : 'bg-white/5 text-white/85 border border-white/5 hover:bg-white/15'
@@ -186,7 +243,7 @@ const Navbar = () => {
               <li key={item.path}>
                 <Link
                   to={item.path}
-                  onClick={() => setIsMobileMenuOpen(false)}
+                  onClick={(e) => handleNavClick(e, item.path, true)}
                   className={`flex items-center gap-3 px-4 py-3 rounded-lg ${isActive(item.path) ? 'bg-white/20 text-white border border-white/20' : 'bg-white/5 text-white/85'
                     }`}
                 >

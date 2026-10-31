@@ -23,14 +23,14 @@ const AdminActiveInactive = () => {
       setLoading(true);
       setError(null);
 
-      let response = await fetch('http://localhost:5000/api/clients/test/all', {
+      let response = await fetch('https://karanfinance.com/api/clients/test/all', {
         method: 'GET',
         headers: { 'Content-Type': 'application/json' }
       });
 
       if (!response.ok) {
         const token = localStorage.getItem('token');
-        response = await fetch('http://localhost:5000/api/clients', {
+        response = await fetch('https://karanfinance.com/api/clients', {
           method: 'GET',
           headers: {
             'Content-Type': 'application/json',

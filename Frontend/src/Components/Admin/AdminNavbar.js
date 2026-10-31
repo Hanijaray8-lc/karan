@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { ArrowRightOnRectangleIcon, Bars3Icon, XMarkIcon, BellIcon } from '@heroicons/react/24/outline';
 import axios from 'axios';
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+const API_URL = process.env.REACT_APP_API_URL || 'https://karanfinance.com/api';
 
 const navItems = [
   { label: 'Dashboard', path: '/Admin/AdminDashboard' },
@@ -146,12 +146,12 @@ const AdminNavbar = () => {
                     key={item.path}
                     to={item.path}
                     className={`px-3 py-2 text-sm font-medium rounded-md transition-colors flex items-center gap-1.5 ${item.isAssign
-                        ? isActive
-                          ? 'bg-amber-500 text-gray-950 font-bold'
-                          : 'bg-amber-400 hover:bg-amber-300 text-gray-950 font-bold shadow-sm'
-                        : isActive
-                          ? 'bg-emerald-700 text-white'
-                          : 'hover:bg-emerald-800'
+                      ? isActive
+                        ? 'bg-amber-500 text-gray-950 font-bold'
+                        : 'bg-amber-400 hover:bg-amber-300 text-gray-950 font-bold shadow-sm'
+                      : isActive
+                        ? 'bg-emerald-700 text-white'
+                        : 'hover:bg-emerald-800'
                       }`}
                   >
                     {item.isAssign && <span>🔗</span>}
@@ -295,12 +295,12 @@ const AdminNavbar = () => {
                     to={item.path}
                     onClick={() => setIsMobileMenuOpen(false)}
                     className={`flex items-center justify-between px-4 py-3 rounded-md text-base font-medium ${item.isAssign
-                        ? isActive
-                          ? 'bg-amber-500 text-gray-950 font-bold'
-                          : 'bg-amber-400 text-gray-950 font-bold'
-                        : isActive
-                          ? 'bg-emerald-700 text-white'
-                          : 'text-white hover:bg-emerald-700'
+                      ? isActive
+                        ? 'bg-amber-500 text-gray-950 font-bold'
+                        : 'bg-amber-400 text-gray-950 font-bold'
+                      : isActive
+                        ? 'bg-emerald-700 text-white'
+                        : 'text-white hover:bg-emerald-700'
                       }`}
                   >
                     <span className="flex items-center gap-2">

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, isToday, isSameDay } from 'date-fns';
 import { Capacitor } from '@capacitor/core';
 import { Filesystem, Directory } from '@capacitor/filesystem';
@@ -35,23 +35,18 @@ const toLocalDateStr = (dateInput) => {
 };
 
 // Helper for generating scheduled weekly due dates
-const getClientScheduledDueDates = (client) => {
+const getClientScheduledDueDates = (client, targetDate = null) => {
   if (!client || !client.loan_start_date) return [];
   const start = parseLocalDate(client.loan_start_date);
   if (!start) return [];
 
+  // Fixed 12-week schedule only (week 1..12). Never extend to 13, 14, 15...
+  // even if loan_end_date was pushed or the client still has pending dues.
   const defaultWeeks = 12;
-  const end = client.loan_end_date
-    ? parseLocalDate(client.loan_end_date)
-    : new Date(start.getFullYear(), start.getMonth(), start.getDate() + (defaultWeeks - 1) * 7);
-
-  // Cap to max 12 weeks regardless of how many times the client was pushed.
-  // Pushed clients stay in week 12 slot (not week 13/14/15...) until fully paid.
-  const maxWeeks = defaultWeeks;
 
   const dueDates = [];
   let due = new Date(start);
-  while (due <= end && dueDates.length < maxWeeks) {
+  for (let i = 0; i < defaultWeeks; i++) {
     dueDates.push(toLocalDateStr(due));
     due.setDate(due.getDate() + 7);
   }
@@ -104,9 +99,9 @@ const getAdvanceTargetDetails = (p, client) => {
 };
 
 // Build accurate week-by-week schedule and payment status for client
-const getClientWeekSchedule = (client) => {
+const getClientWeekSchedule = (client, targetDate = null) => {
   if (!client) return [];
-  const scheduledDates = getClientScheduledDueDates(client);
+  const scheduledDates = getClientScheduledDueDates(client, targetDate);
   if (!scheduledDates || scheduledDates.length === 0) return [];
 
   const weeklyInstallment = (client.weekly_amount && Number(client.weekly_amount) > 0)
@@ -147,6 +142,17 @@ const getClientWeekSchedule = (client) => {
     const db = new Date(b.paymentDate || b.createdAt || b.date || 0);
     return da - db;
   });
+
+  // FIX: ignore payments made BEFORE this loan cycle started (old-cycle payments).
+  // Otherwise Pass 4 spreads them into future weeks and marks those weeks as paid,
+  // which hides the client from the Daily Dues list.
+  const _cycleStart = parseLocalDate(client.loan_start_date);
+  for (let i = uniquePayments.length - 1; i >= 0; i--) {
+    const pp = uniquePayments[i];
+    const pd = pp.paymentDate ? parseLocalDate(pp.paymentDate) : null;
+    const isAdv = getAdvanceTargetDetails(pp, client);
+    if (pd && _cycleStart && pd < _cycleStart && !isAdv) uniquePayments.splice(i, 1);
+  }
 
   const usedPaymentIds = new Set();
   const isUsed = (p) => {
@@ -219,6 +225,9 @@ const getClientWeekSchedule = (client) => {
   });
 
   // Pass 3: Regular payments matching week interval based on loan_start_date
+  // FIX: Skip weeks that are already paid — otherwise early payments get "consumed" by
+  // a previously-paid week (same weekIndex due to floor math), leaving the actual
+  // current week incorrectly marked as pending. Skipped payments fall to Pass 4.
   const start = parseLocalDate(client.loan_start_date);
   uniquePayments.forEach(p => {
     if (isUsed(p)) return;
@@ -232,7 +241,8 @@ const getClientWeekSchedule = (client) => {
     const targetIdx = Math.floor(diffDays / 7) + 1;
 
     const weekObj = schedule.find(w => w.weekIndex === targetIdx && !w.isAdvance);
-    if (weekObj) {
+    // Skip if this week slot is already paid (don't double-assign; let Pass 4 fill next due)
+    if (weekObj && weekObj.status !== 'paid') {
       const amt = Number(p.amount || 0);
       weekObj.paidAmount += amt;
       weekObj.status = 'paid';
@@ -332,10 +342,61 @@ const savePdfBase64 = async (fileName, base64) => {
   return { success: false };
 };
 
+// Keep the date the user picked after the Refresh button reloads the page.
+// Saved per tab (sessionStorage) and only valid for the same day, so a new day always opens on today.
+const VIEW_KEY = 'dailyDuesView_manager';
+const loadSavedView = () => {
+  try {
+    const raw = sessionStorage.getItem(VIEW_KEY);
+    if (!raw) return null;
+    const v = JSON.parse(raw);
+    return v && v.savedOn === toLocalDateStr(new Date()) ? v : null;
+  } catch (e) { return null; }
+};
+
+// Day the money was actually RECEIVED (local calendar day of createdAt).
+// Falls back to paymentDate when createdAt is missing (e.g. a payment just added locally).
+// Example: Week 2 (due 17-Oct) paid on 31-Oct is saved with paymentDate 17-Oct (so the 17-Oct card hides),
+// but it was received on 31-Oct, so it must appear in 31-Oct "Paid", not 17-Oct.
+const getPaymentReceivedDateStr = (p) => {
+  if (!p) return '';
+  const paymentDay = p.paymentDate ? toLocalDateStr(p.paymentDate) : '';
+  if (!p.createdAt) return paymentDay;
+  const created = new Date(p.createdAt);
+  const createdDay = isNaN(created.getTime()) ? '' : toLocalDateStr(created);
+  return createdDay || paymentDay;
+};
+
+// Total cash received by a client on a given date (current, previous-due and advance payments).
+// Foreclosure payments are skipped to keep the existing Paid behaviour unchanged.
+const getCashReceivedOnDate = (client, dateStr) => {
+  if (!client || !dateStr || !Array.isArray(client.payments)) return 0;
+  const seen = new Set();
+  let total = 0;
+  client.payments.forEach(p => {
+    const pId = p._id || p.id;
+    if (pId) {
+      if (seen.has(String(pId))) return;
+      seen.add(String(pId));
+    }
+    const method = (p.paymentMethod || '').toLowerCase();
+    const notes = (p.notes || '').toLowerCase();
+    if (method === 'foreclosure' || notes.includes('foreclose')) return;
+    if (getPaymentReceivedDateStr(p) === dateStr) total += Number(p.amount || 0);
+  });
+  return total;
+};
+
 const MDailyDues = () => {
   const [clients, setClients] = useState([]);
-  const [selectedDate, setSelectedDate] = useState(new Date());
-  const [weekStartDate, setWeekStartDate] = useState(new Date());
+  const [selectedDate, setSelectedDate] = useState(() => {
+    const v = loadSavedView();
+    return (v && parseLocalDate(v.selectedDate)) || new Date();
+  });
+  const [weekStartDate, setWeekStartDate] = useState(() => {
+    const v = loadSavedView();
+    return (v && parseLocalDate(v.weekStartDate)) || new Date();
+  });
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedDistrict, setSelectedDistrict] = useState(() => {
     // Load from localStorage on mount
@@ -354,11 +415,16 @@ const MDailyDues = () => {
   const [showClientModal, setShowClientModal] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
   const [showFinalDueModal, setShowFinalDueModal] = useState(false);
-  const [myAgents, setMyAgents] = useState([]);
+  const [myAgents, setMyAgents] = useState(null); // null = not yet loaded, [] = loaded but empty
+  const myAgentsRef = useRef(null); // always-current copy for stale-closure-safe polling
+  const fetchSeqRef = useRef(0); // sequence counter to drop stale out-of-order fetch responses
   const [selectedClient, setSelectedClient] = useState(null);
   const [notification, setNotification] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [calendarDateFilter, setCalendarDateFilter] = useState('');
+  const [calendarDateFilter, setCalendarDateFilter] = useState(() => {
+    const v = loadSavedView();
+    return (v && v.calendarDateFilter) || '';
+  });
   // Track per-client actions done today (frontend-only + server check for payments)
   const [paidTodayMap, setPaidTodayMap] = useState({}); // localStorage marker for Mark Paid
   const [notPaidTodayMap, setNotPaidTodayMap] = useState({}); // localStorage marker for Not Paid
@@ -460,41 +526,72 @@ const MDailyDues = () => {
     localStorage.setItem('selectedLandmark', selectedLandmark);
   }, [selectedLandmark]);
 
+  // Save selected date / week / calendar filter so they survive a page refresh
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(VIEW_KEY, JSON.stringify({
+        savedOn: toLocalDateStr(new Date()),
+        selectedDate: toLocalDateStr(selectedDate),
+        weekStartDate: toLocalDateStr(weekStartDate),
+        calendarDateFilter
+      }));
+    } catch (e) { }
+  }, [selectedDate, weekStartDate, calendarDateFilter]);
+
   // Save selected agent filter to localStorage
   useEffect(() => {
     localStorage.setItem('selectedAgent', selectedAgent);
   }, [selectedAgent]);
 
+
+  // Keep myAgentsRef in sync so polling/event handlers always have the latest agents list
+  useEffect(() => {
+    myAgentsRef.current = myAgents;
+  }, [myAgents]);
+
+  // Stable ref so the setInterval always calls the latest fetchClientsWithoutLoading
+  const pollFnRef = useRef(null);
+  useEffect(() => { pollFnRef.current = fetchClientsWithoutLoading; });
+
   // Mock data - replace with actual API call
   useEffect(() => {
-    fetchClients();
+    // Fetch agents first; fetchClients fires once myAgents is ready (see effect below)
     fetchMyAgents();
 
     // Setup polling to check for payments made by other users (every 30 seconds)
     const pollInterval = setInterval(() => {
-      fetchClientsWithoutLoading();
+      if (pollFnRef.current) pollFnRef.current();
     }, 30000); // 30 seconds
 
     // Cleanup interval on unmount
     return () => clearInterval(pollInterval);
   }, []);
 
+  // Fetch clients only after myAgents has been loaded (null = still loading, [] or array = ready)
+  useEffect(() => {
+    if (myAgents === null) return;
+    fetchClients();
+  }, [myAgents]);
+
   // Fetch agents scoped to this manager
   const fetchMyAgents = async () => {
     try {
       const token = localStorage.getItem('token');
-      if (!token) return;
-      const res = await fetch('http://localhost:5000/api/agents', {
+      if (!token) { setMyAgents([]); return; }
+      const res = await fetch('https://karanfinance.com/api/agents', {
         headers: { Authorization: `Bearer ${token}` }
       });
-      if (!res.ok) return;
+      if (!res.ok) { setMyAgents([]); return; }
       const data = await res.json();
       if (data && data.success && data.agents) {
         const user = getLoggedInUser();
         setMyAgents(filterAgentsForManager(data.agents, user));
+      } else {
+        setMyAgents([]);
       }
     } catch (e) {
       // silent fail – filter falls back to date-only
+      setMyAgents([]);
     }
   };
 
@@ -603,10 +700,15 @@ const MDailyDues = () => {
   }, []);
 
   const fetchClientsWithoutLoading = async () => {
+    // Guard: if agents haven't been fetched yet, skip — myAgentsRef will be null
+    const currentAgents = myAgentsRef.current;
+    if (currentAgents === null) return;
+    const seq = ++fetchSeqRef.current;
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch('http://localhost:5000/api/clients/all', {
-        headers: { 'Authorization': `Bearer ${token}` }
+      const res = await fetch('https://karanfinance.com/api/clients/all', {
+        headers: { 'Authorization': `Bearer ${token}` },
+        cache: 'no-store'
       });
 
       if (!res.ok) return;
@@ -615,7 +717,7 @@ const MDailyDues = () => {
 
       if (data.success && data.clients) {
         const loggedInUser = getLoggedInUser();
-        const validClients = filterClientsForManager(data.clients, myAgents, loggedInUser);
+        const validClients = filterClientsForManager(data.clients, currentAgents, loggedInUser);
         const transformedClients = validClients.map(client => {
           const forcedWeekly = 575;
           const display = `₹${forcedWeekly.toLocaleString('en-IN')}`;
@@ -638,11 +740,12 @@ const MDailyDues = () => {
         // Attach paid status by checking payment records
         try {
           const payToken = localStorage.getItem('token');
-          const payRes = await fetch('http://localhost:5000/api/payments/history', {
-            headers: { 'Content-Type': 'application/json', ...(payToken ? { Authorization: `Bearer ${payToken}` } : {}) }
+          const payRes = await fetch('https://karanfinance.com/api/payments/history', {
+            headers: { 'Content-Type': 'application/json', ...(payToken ? { Authorization: `Bearer ${payToken}` } : {}) },
+            cache: 'no-store'
           });
           const payJson = payRes.ok ? await payRes.json() : null;
-          const rawPayments = filterPaymentsForManager((payJson && payJson.data && payJson.data.payments) || [], myAgents, loggedInUser, validClients);
+          const rawPayments = filterPaymentsForManager((payJson && payJson.data && payJson.data.payments) || [], currentAgents, loggedInUser, validClients);
           const seenIds = new Set();
           const payments = [];
           rawPayments.forEach(p => {
@@ -710,6 +813,9 @@ const MDailyDues = () => {
           // convert collectorsMap sets to arrays for state
           const collectorsObj = {};
           Object.keys(collectorsMap).forEach(k => { collectorsObj[k] = Array.from(collectorsMap[k]); });
+          // Drop stale responses — only apply the most recent fetch result
+          if (seq !== fetchSeqRef.current) return;
+
           setServerPaidTodayMap(collectorsObj);
 
           // Sync local paid markers with server state (clear local markedPaid if server has no payment today)
@@ -787,10 +893,13 @@ const MDailyDues = () => {
 
   const fetchClients = async () => {
     setLoading(true);
+    const seq = ++fetchSeqRef.current;
+    setLoading(true);
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch('http://localhost:5000/api/clients/all', {
-        headers: { 'Authorization': `Bearer ${token}` }
+      const res = await fetch('https://karanfinance.com/api/clients/all', {
+        headers: { 'Authorization': `Bearer ${token}` },
+        cache: 'no-store'
       });
 
       if (!res.ok) throw new Error('Failed to fetch clients');
@@ -830,8 +939,9 @@ const MDailyDues = () => {
 
         try {
           const payToken2 = localStorage.getItem('token');
-          const payRes = await fetch('http://localhost:5000/api/payments/history', {
-            headers: { 'Content-Type': 'application/json', ...(payToken2 ? { Authorization: `Bearer ${payToken2}` } : {}) }
+          const payRes = await fetch('https://karanfinance.com/api/payments/history', {
+            headers: { 'Content-Type': 'application/json', ...(payToken2 ? { Authorization: `Bearer ${payToken2}` } : {}) },
+            cache: 'no-store'
           });
           const payJson = payRes.ok ? await payRes.json() : null;
           const rawPayments = filterPaymentsForManager((payJson && payJson.data && payJson.data.payments) || [], myAgents, loggedInUser, validClients);
@@ -899,6 +1009,9 @@ const MDailyDues = () => {
 
           const collectorsObj = {};
           Object.keys(collectorsMap).forEach(k => { collectorsObj[k] = Array.from(collectorsMap[k]); });
+          // Drop stale responses — only apply the most recent fetch result
+          if (seq !== fetchSeqRef.current) return;
+
           setServerPaidTodayMap(collectorsObj);
 
           // Sync local paid markers with server state (clear local markedPaid if server has no payment today)
@@ -915,56 +1028,25 @@ const MDailyDues = () => {
             }
           });
 
-          setClients(prevClients => {
-            const prevClientMap = {};
-            (prevClients || []).forEach(c => {
-              const cid = c._id ? String(c._id) : (c.clientId ? String(c.clientId) : (c.id ? String(c.id) : null));
-              if (cid) prevClientMap[cid] = c;
-            });
-
-            const withPaid = transformedClients.map(c => {
-              const id = c._id ? String(c._id) : (c.clientId ? String(c.clientId) : (c.id ? String(c.id) : null));
-              const prevC = prevClientMap[id];
-
-              let paidDates = paidDatesMap[id] ? new Set(paidDatesMap[id]) : new Set();
-
-              // Merge any locally added paidDates from existing state
-              if (prevC && prevC.paidDates) {
-                if (prevC.paidDates instanceof Set) {
-                  prevC.paidDates.forEach(d => paidDates.add(d));
-                } else if (Array.isArray(prevC.paidDates)) {
-                  prevC.paidDates.forEach(d => paidDates.add(d));
-                }
-              }
-
-              let clientPayments = paymentsByClient[id] ? [...paymentsByClient[id]] : [];
-              // Merge any locally added payments from existing state if not already present
-              if (prevC && Array.isArray(prevC.payments) && prevC.payments.length > 0) {
-                const existingDates = new Set(clientPayments.map(p => p.paymentDate ? toLocalDateStr(p.paymentDate) : null));
-                prevC.payments.forEach(localP => {
-                  const localDate = localP.paymentDate ? toLocalDateStr(localP.paymentDate) : null;
-                  if (localDate && !existingDates.has(localDate)) {
-                    clientPayments.push(localP);
-                    paidDates.add(localDate);
-                  }
-                });
-              }
-
-              return { ...c, paidDates, paid: paidDates.has(todayISO), payments: clientPayments };
-            });
-
-            // Build map for pushed status
-            const pushedToday = {};
-            withPaid.forEach(c => {
-              if (c.last_pushed_date === todayISO) {
-                const cid = c._id ? String(c._id) : (c.clientId ? String(c.clientId) : (c.id ? String(c.id) : null));
-                if (cid) pushedToday[cid] = true;
-              }
-            });
-            setNotPaidTodayMap(prev => ({ ...prev, ...pushedToday }));
-
-            return withPaid;
+          // fetchClients is the authoritative initial load — treat server as source of truth.
+          // Do NOT merge old React state: deleted or corrected payments would be re-inserted.
+          const withPaid = transformedClients.map(c => {
+            const id = c._id ? String(c._id) : (c.clientId ? String(c.clientId) : (c.id ? String(c.id) : null));
+            const paidDates = paidDatesMap[id] ? new Set(paidDatesMap[id]) : new Set();
+            const clientPayments = paymentsByClient[id] ? [...paymentsByClient[id]] : [];
+            return { ...c, paidDates, paid: paidDates.has(todayISO), payments: clientPayments };
           });
+
+          // Build map for pushed status
+          const pushedToday = {};
+          withPaid.forEach(c => {
+            if (c.last_pushed_date === todayISO) {
+              const cid = c._id ? String(c._id) : (c.clientId ? String(c.clientId) : (c.id ? String(c.id) : null));
+              if (cid) pushedToday[cid] = true;
+            }
+          });
+          setNotPaidTodayMap(prev => ({ ...prev, ...pushedToday }));
+          setClients(withPaid);
         } catch (err) {
           setClients(transformedClients);
         }
@@ -988,15 +1070,26 @@ const MDailyDues = () => {
   // Calculate if client is due in the given week
   const isClientDueInWeek = (client, weekStartDate, weekEndDate) => {
     // use total pending amount (client.pending) to determine if loan is active
-    if (!client || !client.loan_start_date || Number(client.pending) <= 0) {
+    if (!client || !client.loan_start_date || Number(client.pending) <= 0 || client.status === 'paid') {
       return false;
     }
-    const wStartStr = toLocalDateStr(weekStartDate);
-    const wEndStr = toLocalDateStr(weekEndDate);
-    if (!wStartStr || !wEndStr) return false;
+    const wStart = parseLocalDate(weekStartDate);
+    const wEnd = parseLocalDate(weekEndDate);
+    if (!wStart || !wEnd) return false;
 
-    const scheduledDates = getClientScheduledDueDates(client);
-    return scheduledDates.some(d => d >= wStartStr && d <= wEndStr);
+    const start = parseLocalDate(client.loan_start_date);
+    if (!start) return false;
+
+    // Check if client's weekly collection day falls within this week window and is >= loan_start_date
+    const clientDay = start.getDay();
+    let cur = new Date(wStart);
+    while (cur <= wEnd) {
+      if (cur.getDay() === clientDay && cur >= start) {
+        return true;
+      }
+      cur.setDate(cur.getDate() + 1);
+    }
+    return false;
   };
 
   // Get week start and end dates
@@ -1058,7 +1151,7 @@ const MDailyDues = () => {
     if (client.status === 'paid' && Number(client.pending) <= 0) return true;
 
     // Use week schedule to precisely determine if target date's week is paid
-    const schedule = getClientWeekSchedule(client);
+    const schedule = getClientWeekSchedule(client, targetDate);
     if (schedule && schedule.length > 0) {
       const weekObj = schedule.find(w => w.dueDate === targetDate);
       if (weekObj) {
@@ -1189,12 +1282,19 @@ const MDailyDues = () => {
 
     filtered.forEach(client => {
       const remainingDue = calculateCurrentDue(client, statsDate);
-      const paidOnDate = getPaidAmountOnDate(client, statsDate);
-
-      totalPaid += paidOnDate;
       if (!isClientPaidOnDate(client, statsDate)) {
         totalDue += remainingDue;
       }
+    });
+
+    // PAID = cash actually received on this date (any due week: current, previous or advance).
+    // Counted by the day it was received, not by the due date it settled, and includes clients
+    // that are not due on this date.
+    clients.forEach(client => {
+      if (selectedDistrict && client.district !== selectedDistrict) return;
+      if (selectedAgent && getClientAgentKey(client) !== selectedAgent) return;
+      if (selectedLandmark && client.landmark !== selectedLandmark) return;
+      totalPaid += getCashReceivedOnDate(client, statsDate);
     });
 
     return { totalDue, totalPaid };
@@ -1203,7 +1303,7 @@ const MDailyDues = () => {
   const getPaidAmountOnDate = (client, dateStr) => {
     if (!client) return 0;
     const targetDate = dateStr || calendarDateFilter || toLocalDateStr(selectedDate);
-    const schedule = getClientWeekSchedule(client);
+    const schedule = getClientWeekSchedule(client, targetDate);
     if (schedule && schedule.length > 0) {
       const weekObj = schedule.find(w => w.dueDate === targetDate);
       if (weekObj && (weekObj.status === 'paid' || weekObj.paidAmount > 0)) {
@@ -1248,7 +1348,7 @@ const MDailyDues = () => {
     const targetDateStr = dateParam || calendarDateFilter || toLocalDateStr(selectedDate);
     if (!targetDateStr) return Math.min(pendingCap, weeklyInstallment);
 
-    const schedule = getClientWeekSchedule(client);
+    const schedule = getClientWeekSchedule(client, targetDateStr);
     if (schedule && schedule.length > 0) {
       const weekObj = schedule.find(w => w.dueDate === targetDateStr);
       if (weekObj) {
@@ -1308,7 +1408,7 @@ const MDailyDues = () => {
 
       const today = getTodayDateString();
       // Query for payments made today for this specific client
-      const res = await fetch(`http://localhost:5000/api/payments/history?clientId=${clientId}&startDate=${today}&endDate=${today}`, {
+      const res = await fetch(`https://karanfinance.com/api/payments/history?clientId=${clientId}&startDate=${today}&endDate=${today}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
@@ -1360,7 +1460,7 @@ const MDailyDues = () => {
       const targetDateStr = calendarDateFilter || toLocalDateStr(selectedDate);
       const payDateIso = targetDateStr ? `${targetDateStr}T12:00:00.000Z` : new Date().toISOString();
 
-      const res = await fetch('http://localhost:5000/api/payments/process', {
+      const res = await fetch('https://karanfinance.com/api/payments/process', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1488,7 +1588,7 @@ const MDailyDues = () => {
         return;
       }
 
-      const res = await fetch(`http://localhost:5000/api/clients/${client._id}`, {
+      const res = await fetch(`https://karanfinance.com/api/clients/${client._id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -1978,12 +2078,26 @@ const MDailyDues = () => {
   // Check if client has a due on the exact date string (yyyy-MM-dd)
   const isClientDueOnDate = (client, dateStr) => {
     if (!client || !client.loan_start_date) return false;
-    if (Number(client.pending) <= 0) return false;
+    if (Number(client.pending) <= 0 || client.status === 'paid') return false;
     const targetStr = toLocalDateStr(dateStr);
     if (!targetStr) return false;
 
-    const scheduledDates = getClientScheduledDueDates(client);
-    return scheduledDates.includes(targetStr);
+    const start = parseLocalDate(client.loan_start_date);
+    const target = parseLocalDate(targetStr);
+    if (!start || !target || target < start) return false;
+
+    // Day of week check: client due day is recurring weekly on loan_start_date weekday
+    if (start.getDay() !== target.getDay()) return false;
+
+    const diffDays = Math.round((target.getTime() - start.getTime()) / (24 * 60 * 60 * 1000));
+    if (diffDays % 7 !== 0) return false;
+
+    // Cap at 12 weeks: only weeks 1-12 are valid scheduled due dates.
+    // Week index = (diffDays / 7) + 1; must be <= 12.
+    const weekIndex = Math.floor(diffDays / 7) + 1;
+    if (weekIndex > 12) return false;
+
+    return true;
   };
 
   // Calculate which due-week index (1-based) the given date corresponds to for the client
@@ -1993,9 +2107,17 @@ const MDailyDues = () => {
     const targetStr = toLocalDateStr(dateStr);
     if (!targetStr) return null;
 
-    const scheduledDates = getClientScheduledDueDates(client);
-    const idx = scheduledDates.indexOf(targetStr);
-    return idx !== -1 ? idx + 1 : null;
+    const start = parseLocalDate(client.loan_start_date);
+    const target = parseLocalDate(targetStr);
+    if (!start || !target || target < start) return null;
+
+    if (start.getDay() !== target.getDay()) return null;
+
+    const diffDays = Math.round((target.getTime() - start.getTime()) / (24 * 60 * 60 * 1000));
+    if (diffDays % 7 !== 0) return null;
+
+    // Cap at 12 so the week label never shows 13, 14, 15...
+    return Math.min(Math.floor(diffDays / 7) + 1, 12);
   };
 
   // Drag handlers for reordering landmarks

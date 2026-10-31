@@ -72,7 +72,7 @@ export default function ClientManage() {
           return;
         }
 
-        const res = await fetch(`http://localhost:5000/api/agents/${agentId}`, {
+        const res = await fetch(`https://karanfinance.com/api/agents/${agentId}`, {
           headers: { Authorization: `Bearer ${token}` }
         });
 
@@ -98,7 +98,7 @@ export default function ClientManage() {
       }
 
       // Default: admin/manager - fetch full agents list
-      const res = await fetch('http://localhost:5000/api/agents', {
+      const res = await fetch('https://karanfinance.com/api/agents', {
         headers: { Authorization: `Bearer ${token}` }
       });
 
@@ -118,7 +118,25 @@ export default function ClientManage() {
       const data = await res.json();
       if (data && data.success && data.agents) {
         const loggedInUser = getLoggedInUser();
-        const scopedAgents = filterAgentsForManager(data.agents, loggedInUser);
+        const role = ((loggedInUser && loggedInUser.role) || '').toLowerCase();
+        let scopedAgents;
+
+        if (role === 'manager') {
+          // STRICT: show ONLY the agents the admin has assigned to THIS manager
+          // (Admin > Assign Agents  =>  agent.managerId === logged-in manager id).
+          // Unassigned agents and agents under other managers are hidden.
+          const myId = String((loggedInUser && (loggedInUser._id || loggedInUser.id)) || '').trim();
+          const getAgentMgrId = (a) => {
+            const m = a.managerId || a.manager_id || a.manager || null;
+            if (!m) return '';
+            return String(typeof m === 'object' ? (m._id || m.id || m.$oid || '') : m).trim();
+          };
+          scopedAgents = myId ? data.agents.filter(a => getAgentMgrId(a) === myId) : [];
+        } else {
+          // Admin / other roles: keep the existing behaviour untouched
+          scopedAgents = filterAgentsForManager(data.agents, loggedInUser);
+        }
+
         setAgents(scopedAgents);
         setAllAgents(scopedAgents);
       }
@@ -138,7 +156,7 @@ export default function ClientManage() {
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`http://localhost:5000/api/clients/agent/${agentId}`, {
+      const res = await fetch(`https://karanfinance.com/api/clients/agent/${agentId}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
 
@@ -165,7 +183,7 @@ export default function ClientManage() {
   const fetchPaymentHistory = async (clientId) => {
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`http://localhost:5000/api/payments/history/${clientId}`, {
+      const res = await fetch(`https://karanfinance.com/api/payments/history/${clientId}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
 
@@ -210,7 +228,7 @@ export default function ClientManage() {
 
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(`http://localhost:5000/api/clients/${selectedClient._id}/transfer`, {
+      const res = await fetch(`https://karanfinance.com/api/clients/${selectedClient._id}/transfer`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',

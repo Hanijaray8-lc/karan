@@ -9,6 +9,8 @@ import {
   Users,
   XCircle,
   CheckCircle,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import AdminNavbar from './AdminNavbar';
 
@@ -223,6 +225,8 @@ const formatDateToYMD = (dateInput) => {
 
 export default function PaymentHistory() {
   const [searchTerm, setSearchTerm] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const PAGE_SIZE = 10; // records per page
   const [staffFilter, setStaffFilter] = useState('All Staff');
   const [dateFilter, setDateFilter] = useState('');
   const [paymentRecords, setPaymentRecords] = useState([]);
@@ -300,13 +304,13 @@ export default function PaymentHistory() {
 
       if (!token) {
         // public test endpoint fallback
-        const response = await fetch('http://localhost:5000/api/clients/test/all');
+        const response = await fetch('https://karanfinance.com/api/clients/test/all');
         if (response.ok) {
           const data = await response.json();
           clientsData = data.clients || [];
         }
       } else {
-        const response = await fetch('http://localhost:5000/api/clients/all', {
+        const response = await fetch('https://karanfinance.com/api/clients/all', {
           method: 'GET',
           headers: {
             'Content-Type': 'application/json',
@@ -318,7 +322,7 @@ export default function PaymentHistory() {
           const data = await response.json();
           clientsData = data.clients || [];
         } else if (response.status === 401) {
-          const fb = await fetch('http://localhost:5000/api/clients/test/all');
+          const fb = await fetch('https://karanfinance.com/api/clients/test/all');
           if (fb.ok) {
             const data = await fb.json();
             clientsData = data.clients || [];
@@ -346,7 +350,7 @@ export default function PaymentHistory() {
       const token = localStorage.getItem('token');
 
       // Call backend to delete payment
-      const res = await fetch(`http://localhost:5000/api/payments/${paymentId}`, {
+      const res = await fetch(`https://karanfinance.com/api/payments/${paymentId}`, {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
@@ -397,7 +401,7 @@ export default function PaymentHistory() {
         }
 
         // Update client loan_end_date in backend
-        const updateRes = await fetch(`http://localhost:5000/api/clients/${clientId}`, {
+        const updateRes = await fetch(`https://karanfinance.com/api/clients/${clientId}`, {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
@@ -453,7 +457,7 @@ export default function PaymentHistory() {
   const fetchPaymentsData = async () => {
     try {
       // Use test endpoint (no auth required) for now
-      const response = await fetch('http://localhost:5000/api/payments/test/all', {
+      const response = await fetch('https://karanfinance.com/api/payments/test/all', {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
@@ -607,6 +611,35 @@ export default function PaymentHistory() {
     return { totalCollected, todayCollected, totalPending };
   })();
 
+  // ---------------- Pagination (10 records per page) ----------------
+  const totalPages = Math.max(1, Math.ceil(filteredRecords.length / PAGE_SIZE));
+  const safePage = Math.min(currentPage, totalPages);
+  const pageStartIdx = (safePage - 1) * PAGE_SIZE;
+  const paginatedRecords = filteredRecords.slice(pageStartIdx, pageStartIdx + PAGE_SIZE);
+
+  // go back to page 1 whenever a filter changes
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, staffFilter, dateFilter]);
+
+  // keep current page valid if the list shrinks (e.g. after cancelling a payment)
+  useEffect(() => {
+    if (currentPage > totalPages) setCurrentPage(totalPages);
+  }, [currentPage, totalPages]);
+
+  // page numbers with ellipsis, e.g. 1 … 4 5 6 … 20
+  const getPageNumbers = () => {
+    if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1);
+    const pages = [1];
+    const start = Math.max(2, safePage - 1);
+    const end = Math.min(totalPages - 1, safePage + 1);
+    if (start > 2) pages.push('...');
+    for (let i = start; i <= end; i++) pages.push(i);
+    if (end < totalPages - 1) pages.push('...');
+    pages.push(totalPages);
+    return pages;
+  };
+
   if (error) {
     return (
       <div className="min-h-screen bg-gray-50">
@@ -714,8 +747,8 @@ export default function PaymentHistory() {
               Payment History
             </h2>
 
-            <div className="flex flex-wrap items-center gap-3">
-              <div className="relative min-w-[240px] flex-1">
+            <div className="grid grid-cols-2 sm:flex sm:flex-wrap sm:items-center gap-3">
+              <div className="relative col-span-2 sm:col-span-1 sm:min-w-[240px] sm:flex-1">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500 pointer-events-none" />
                 <input
                   type="text"
@@ -729,7 +762,7 @@ export default function PaymentHistory() {
               <select
                 value={staffFilter}
                 onChange={(e) => setStaffFilter(e.target.value)}
-                className="border rounded-lg px-3 py-2 text-sm min-w-[140px]"
+                className="border rounded-lg px-3 py-2 text-sm w-full sm:w-auto sm:min-w-[140px]"
               >
                 {staffList.map((staff) => (
                   <option key={staff} value={staff}>
@@ -738,16 +771,16 @@ export default function PaymentHistory() {
                 ))}
               </select>
 
-              <div className="relative">
+              <div className="relative w-full sm:w-auto">
                 <input
                   type="date"
                   value={dateFilter}
                   onChange={(e) => setDateFilter(e.target.value)}
-                  className="border rounded-lg px-3 py-2 text-sm w-40"
+                  className="border rounded-lg px-3 py-2 text-sm w-full sm:w-40"
                 />
               </div>
 
-              <button className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-sm transition-colors">
+              <button className="flex items-center justify-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-sm transition-colors">
                 <Filter size={16} />
                 Filter
               </button>
@@ -758,7 +791,7 @@ export default function PaymentHistory() {
                   setStaffFilter('All Staff');
                   setDateFilter('');
                 }}
-                className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm transition-colors"
+                className="flex items-center justify-center gap-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm transition-colors"
               >
                 <RotateCcw size={16} />
                 Reset
@@ -769,7 +802,7 @@ export default function PaymentHistory() {
 
         {/* Payment History Table */}
         <div className="bg-white rounded-xl shadow border border-gray-200 overflow-hidden">
-          <div className="overflow-x-auto">
+          <div className="hidden md:block overflow-x-auto">
             <table className="w-full text-sm min-w-[1100px]">
               <thead className="bg-[#16423C] text-white sticky top-0">
                 <tr>
@@ -802,9 +835,9 @@ export default function PaymentHistory() {
                     </td>
                   </tr>
                 ) : (
-                  filteredRecords.map((record, idx) => (
+                  paginatedRecords.map((record, idx) => (
                     <tr
-                      key={idx}
+                      key={record._id || `${pageStartIdx + idx}`}
                       className="border-t hover:bg-gray-50 transition-colors"
                     >
                       <td className="px-6 py-4 whitespace-nowrap font-medium text-gray-900">{record.paymentDate}</td>
@@ -846,6 +879,137 @@ export default function PaymentHistory() {
               </tbody>
             </table>
           </div>
+
+          {/* Mobile card list (below md) */}
+          <div className="md:hidden divide-y divide-gray-100">
+            {loading ? (
+              <div className="py-12 flex items-center justify-center gap-2">
+                <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-emerald-600"></div>
+                <span className="text-gray-600 text-sm">Loading payment records...</span>
+              </div>
+            ) : filteredRecords.length === 0 ? (
+              <div className="py-12 text-center text-gray-500 text-sm">No payment records found</div>
+            ) : (
+              paginatedRecords.map((record, idx) => {
+                const isForeclosure =
+                  record.paymentMethod === 'Foreclosure' ||
+                  record.paymentMethod === 'foreclosure' ||
+                  (record.notes && record.notes.toLowerCase().includes('foreclose'));
+                return (
+                  <div key={record._id || `m-${pageStartIdx + idx}`} className="p-4 space-y-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="font-semibold text-gray-900 break-words">{record.client.name}</p>
+                        <span className="inline-flex items-center mt-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800 max-w-full">
+                          <span className="truncate">
+                            {record.staff.name}
+                            {record.staff.role ? ` (${record.staff.role})` : ''}
+                          </span>
+                        </span>
+                      </div>
+                      <div className="text-right flex-shrink-0">
+                        <p className="text-lg font-bold text-green-700">₹{record.received.toLocaleString('en-IN')}</p>
+                        {isForeclosure && (
+                          <span className="inline-flex items-center mt-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-amber-100 text-amber-800 border border-amber-300">
+                            Foreclosure
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                      <div>
+                        <p className="text-gray-500">Payment Date (Due)</p>
+                        <p className="font-medium text-gray-900">{record.paymentDate}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-500">Paid Date</p>
+                        <p className="font-medium text-gray-900">{record.paidDate}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-500">Mobile</p>
+                        <p className="font-medium text-gray-900">{record.client.phone}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-500">Pending</p>
+                        <p className="font-semibold text-red-700">₹{record.pending.toLocaleString('en-IN')}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-500">District</p>
+                        <p className="font-medium text-gray-900 break-words">{record.client.district}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-500">Landmark</p>
+                        <p className="font-medium text-gray-900 break-words">{record.client.landmark}</p>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => openCancelConfirmModal(record._id, record.received, record.client.id, record.createdAt)}
+                      className="w-full bg-red-500 hover:bg-red-600 text-white py-2 rounded-lg text-sm font-semibold transition-all active:scale-95 shadow-sm"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          {/* Pagination */}
+          {!loading && filteredRecords.length > 0 && (
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 sm:px-6 py-4 border-t border-gray-200 bg-white">
+              <p className="text-sm text-gray-600">
+                Showing{' '}
+                <span className="font-semibold">{pageStartIdx + 1}</span>
+                {' – '}
+                <span className="font-semibold">{Math.min(pageStartIdx + PAGE_SIZE, filteredRecords.length)}</span>
+                {' of '}
+                <span className="font-semibold">{filteredRecords.length}</span> records
+              </p>
+
+              <div className="flex items-center gap-1.5 flex-wrap justify-center">
+                <button
+                  onClick={() => setCurrentPage(safePage - 1)}
+                  disabled={safePage === 1}
+                  className="flex items-center gap-1 px-3 py-1.5 border border-gray-300 rounded-lg text-sm hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  <ChevronLeft size={16} />
+                  Prev
+                </button>
+
+                <span className="sm:hidden px-2 text-sm font-medium text-gray-700">
+                  Page {safePage} / {totalPages}
+                </span>
+
+                {getPageNumbers().map((pg, i) =>
+                  pg === '...' ? (
+                    <span key={`dots-${i}`} className="hidden sm:inline px-2 text-gray-500">…</span>
+                  ) : (
+                    <button
+                      key={pg}
+                      onClick={() => setCurrentPage(pg)}
+                      className={`hidden sm:inline-block min-w-[36px] px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${pg === safePage
+                        ? 'bg-emerald-600 text-white border-emerald-600'
+                        : 'border-gray-300 text-gray-700 hover:bg-gray-50'
+                        }`}
+                    >
+                      {pg}
+                    </button>
+                  )
+                )}
+
+                <button
+                  onClick={() => setCurrentPage(safePage + 1)}
+                  disabled={safePage === totalPages}
+                  className="flex items-center gap-1 px-3 py-1.5 border border-gray-300 rounded-lg text-sm hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  Next
+                  <ChevronRight size={16} />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </main>
 
@@ -882,7 +1046,7 @@ export default function PaymentHistory() {
 
       {/* Popup notification */}
       {popup.visible && (
-        <div className={`fixed top-5 right-5 z-[1001] p-4 rounded-lg shadow-xl flex items-start gap-3 max-w-xs font-medium ${popup.type === 'success' ? 'bg-green-600 text-white border border-green-700' : 'bg-red-600 text-white border border-red-700'}`}>
+        <div className={`fixed top-5 right-4 left-4 sm:left-auto sm:right-5 z-[1001] p-4 rounded-lg shadow-xl flex items-start gap-3 sm:max-w-xs font-medium ${popup.type === 'success' ? 'bg-green-600 text-white border border-green-700' : 'bg-red-600 text-white border border-red-700'}`}>
           <div className="flex-shrink-0 mt-0.5">
             {popup.type === 'success' ? <CheckCircle size={28} /> : <XCircle size={28} />}
           </div>
