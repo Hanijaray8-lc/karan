@@ -125,7 +125,10 @@ router.get('/all', protect, authorize('admin', 'manager', 'agent'), async functi
       ];
     }
 
-    const clients = await Client.find(filter).sort({ createdAt: -1 });
+    const clients = await Client.find(filter)
+      .select('name husband_name phone landmark address district amount received pending loan_start_date loan_end_date status weekly_amount total_weeks assigned_agent assigned_agent_name managerId addedBy addedByName managerName staff_id staff_name last_pushed_date createdAt clientId')
+      .sort({ createdAt: -1 })
+      .lean();
 
     res.json({
       success: true,

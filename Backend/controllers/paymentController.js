@@ -499,9 +499,10 @@ const getPaymentHistory = async (req, res) => {
     let payments = await Payment.find(query)
       .populate('client', 'name phone district landmark loan_start_date loan_end_date amount')
       .populate('agent', 'name username email') // Populate agent details (collected by)
-      .sort({ paymentDate: -1, createdAt: -1, _id: -1 });
+      .sort({ paymentDate: -1, createdAt: -1, _id: -1 })
+      .lean();
 
-    // Populate collected staff names from IDs
+    // Populate collected staff names from IDs (lean-safe: works on plain objects too)
     payments = await populateCollectedStaffName(payments);
 
     // Calculate totals
@@ -613,9 +614,10 @@ const getAllPayments = async (req, res) => {
     let payments = await Payment.find()
       .populate('client', 'name phone district landmark loan_start_date loan_end_date amount')
       .populate('agent', 'name username')
-      .sort({ paymentDate: -1, createdAt: -1, _id: -1 });
+      .sort({ paymentDate: -1, createdAt: -1, _id: -1 })
+      .lean();
 
-    // Populate collected staff names from IDs
+    // Populate collected staff names from IDs (lean-safe: works on plain objects too)
     payments = await populateCollectedStaffName(payments);
 
     const totalCollected = payments.reduce((sum, p) => sum + p.amount, 0);
