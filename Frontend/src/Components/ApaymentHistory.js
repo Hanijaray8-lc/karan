@@ -9,8 +9,6 @@ import {
   Users,
   XCircle,
   CheckCircle,
-  ChevronLeft,
-  ChevronRight,
 } from 'lucide-react';
 
 import Navbar from './AgentNavbar';
@@ -200,8 +198,6 @@ const isTodayDate = (dateInput) => {
 
 export default function ApaymentHistory() {
   const [searchTerm, setSearchTerm] = useState('');
-  const [currentPage, setCurrentPage] = useState(1);
-  const PAGE_SIZE = 10; // records per page
   const [staffFilter, setStaffFilter] = useState('All Staff');
   const [dateFilter, setDateFilter] = useState('');
   const [paymentRecords, setPaymentRecords] = useState([]);
@@ -215,6 +211,8 @@ export default function ApaymentHistory() {
   const [staffList, setStaffList] = useState(['All Staff']);
   const [loggedInUser, setLoggedInUser] = useState(null);
   const [clientsList, setClientsList] = useState([]);
+  // Date-wise pagination: one page = one collection date
+  const [currentPage, setCurrentPage] = useState(1);
 
   // Modal and cancel payment state
   const [showCancelConfirmModal, setShowCancelConfirmModal] = useState(false);
@@ -425,17 +423,15 @@ export default function ApaymentHistory() {
           }
 
           const idKey = record._id ? String(record._id) : null;
-          const clientId = record.client?.id || record.client?.phone || record.client?.name;
-          const dateStr = record.rawDate
-            ? `${record.rawDate.getFullYear()}-${String(record.rawDate.getMonth() + 1).padStart(2, '0')}-${String(record.rawDate.getDate()).padStart(2, '0')}`
-            : record.datetime;
-          const clientDateKey = clientId && dateStr ? `${clientId}_${dateStr}` : null;
 
+          // Deduplicate by _id only — do NOT deduplicate by clientId+date,
+          // because a client can legitimately have multiple separate payments recorded
+          // on the same day (e.g. late/extra payments added separately).
+          // Using clientId+date dedup was silently dropping valid payment records
+          // and causing the displayed total to be less than the actual collected amount.
           if (idKey && seenKeys.has(idKey)) return;
-          if (clientDateKey && seenKeys.has(clientDateKey)) return;
 
           if (idKey) seenKeys.add(idKey);
-          if (clientDateKey) seenKeys.add(clientDateKey);
           uniqueRecords.push(record);
         });
 
@@ -688,34 +684,67 @@ export default function ApaymentHistory() {
     return matchesSearch && matchesStaff && belongsToAgent && matchesDate;
   });
 
-  // ---------------- Pagination (10 records per page) ----------------
-  const totalPages = Math.max(1, Math.ceil(filteredRecords.length / PAGE_SIZE));
-  const safePage = Math.min(currentPage, totalPages);
-  const pageStartIdx = (safePage - 1) * PAGE_SIZE;
-  const paginatedRecords = filteredRecords.slice(pageStartIdx, pageStartIdx + PAGE_SIZE);
+  // ---- Date-wise pagination (Page 1 = Today, Page 2 = Yesterday, then older dates) ----
+  // Collection (paid) date of a record as YYYY-MM-DD in local time
+  const getRecordDateKey = (record) => {
+    const candidates = [record.createdAt, record.rawDate, record.paymentDateRaw];
+    for (const d of candidates) {
+      if (!d) continue;
+      const dObj = d instanceof Date ? d : new Date(d);
+      if (isNaN(dObj.getTime())) continue;
+      return `${dObj.getFullYear()}-${String(dObj.getMonth() + 1).padStart(2, '0')}-${String(dObj.getDate()).padStart(2, '0')}`;
+    }
+    return 'unknown';
+  };
 
-  // go back to page 1 whenever a filter changes
+  const dateGroups = (() => {
+    const map = new Map();
+    filteredRecords.forEach((record) => {
+      const key = getRecordDateKey(record);
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(record);
+    });
+    // Newest date first; records without a date go last
+    return Array.from(map.entries())
+      .sort(([a], [b]) => {
+        if (a === 'unknown') return 1;
+        if (b === 'unknown') return -1;
+        return a < b ? 1 : a > b ? -1 : 0;
+      })
+      .map(([dateKey, records]) => ({
+        dateKey,
+        records,
+        total: records.reduce((sum, r) => sum + (r.received || 0), 0),
+      }));
+  })();
+
+  const totalPages = Math.max(1, dateGroups.length);
+  const safePage = Math.min(currentPage, totalPages);
+  const currentGroup = dateGroups[safePage - 1] || null;
+  const pageRecords = currentGroup ? currentGroup.records : [];
+
+  // Go back to page 1 whenever a search or filter changes
   useEffect(() => {
     setCurrentPage(1);
   }, [searchTerm, staffFilter, dateFilter]);
 
-  // keep current page valid if the list shrinks (e.g. after cancelling a payment)
-  useEffect(() => {
-    if (currentPage > totalPages) setCurrentPage(totalPages);
-  }, [currentPage, totalPages]);
-
-  // page numbers with ellipsis, e.g. 1 … 4 5 6 … 20
-  const getPageNumbers = () => {
-    if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1);
-    const pages = [1];
-    const start = Math.max(2, safePage - 1);
-    const end = Math.min(totalPages - 1, safePage + 1);
-    if (start > 2) pages.push('...');
-    for (let i = start; i <= end; i++) pages.push(i);
-    if (end < totalPages - 1) pages.push('...');
-    pages.push(totalPages);
-    return pages;
-  };
+  // Label for the date shown on the current page
+  const currentGroupLabel = (() => {
+    if (!currentGroup) return '';
+    if (currentGroup.dateKey === 'unknown') return 'Date not available';
+    const [y, m, d] = currentGroup.dateKey.split('-').map(Number);
+    const dateObj = new Date(y, m - 1, d);
+    const formatted = dateObj.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    if (isTodayDate(dateObj)) return `Today (${formatted})`;
+    if (
+      dateObj.getFullYear() === yesterday.getFullYear() &&
+      dateObj.getMonth() === yesterday.getMonth() &&
+      dateObj.getDate() === yesterday.getDate()
+    ) return `Yesterday (${formatted})`;
+    return formatted;
+  })();
 
   if (error) {
     return (
@@ -852,6 +881,20 @@ export default function ApaymentHistory() {
           </div>
         </div>
 
+        {/* Date-wise collection summary for the current page */}
+        {!loading && currentGroup && (
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-3 bg-gradient-to-r from-emerald-700 to-emerald-600 text-white rounded-xl shadow-md px-4 py-3">
+            <div>
+              <p className="text-xs opacity-90">Collection Date</p>
+              <p className="text-base sm:text-lg font-bold">{currentGroupLabel}</p>
+            </div>
+            <div className="text-right">
+              <p className="text-xs opacity-90">Collected ({currentGroup.records.length} payments)</p>
+              <p className="text-base sm:text-lg font-bold">₹{currentGroup.total.toLocaleString('en-IN')}</p>
+            </div>
+          </div>
+        )}
+
         {/* Payment History Table */}
         <div className="bg-white rounded-xl shadow border border-gray-200 overflow-hidden">
           <div className="hidden md:block overflow-x-auto">
@@ -887,9 +930,9 @@ export default function ApaymentHistory() {
                     </td>
                   </tr>
                 ) : (
-                  paginatedRecords.map((record, idx) => (
+                  pageRecords.map((record, idx) => (
                     <tr
-                      key={record._id || `${pageStartIdx + idx}`}
+                      key={record._id || `${idx}`}
                       className="border-t hover:bg-gray-50 transition-colors"
                     >
                       <td className="px-6 py-4 whitespace-nowrap font-medium text-gray-900">{record.paymentDate}</td>
@@ -925,49 +968,73 @@ export default function ApaymentHistory() {
             </table>
           </div>
 
-          {/* Mobile card list (below md) */}
-          <div className="md:hidden divide-y divide-gray-100">
+          {/* Mobile Card View (visible only below md) */}
+          <div className="md:hidden">
             {loading ? (
               <div className="py-12 flex items-center justify-center gap-2">
                 <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-emerald-600"></div>
-                <span className="text-gray-600 text-sm">Loading payment records...</span>
+                <span className="text-gray-600">Loading payment records...</span>
               </div>
             ) : filteredRecords.length === 0 ? (
-              <div className="py-12 text-center text-gray-500 text-sm">No payment records found</div>
+              <div className="py-12 text-center text-gray-500">No payment records found</div>
             ) : (
-              paginatedRecords.map((record, idx) => (
-                <div key={record._id || `m-${pageStartIdx + idx}`} className="p-4 space-y-3">
+              pageRecords.map((record, idx) => (
+                <div
+                  key={record._id || `${idx}`}
+                  className="p-4 border-t first:border-t-0 border-gray-100 bg-white"
+                >
+                  {/* Name + Received amount */}
                   <div className="flex items-start justify-between gap-3">
-                    <p className="font-semibold text-gray-900 break-words min-w-0">{record.client.name}</p>
-                    <p className="text-lg font-bold text-green-700 flex-shrink-0">₹{record.received.toLocaleString('en-IN')}</p>
+                    <h3 className="text-lg font-semibold text-gray-900 leading-snug break-words min-w-0">
+                      {record.client.name}
+                    </h3>
+                    <span className="text-xl font-bold text-green-700 whitespace-nowrap">
+                      ₹{record.received.toLocaleString('en-IN')}
+                    </span>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
-                    <div>
-                      <p className="text-gray-500">Payment Date (Due)</p>
-                      <p className="font-medium text-gray-900">{record.paymentDate}</p>
+                  {/* Staff badge */}
+                  {record.staff?.name && (
+                    <span className="inline-flex items-center mt-2 px-3 py-1 rounded-full text-sm font-medium bg-emerald-100 text-emerald-900">
+                      {record.staff.name}
+                      {record.staff.role ? ` (${record.staff.role})` : ''}
+                    </span>
+                  )}
+
+                  {/* Details grid */}
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-3 mt-4">
+                    <div className="min-w-0">
+                      <p className="text-sm text-gray-500">Payment Date (Due)</p>
+                      <p className="font-semibold text-gray-900 break-words">{record.paymentDate}</p>
                     </div>
-                    <div>
-                      <p className="text-gray-500">Paid Date</p>
-                      <p className="font-medium text-gray-900">{record.paidDate}</p>
+                    <div className="min-w-0">
+                      <p className="text-sm text-gray-500">Paid Date</p>
+                      <p className="font-semibold text-gray-900 break-words">{record.paidDate}</p>
                     </div>
-                    <div>
-                      <p className="text-gray-500">Mobile</p>
-                      <p className="font-medium text-gray-900">{record.client.phone}</p>
+                    <div className="min-w-0">
+                      <p className="text-sm text-gray-500">Mobile</p>
+                      <p className="font-semibold text-gray-900 break-words">{record.client.phone}</p>
                     </div>
-                    <div>
-                      <p className="text-gray-500">District</p>
-                      <p className="font-medium text-gray-900 break-words">{record.client.district}</p>
+                    <div className="min-w-0">
+                      <p className="text-sm text-gray-500">Pending</p>
+                      <p className="font-semibold text-red-700">
+                        ₹{(record.pending || 0).toLocaleString('en-IN')}
+                      </p>
                     </div>
-                    <div className="col-span-2">
-                      <p className="text-gray-500">Landmark</p>
-                      <p className="font-medium text-gray-900 break-words">{record.client.landmark}</p>
+                    <div className="min-w-0">
+                      <p className="text-sm text-gray-500">District</p>
+                      <p className="font-semibold text-gray-900 break-words">{record.client.district}</p>
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm text-gray-500">Landmark</p>
+                      <p className="font-semibold text-gray-900 break-words">{record.client.landmark}</p>
                     </div>
                   </div>
 
+                  {/* Cancel button (same handler as table) */}
                   <button
                     onClick={() => openCancelConfirmModal(record._id, record.received, record.client.id, record.createdAt)}
-                    className="w-full bg-red-500 hover:bg-red-600 text-white py-2 rounded-lg text-sm font-semibold transition-all active:scale-95 shadow-sm"
+                    className="w-full mt-4 bg-red-500 hover:bg-red-600 text-white py-2.5 rounded-xl text-base font-semibold transition-all active:scale-95 shadow-sm"
                   >
                     Cancel
                   </button>
@@ -976,56 +1043,30 @@ export default function ApaymentHistory() {
             )}
           </div>
 
-          {/* Pagination */}
+          {/* Pagination (one page per collection date) */}
           {!loading && filteredRecords.length > 0 && (
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 sm:px-6 py-4 border-t border-gray-200 bg-white">
+            <div className="flex flex-wrap items-center justify-between gap-2 px-4 sm:px-6 py-4 border-t border-gray-200 bg-white">
               <p className="text-sm text-gray-600">
-                Showing{' '}
-                <span className="font-semibold">{pageStartIdx + 1}</span>
-                {' – '}
-                <span className="font-semibold">{Math.min(pageStartIdx + PAGE_SIZE, filteredRecords.length)}</span>
-                {' of '}
-                <span className="font-semibold">{filteredRecords.length}</span> records
+                <span className="font-semibold">{currentGroupLabel}</span> —{' '}
+                {pageRecords.length} payments • ₹{(currentGroup ? currentGroup.total : 0).toLocaleString('en-IN')} collected
               </p>
-
-              <div className="flex items-center gap-1.5 flex-wrap justify-center">
+              <div className="flex items-center gap-2">
                 <button
-                  onClick={() => setCurrentPage(safePage - 1)}
-                  disabled={safePage === 1}
-                  className="flex items-center gap-1 px-3 py-1.5 border border-gray-300 rounded-lg text-sm hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                  disabled={safePage <= 1}
+                  className="px-3 py-1.5 text-xs font-bold border border-gray-300 rounded-lg bg-white disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-50"
                 >
-                  <ChevronLeft size={16} />
                   Prev
                 </button>
-
-                <span className="sm:hidden px-2 text-sm font-medium text-gray-700">
-                  Page {safePage} / {totalPages}
+                <span className="text-xs text-gray-700 whitespace-nowrap">
+                  {safePage} / {totalPages}
                 </span>
-
-                {getPageNumbers().map((pg, i) =>
-                  pg === '...' ? (
-                    <span key={`dots-${i}`} className="hidden sm:inline px-2 text-gray-500">…</span>
-                  ) : (
-                    <button
-                      key={pg}
-                      onClick={() => setCurrentPage(pg)}
-                      className={`hidden sm:inline-block min-w-[36px] px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${pg === safePage
-                        ? 'bg-emerald-600 text-white border-emerald-600'
-                        : 'border-gray-300 text-gray-700 hover:bg-gray-50'
-                        }`}
-                    >
-                      {pg}
-                    </button>
-                  )
-                )}
-
                 <button
-                  onClick={() => setCurrentPage(safePage + 1)}
-                  disabled={safePage === totalPages}
-                  className="flex items-center gap-1 px-3 py-1.5 border border-gray-300 rounded-lg text-sm hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={safePage >= totalPages}
+                  className="px-3 py-1.5 text-xs font-bold border border-gray-300 rounded-lg bg-white disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-50"
                 >
                   Next
-                  <ChevronRight size={16} />
                 </button>
               </div>
             </div>

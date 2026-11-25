@@ -9,8 +9,6 @@ import {
   Users,
   XCircle,
   CheckCircle,
-  ChevronLeft,
-  ChevronRight,
 } from 'lucide-react';
 
 import AdminNavbar from '../Admin/AdminNavbar';
@@ -199,6 +197,23 @@ const isTodayDate = (dateInput) => {
   );
 };
 
+// Helper function to check if a date corresponds to yesterday (local time)
+const isYesterdayDate = (dateInput) => {
+  if (!dateInput) return false;
+  const d = dateInput instanceof Date ? dateInput : new Date(dateInput);
+  if (isNaN(d.getTime())) return false;
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  return (
+    d.getFullYear() === yesterday.getFullYear() &&
+    d.getMonth() === yesterday.getMonth() &&
+    d.getDate() === yesterday.getDate()
+  );
+};
+
+// Number of payment cards / table rows shown per page (same as Admin payment history)
+const PAGE_SIZE = 10;
+
 // Helper function to get the actual date the payment was collected/paid
 // Authoritative date is createdAt (when money was physically collected).
 const getPaymentPaidDate = (record) => {
@@ -228,8 +243,6 @@ const formatDateToYMD = (dateInput) => {
 
 export default function MpaymentHistory() {
   const [searchTerm, setSearchTerm] = useState('');
-  const [currentPage, setCurrentPage] = useState(1);
-  const PAGE_SIZE = 10; // records per page
   const [staffFilter, setStaffFilter] = useState('All Staff');
   const [dateFilter, setDateFilter] = useState('');
   const [paymentRecords, setPaymentRecords] = useState([]);
@@ -247,6 +260,7 @@ export default function MpaymentHistory() {
   const [showCancelConfirmModal, setShowCancelConfirmModal] = useState(false);
   const [cancelPaymentData, setCancelPaymentData] = useState(null);
   const [popup, setPopup] = useState({ visible: false, type: 'success', title: '', message: '' });
+  const [currentPage, setCurrentPage] = useState(1);
 
   const rawPaymentsRef = useRef([]);
   const popupTimeoutRef = useRef(null);
@@ -662,34 +676,62 @@ export default function MpaymentHistory() {
     return { totalCollected, todayCollected, totalPending };
   })();
 
-  // ---------------- Pagination (10 records per page) ----------------
-  const totalPages = Math.max(1, Math.ceil(filteredRecords.length / PAGE_SIZE));
-  const safePage = Math.min(currentPage, totalPages);
-  const pageStartIdx = (safePage - 1) * PAGE_SIZE;
-  const paginatedRecords = filteredRecords.slice(pageStartIdx, pageStartIdx + PAGE_SIZE);
+  // Mobile top summary: today and yesterday collection (all records, not filtered)
+  const todayCollectedAll = paymentRecords.reduce(
+    (sum, r) => (isTodayDate(getPaymentPaidDate(r)) ? sum + (r.received || 0) : sum),
+    0
+  );
+  const yesterdayCollectedAll = paymentRecords.reduce(
+    (sum, r) => (isYesterdayDate(getPaymentPaidDate(r)) ? sum + (r.received || 0) : sum),
+    0
+  );
 
-  // go back to page 1 whenever a filter changes
+  // Go back to page 1 whenever a search or filter changes
   useEffect(() => {
     setCurrentPage(1);
   }, [searchTerm, staffFilter, dateFilter]);
 
-  // keep current page valid if the list shrinks (e.g. after cancelling a payment)
-  useEffect(() => {
-    if (currentPage > totalPages) setCurrentPage(totalPages);
-  }, [currentPage, totalPages]);
+  // Date-wise pagination: one page = one collection date
+  // (Page 1 = Today, Page 2 = Yesterday, then older dates...).
+  // Each page shows that date's payments and the total amount collected on it.
+  const dateGroups = (() => {
+    const map = new Map();
+    filteredRecords.forEach((record) => {
+      const key = formatDateToYMD(getPaymentPaidDate(record)) || 'unknown';
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(record);
+    });
+    // Newest date first; records without a date go last
+    return Array.from(map.entries())
+      .sort(([a], [b]) => {
+        if (a === 'unknown') return 1;
+        if (b === 'unknown') return -1;
+        return a < b ? 1 : a > b ? -1 : 0;
+      })
+      .map(([dateKey, records]) => ({
+        dateKey,
+        records,
+        total: records.reduce((sum, r) => sum + (r.received || 0), 0),
+      }));
+  })();
 
-  // page numbers with ellipsis, e.g. 1 … 4 5 6 … 20
-  const getPageNumbers = () => {
-    if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1);
-    const pages = [1];
-    const start = Math.max(2, safePage - 1);
-    const end = Math.min(totalPages - 1, safePage + 1);
-    if (start > 2) pages.push('...');
-    for (let i = start; i <= end; i++) pages.push(i);
-    if (end < totalPages - 1) pages.push('...');
-    pages.push(totalPages);
-    return pages;
-  };
+  const totalPages = Math.max(1, dateGroups.length);
+  const safePage = Math.min(currentPage, totalPages);
+  const currentGroup = dateGroups[safePage - 1] || null;
+  const pageRecords = currentGroup ? currentGroup.records : [];
+  const startIndex = 0;
+
+  // Label for the date shown on the current page
+  const currentGroupLabel = (() => {
+    if (!currentGroup) return '';
+    if (currentGroup.dateKey === 'unknown') return 'Date not available';
+    const [y, m, d] = currentGroup.dateKey.split('-').map(Number);
+    const dateObj = new Date(y, m - 1, d);
+    const formatted = dateObj.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+    if (isTodayDate(dateObj)) return `Today (${formatted})`;
+    if (isYesterdayDate(dateObj)) return `Yesterday (${formatted})`;
+    return formatted;
+  })();
 
   if (error) {
     return (
@@ -726,8 +768,20 @@ export default function MpaymentHistory() {
           </div>
         )}
 
-        {/* Summary Cards */}
-        <div className="grid grid-cols-3 gap-3 sm:gap-5 mb-8">
+        {/* Mobile: today and yesterday collection only */}
+        <div className="grid grid-cols-2 gap-3 mb-6 sm:hidden">
+          <div className="bg-gradient-to-r from-emerald-700 to-emerald-600 text-white rounded-xl shadow-md p-3 min-w-0">
+            <p className="text-xs opacity-90">Today's Collection</p>
+            <p className="text-lg font-bold mt-1 break-words">₹{todayCollectedAll.toLocaleString('en-IN')}</p>
+          </div>
+          <div className="bg-gradient-to-r from-emerald-500 to-emerald-400 text-white rounded-xl shadow-md p-3 min-w-0">
+            <p className="text-xs opacity-90">Yesterday's Collection</p>
+            <p className="text-lg font-bold mt-1 break-words">₹{yesterdayCollectedAll.toLocaleString('en-IN')}</p>
+          </div>
+        </div>
+
+        {/* Summary Cards (desktop / tablet) */}
+        <div className="hidden sm:grid grid-cols-3 gap-3 sm:gap-5 mb-8">
           <div className="bg-gradient-to-r from-emerald-700 to-emerald-600 text-white rounded-xl shadow-md overflow-hidden">
             <div className="p-3 sm:p-6">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4">
@@ -851,9 +905,24 @@ export default function MpaymentHistory() {
           </div>
         </div>
 
+        {/* Date-wise collection summary for the current page */}
+        {!loading && currentGroup && (
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-3 bg-gradient-to-r from-emerald-700 to-emerald-600 text-white rounded-xl shadow-md px-4 py-3">
+            <div>
+              <p className="text-xs opacity-90">Collection Date</p>
+              <p className="text-base sm:text-lg font-bold">{currentGroupLabel}</p>
+            </div>
+            <div className="text-right">
+              <p className="text-xs opacity-90">Collected ({currentGroup.records.length} payments)</p>
+              <p className="text-base sm:text-lg font-bold">₹{currentGroup.total.toLocaleString('en-IN')}</p>
+            </div>
+          </div>
+        )}
+
         {/* Payment History Table */}
-        <div className="bg-white rounded-xl shadow border border-gray-200 overflow-hidden">
-          <div className="hidden md:block overflow-x-auto">
+        <div className="sm:bg-white sm:rounded-xl sm:shadow sm:border sm:border-gray-200 sm:overflow-hidden">
+          {/* Desktop / tablet table (hidden on mobile) */}
+          <div className="hidden sm:block overflow-x-auto">
             <table className="w-full text-sm min-w-[1100px]">
               <thead className="bg-[#16423C] text-white sticky top-0">
                 <tr>
@@ -886,9 +955,9 @@ export default function MpaymentHistory() {
                     </td>
                   </tr>
                 ) : (
-                  paginatedRecords.map((record, idx) => (
+                  pageRecords.map((record, idx) => (
                     <tr
-                      key={record._id || `${pageStartIdx + idx}`}
+                      key={record._id || `${idx}`}
                       className="border-t hover:bg-gray-50 transition-colors"
                     >
                       <td className="px-6 py-4 whitespace-nowrap font-medium text-gray-900">{record.paymentDate}</td>
@@ -931,132 +1000,111 @@ export default function MpaymentHistory() {
             </table>
           </div>
 
-          {/* Mobile card list (below md) */}
-          <div className="md:hidden divide-y divide-gray-100">
+          {/* Mobile card view (hidden on sm and up) */}
+          <div className="sm:hidden">
             {loading ? (
-              <div className="py-12 flex items-center justify-center gap-2">
+              <div className="flex items-center justify-center gap-2 py-16 bg-white rounded-xl shadow border border-gray-200">
                 <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-emerald-600"></div>
                 <span className="text-gray-600 text-sm">Loading payment records...</span>
               </div>
             ) : filteredRecords.length === 0 ? (
-              <div className="py-12 text-center text-gray-500 text-sm">No payment records found</div>
+              <div className="py-16 text-center text-gray-500 text-sm bg-white rounded-xl shadow border border-gray-200">
+                No payment records found
+              </div>
             ) : (
-              paginatedRecords.map((record, idx) => {
-                const isForeclosure =
-                  record.paymentMethod === 'Foreclosure' ||
-                  record.paymentMethod === 'foreclosure' ||
-                  (record.notes && record.notes.toLowerCase().includes('foreclose'));
-                return (
-                  <div key={record._id || `m-${pageStartIdx + idx}`} className="p-4 space-y-3">
+              <div className="bg-white rounded-xl shadow border border-gray-200 overflow-hidden divide-y divide-gray-200">
+                {pageRecords.map((record, idx) => (
+                  <div key={record._id || `m-${startIndex + idx}`} className="p-4 min-w-0">
+                    {/* Client name + amount received */}
                     <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="font-semibold text-gray-900 break-words">{record.client.name}</p>
-                        <span className="inline-flex items-center mt-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800 max-w-full">
-                          <span className="truncate">
-                            {record.staff.name}
-                            {record.staff.role ? ` (${record.staff.role})` : ''}
-                          </span>
-                        </span>
-                      </div>
-                      <div className="text-right flex-shrink-0">
-                        <p className="text-lg font-bold text-green-700">₹{record.received.toLocaleString('en-IN')}</p>
-                        {isForeclosure && (
-                          <span className="inline-flex items-center mt-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-amber-100 text-amber-800 border border-amber-300">
-                            Foreclosure
-                          </span>
-                        )}
-                      </div>
+                      <p className="text-base font-semibold text-gray-900 break-words min-w-0">
+                        {record.client.name}
+                      </p>
+                      <p className="text-lg font-bold text-green-700 shrink-0">
+                        ₹{record.received.toLocaleString('en-IN')}
+                      </p>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
-                      <div>
-                        <p className="text-gray-500">Payment Date (Due)</p>
-                        <p className="font-medium text-gray-900">{record.paymentDate}</p>
+                    {/* Staff badge + foreclosure tag */}
+                    <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                      <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800 break-words max-w-full">
+                        {record.staff.name}
+                        {record.staff.role ? ` (${record.staff.role})` : ''}
+                      </span>
+                      {(record.paymentMethod === 'Foreclosure' || record.paymentMethod === 'foreclosure' || (record.notes && record.notes.toLowerCase().includes('foreclose'))) && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-amber-100 text-amber-800 border border-amber-300">
+                          Foreclosure
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Details grid */}
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-3 mt-4 text-sm">
+                      <div className="min-w-0">
+                        <p className="text-xs text-gray-500">Payment Date (Due)</p>
+                        <p className="font-medium text-gray-900 break-words">{record.paymentDate}</p>
                       </div>
-                      <div>
-                        <p className="text-gray-500">Paid Date</p>
-                        <p className="font-medium text-gray-900">{record.paidDate}</p>
+                      <div className="min-w-0">
+                        <p className="text-xs text-gray-500">Paid Date</p>
+                        <p className="font-medium text-gray-900 break-words">{record.paidDate}</p>
                       </div>
-                      <div>
-                        <p className="text-gray-500">Mobile</p>
-                        <p className="font-medium text-gray-900">{record.client.phone}</p>
+                      <div className="min-w-0">
+                        <p className="text-xs text-gray-500">Mobile</p>
+                        <p className="font-medium text-gray-900 break-words">{record.client.phone}</p>
                       </div>
-                      <div>
-                        <p className="text-gray-500">Pending</p>
-                        <p className="font-semibold text-red-700">₹{record.pending.toLocaleString('en-IN')}</p>
+                      <div className="min-w-0">
+                        <p className="text-xs text-gray-500">Pending</p>
+                        <p className="font-medium text-red-700 break-words">
+                          ₹{record.pending.toLocaleString('en-IN')}
+                        </p>
                       </div>
-                      <div>
-                        <p className="text-gray-500">District</p>
+                      <div className="min-w-0">
+                        <p className="text-xs text-gray-500">District</p>
                         <p className="font-medium text-gray-900 break-words">{record.client.district}</p>
                       </div>
-                      <div>
-                        <p className="text-gray-500">Landmark</p>
+                      <div className="min-w-0">
+                        <p className="text-xs text-gray-500">Landmark</p>
                         <p className="font-medium text-gray-900 break-words">{record.client.landmark}</p>
                       </div>
                     </div>
 
+                    {/* Cancel action */}
                     <button
                       onClick={() => openCancelConfirmModal(record._id, record.received, record.client?.id, record.createdAt)}
-                      className="w-full bg-red-500 hover:bg-red-600 text-white py-2 rounded-lg text-sm font-semibold transition-all active:scale-95 shadow-sm"
+                      className="mt-4 w-full bg-red-500 hover:bg-red-600 text-white py-2.5 rounded-lg text-sm font-semibold transition-all active:scale-[0.98] shadow-sm"
                     >
                       Cancel
                     </button>
                   </div>
-                );
-              })
+                ))}
+              </div>
             )}
           </div>
 
-          {/* Pagination */}
+          {/* Pagination (one page per collection date, all screen sizes) */}
           {!loading && filteredRecords.length > 0 && (
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 sm:px-6 py-4 border-t border-gray-200 bg-white">
+            <div className="flex flex-wrap items-center justify-between gap-2 px-4 sm:px-6 py-4 mt-4 sm:mt-0 sm:border-t sm:border-gray-200 bg-white rounded-xl sm:rounded-none shadow sm:shadow-none border border-gray-200 sm:border-x-0 sm:border-b-0">
               <p className="text-sm text-gray-600">
-                Showing{' '}
-                <span className="font-semibold">{pageStartIdx + 1}</span>
-                {' – '}
-                <span className="font-semibold">{Math.min(pageStartIdx + PAGE_SIZE, filteredRecords.length)}</span>
-                {' of '}
-                <span className="font-semibold">{filteredRecords.length}</span> records
+                <span className="font-semibold">{currentGroupLabel}</span> —{' '}
+                {pageRecords.length} payments • ₹{(currentGroup ? currentGroup.total : 0).toLocaleString('en-IN')} collected
               </p>
-
-              <div className="flex items-center gap-1.5 flex-wrap justify-center">
+              <div className="flex items-center gap-2">
                 <button
-                  onClick={() => setCurrentPage(safePage - 1)}
-                  disabled={safePage === 1}
-                  className="flex items-center gap-1 px-3 py-1.5 border border-gray-300 rounded-lg text-sm hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                  disabled={safePage <= 1}
+                  className="px-3 py-1.5 text-xs font-bold border border-gray-300 rounded-lg bg-white disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-50"
                 >
-                  <ChevronLeft size={16} />
                   Prev
                 </button>
-
-                <span className="sm:hidden px-2 text-sm font-medium text-gray-700">
-                  Page {safePage} / {totalPages}
+                <span className="text-xs text-gray-700 whitespace-nowrap">
+                  {safePage} / {totalPages}
                 </span>
-
-                {getPageNumbers().map((pg, i) =>
-                  pg === '...' ? (
-                    <span key={`dots-${i}`} className="hidden sm:inline px-2 text-gray-500">…</span>
-                  ) : (
-                    <button
-                      key={pg}
-                      onClick={() => setCurrentPage(pg)}
-                      className={`hidden sm:inline-block min-w-[36px] px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${pg === safePage
-                        ? 'bg-emerald-600 text-white border-emerald-600'
-                        : 'border-gray-300 text-gray-700 hover:bg-gray-50'
-                        }`}
-                    >
-                      {pg}
-                    </button>
-                  )
-                )}
-
                 <button
-                  onClick={() => setCurrentPage(safePage + 1)}
-                  disabled={safePage === totalPages}
-                  className="flex items-center gap-1 px-3 py-1.5 border border-gray-300 rounded-lg text-sm hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={safePage >= totalPages}
+                  className="px-3 py-1.5 text-xs font-bold border border-gray-300 rounded-lg bg-white disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-50"
                 >
                   Next
-                  <ChevronRight size={16} />
                 </button>
               </div>
             </div>

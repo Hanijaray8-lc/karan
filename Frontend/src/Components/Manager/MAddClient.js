@@ -26,6 +26,13 @@ export default function MClientManagement() {
   const [dateStart, setDateStart] = useState('');
   const [dateEnd, setDateEnd] = useState('');
 
+  // Pagination state (20 clients per page)
+  const [currentPage, setCurrentPage] = useState(1);
+  const CLIENTS_PER_PAGE = 20;
+
+  // Mobile: client whose full-details popup is open
+  const [mobileDetailClient, setMobileDetailClient] = useState(null);
+
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -99,39 +106,70 @@ export default function MClientManagement() {
   }, []);
 
   const fetchAgents = async () => {
-    try {
-      const token = localStorage.getItem('token');
-      const res = await fetch('https://karanfinance.com/api/agents', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.status === 401) { handleAuthError(); return []; }
-      const data = await res.json();
-      const rawAgents = (data && (data.agents || data.data?.agents)) || [];
-      if (rawAgents.length > 0) {
-        const scopedAgents = filterAgentsForManager(rawAgents, getLoggedInUser());
-        // Dropdown shows ONLY the agents the admin has assigned to THIS manager
-        // (agent.managerId === logged-in manager's id). Unassigned agents and
-        // agents under other managers are hidden.
-        // Scoped list is only used as the return value for client-filtering logic.
-        const me = getLoggedInUser();
-        const myId = String((me && (me._id || me.id)) || '').trim();
-        const getAgentMgrId = (a) => {
-          const m = a.managerId || a.manager_id || a.manager || null;
-          if (!m) return '';
-          return String(typeof m === 'object' ? (m._id || m.id || m.$oid || '') : m).trim();
-        };
-        const assignedToMe = myId
-          ? rawAgents.filter(a => getAgentMgrId(a) === myId)
-          : [];
-        setAgents(assignedToMe);
-        // Return the scoped list for client-filtering logic (keeps other filters intact)
-        return scopedAgents.length > 0 ? scopedAgents : rawAgents;
+    // Retry a few times: right after a page refresh the first request can fail,
+    // return an empty list, or run before the user/token is fully available.
+    const MAX_ATTEMPTS = 3;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const token = localStorage.getItem('token');
+        const res = await fetch('https://karanfinance.com/api/agents', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (res.status === 401) { handleAuthError(); return []; }
+        const data = await res.json();
+
+        // Accept every response shape the API might return
+        const rawAgents = Array.isArray(data)
+          ? data
+          : (data && (
+            (Array.isArray(data.agents) && data.agents) ||
+            (Array.isArray(data.data?.agents) && data.data.agents) ||
+            (Array.isArray(data.data) && data.data) ||
+            []
+          )) || [];
+
+        if (rawAgents.length > 0) {
+          const scopedAgents = filterAgentsForManager(rawAgents, getLoggedInUser());
+          // Dropdown shows ONLY the agents the admin has assigned to THIS manager
+          // (agent.managerId === logged-in manager's id). Unassigned agents and
+          // agents under other managers are hidden.
+          // Scoped list is only used as the return value for client-filtering logic.
+          let me = getLoggedInUser();
+          if (!me || !(me._id || me.id)) {
+            // Fallback: read the user straight from localStorage
+            try { me = JSON.parse(localStorage.getItem('user')); } catch (e) { me = null; }
+          }
+          const myId = String((me && (me._id || me.id || me.userId)) || '').trim();
+          const getAgentMgrId = (a) => {
+            const m = a.managerId || a.manager_id || a.manager || a.assigned_manager || null;
+            if (!m) return '';
+            return String(typeof m === 'object' ? (m._id || m.id || m.$oid || '') : m).trim();
+          };
+          const assignedToMe = myId
+            ? rawAgents.filter(a => getAgentMgrId(a) === myId)
+            : [];
+          setAgents(assignedToMe);
+          // Return the scoped list for client-filtering logic (keeps other filters intact)
+          return scopedAgents.length > 0 ? scopedAgents : rawAgents;
+        }
+      } catch (err) {
+        console.error(`Error fetching agents (attempt ${attempt}):`, err);
       }
-    } catch (err) {
-      console.error('Error fetching agents:', err);
+      if (attempt < MAX_ATTEMPTS) {
+        await new Promise(resolve => setTimeout(resolve, 600 * attempt));
+      }
     }
     return [];
   };
+
+  // If the Add/Edit form is opened and the agents list is still empty
+  // (e.g. first load after refresh failed), load the agents again.
+  useEffect(() => {
+    if ((showAddModal || showEditModal) && agents.length === 0) {
+      fetchAgents();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showAddModal, showEditModal]);
 
   // Listen for external updates to a client's loan_end_date (e.g., from DailyDues Not Paid)
   useEffect(() => {
@@ -372,36 +410,35 @@ export default function MClientManagement() {
     });
   }, [clients, searchTerm, statusFilter, dateStart, dateEnd]);
 
-  // ---- Pagination: 20 clients per page ----
-  const PAGE_SIZE = 20;
-  const [currentPage, setCurrentPage] = useState(1);
-  const totalPages = Math.max(1, Math.ceil(filteredClients.length / PAGE_SIZE));
+  // Pagination calculations (20 clients per page)
+  const totalPages = Math.max(1, Math.ceil(filteredClients.length / CLIENTS_PER_PAGE));
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+  const paginatedClients = filteredClients.slice(
+    (safeCurrentPage - 1) * CLIENTS_PER_PAGE,
+    safeCurrentPage * CLIENTS_PER_PAGE
+  );
 
-  // Back to page 1 whenever search / filters change
+  // Go back to page 1 whenever any filter changes
   useEffect(() => {
     setCurrentPage(1);
   }, [searchTerm, statusFilter, dateStart, dateEnd]);
 
-  // Keep page valid if the list shrinks (e.g. after deleting the last client on a page)
-  useEffect(() => {
-    if (currentPage > totalPages) setCurrentPage(totalPages);
-  }, [currentPage, totalPages]);
-
-  const paginatedClients = useMemo(() => {
-    const startIdx = (currentPage - 1) * PAGE_SIZE;
-    return filteredClients.slice(startIdx, startIdx + PAGE_SIZE);
-  }, [filteredClients, currentPage]);
-
-  const pageNumbers = useMemo(() => {
-    // Show up to 5 page buttons around the current page
-    const maxButtons = 5;
-    let start = Math.max(1, currentPage - Math.floor(maxButtons / 2));
-    let end = Math.min(totalPages, start + maxButtons - 1);
-    start = Math.max(1, end - maxButtons + 1);
+  // Build page number list with ellipsis (e.g. 1 ... 4 5 6 ... 12)
+  const getPageNumbers = () => {
     const pages = [];
-    for (let p = start; p <= end; p++) pages.push(p);
+    if (totalPages <= 7) {
+      for (let i = 1; i <= totalPages; i++) pages.push(i);
+    } else {
+      pages.push(1);
+      if (safeCurrentPage > 3) pages.push('...');
+      const start = Math.max(2, safeCurrentPage - 1);
+      const end = Math.min(totalPages - 1, safeCurrentPage + 1);
+      for (let i = start; i <= end; i++) pages.push(i);
+      if (safeCurrentPage < totalPages - 2) pages.push('...');
+      pages.push(totalPages);
+    }
     return pages;
-  }, [currentPage, totalPages]);
+  };
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
@@ -732,132 +769,200 @@ export default function MClientManagement() {
             <p className="mt-4 text-gray-600 font-medium">Loading clients...</p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm text-left">
-              <thead className="bg-[#16423C] text-white sticky top-0">
-                <tr>
-                  <th className="px-3 py-4 font-semibold whitespace-nowrap">ID</th>
-                  <th className="px-3 py-4 font-semibold whitespace-nowrap">Client Name</th>
-                  <th className="px-3 py-4 font-semibold whitespace-nowrap">Agent</th>
-                  <th className="px-3 py-4 font-semibold whitespace-nowrap">Husband</th>
-                  <th className="px-3 py-4 font-semibold whitespace-nowrap">Phone</th>
-                  <th className="px-3 py-4 font-semibold whitespace-nowrap">Landmark</th>
-                  <th className="px-3 py-4 font-semibold whitespace-nowrap">Address</th>
-                  <th className="px-3 py-4 font-semibold whitespace-nowrap">District</th>
-                  <th className="px-3 py-4 font-semibold whitespace-nowrap">Amount</th>
-                  <th className="px-3 py-4 font-semibold whitespace-nowrap">Received</th>
-                  <th className="px-3 py-4 font-semibold whitespace-nowrap">Pending</th>
-                  <th className="px-3 py-4 font-semibold whitespace-nowrap">Weekly Amount</th>
-                  {/* <th className="px-3 py-4 font-semibold whitespace-nowrap">Weeks</th> */}
-                  <th className="px-3 py-4 font-semibold whitespace-nowrap">Distribute Date</th>
-                  <th className="px-3 py-4 font-semibold whitespace-nowrap">Start Date</th>
-                  <th className="px-3 py-4 font-semibold whitespace-nowrap">End Date</th>
-                  <th className="px-3 py-4 font-semibold whitespace-nowrap">Status</th>
-                  <th className="px-3 py-4 font-semibold whitespace-nowrap">Nominee Name </th>
-                  <th className="px-3 py-4 font-semibold whitespace-nowrap">Nominee Husband</th>
-                  <th className="px-3 py-4 font-semibold whitespace-nowrap">Nominee Phone</th>
-                  <th className="px-3 py-4 font-semibold whitespace-nowrap">Nominee Address</th>
-                  {/* <th className="px-3 py-4 font-semibold whitespace-nowrap">Notes</th> */}
-                  <th className="px-3 py-4 font-semibold text-center whitespace-nowrap">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[#16423C]/10">
-                {filteredClients.length === 0 ? (
+          <div>
+            {/* Desktop / tablet table view */}
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full text-sm text-left">
+                <thead className="bg-[#16423C] text-white sticky top-0">
                   <tr>
-                    <td colSpan={20} className="px-4 py-12 text-center text-gray-500">
-                      <div className="flex flex-col items-center gap-2">
-                        <Users size={40} className="text-gray-400" />
-                        <p className="text-lg">No matching clients found</p>
-                        <button
-                          onClick={() => {
-                            resetForm();
-                            setShowAddModal(true);
-                          }}
-                          className="text-[#16423C] hover:underline font-medium"
-                        >
-                          Add your first client
-                        </button>
-                      </div>
-                    </td>
+                    <th className="px-3 py-4 font-semibold whitespace-nowrap">ID</th>
+                    <th className="px-3 py-4 font-semibold whitespace-nowrap">Client Name</th>
+                    <th className="px-3 py-4 font-semibold whitespace-nowrap">Agent</th>
+                    <th className="px-3 py-4 font-semibold whitespace-nowrap">Husband</th>
+                    <th className="px-3 py-4 font-semibold whitespace-nowrap">Phone</th>
+                    <th className="px-3 py-4 font-semibold whitespace-nowrap">Landmark</th>
+                    <th className="px-3 py-4 font-semibold whitespace-nowrap">Address</th>
+                    <th className="px-3 py-4 font-semibold whitespace-nowrap">District</th>
+                    <th className="px-3 py-4 font-semibold whitespace-nowrap">Amount</th>
+                    <th className="px-3 py-4 font-semibold whitespace-nowrap">Received</th>
+                    <th className="px-3 py-4 font-semibold whitespace-nowrap">Pending</th>
+                    <th className="px-3 py-4 font-semibold whitespace-nowrap">Weekly Amount</th>
+                    {/* <th className="px-3 py-4 font-semibold whitespace-nowrap">Weeks</th> */}
+                    <th className="px-3 py-4 font-semibold whitespace-nowrap">Distribute Date</th>
+                    <th className="px-3 py-4 font-semibold whitespace-nowrap">Start Date</th>
+                    <th className="px-3 py-4 font-semibold whitespace-nowrap">End Date</th>
+                    <th className="px-3 py-4 font-semibold whitespace-nowrap">Status</th>
+                    <th className="px-3 py-4 font-semibold whitespace-nowrap">Nominee Name </th>
+                    <th className="px-3 py-4 font-semibold whitespace-nowrap">Nominee Husband</th>
+                    <th className="px-3 py-4 font-semibold whitespace-nowrap">Nominee Phone</th>
+                    <th className="px-3 py-4 font-semibold whitespace-nowrap">Nominee Address</th>
+                    {/* <th className="px-3 py-4 font-semibold whitespace-nowrap">Notes</th> */}
+                    <th className="px-3 py-4 font-semibold text-center whitespace-nowrap">Actions</th>
                   </tr>
-                ) : (
-                  paginatedClients.map((client) => (
-                    <tr key={client._id} className="hover:bg-[#16423C]/5 transition-colors duration-200">
-                      <td className="px-3 py-4 font-medium text-[#16423C] whitespace-nowrap">
-                        {client.clientId || `#${client._id?.slice(-6)}`}
-                      </td>
-                      <td className="px-3 py-4 whitespace-nowrap">{client.name || '—'}</td>
-                      <td className="px-3 py-4 whitespace-nowrap">{client.assigned_agent_name || '—'}</td>
-                      <td className="px-3 py-4 whitespace-nowrap">{client.husband_name || '—'}</td>
-                      <td className="px-3 py-4 whitespace-nowrap">{client.phone || '—'}</td>
-                      <td className="px-3 py-4 whitespace-nowrap">{client.landmark || '—'}</td>
-                      <td className="px-3 py-4 whitespace-nowrap">{client.address || '—'}</td>
-                      <td className="px-3 py-4 whitespace-nowrap">{client.district || '—'}</td>
-                      <td className="px-3 py-4 whitespace-nowrap font-medium">₹{(client.amount === 6900 ? 5000 : (client.amount || 0)).toLocaleString('en-IN')}</td>
-                      <td className="px-3 py-4 whitespace-nowrap text-green-700 font-medium">₹{(client.received || 0).toLocaleString('en-IN')}</td>
-                      <td className="px-3 py-4 whitespace-nowrap text-red-700 font-medium">₹{(client.pending || 0).toLocaleString('en-IN')}</td>
-                      <td className="px-3 py-4 whitespace-nowrap font-medium text-blue-600">₹{(client.amount === 5000 || client.amount === 6900 || client.weekly_amount === 627.27 || !client.weekly_amount ? 575 : client.weekly_amount).toFixed(2)}</td>
-                      {/* <td className="px-3 py-4 whitespace-nowrap font-medium">{client.total_weeks || 0} weeks</td> */}
-                      <td className="px-3 py-4 whitespace-nowrap">{formatDate(client.distributed_amount_date || client.distributed_date)}</td>
-                      <td className="px-3 py-4 whitespace-nowrap">{formatDate(client.loan_start_date)}</td>
-                      <td className="px-3 py-4 whitespace-nowrap">{formatDate(client.loan_end_date)}</td>
-                      <td className="px-3 py-4 whitespace-nowrap">
-                        <span className={`inline-block px-2 py-1 text-xs font-medium rounded-full ${getStatusClass(client.status)}`}>
-                          {getStatusBadge(client.status)}
-                        </span>
-                      </td>
-                      <td className="px-3 py-4 whitespace-nowrap">{client.nominee_name || '—'}</td>
-                      <td className="px-3 py-4 whitespace-nowrap">{client.nominee_husband || '—'}</td>
-                      <td className="px-3 py-4 whitespace-nowrap">{client.nominee_phone || '—'}</td>
-                      <td className="px-3 py-4 whitespace-nowrap">{client.nominee_address || '—'}</td>
-                      {/* <td className="px-3 py-4 max-w-[200px] truncate" title={client.notes}>
-                        {client.notes || '—'}
-                      </td> */}
-                      <td className="px-3 py-4 whitespace-nowrap">
-                        <div className="flex items-center gap-2 justify-center">
+                </thead>
+                <tbody className="divide-y divide-[#16423C]/10">
+                  {filteredClients.length === 0 ? (
+                    <tr>
+                      <td colSpan={20} className="px-4 py-12 text-center text-gray-500">
+                        <div className="flex flex-col items-center gap-2">
+                          <Users size={40} className="text-gray-400" />
+                          <p className="text-lg">No matching clients found</p>
                           <button
-                            onClick={() => openEditModal(client)}
-                            className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                            title="Edit"
+                            onClick={() => {
+                              resetForm();
+                              setShowAddModal(true);
+                            }}
+                            className="text-[#16423C] hover:underline font-medium"
                           >
-                            <Pencil size={16} />
-                          </button>
-                          <button
-                            onClick={() => openDeleteModal(client)}
-                            className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                            title="Delete"
-                          >
-                            <Trash2 size={16} />
+                            Add your first client
                           </button>
                         </div>
                       </td>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+                  ) : (
+                    paginatedClients.map((client) => (
+                      <tr key={client._id} className="hover:bg-[#16423C]/5 transition-colors duration-200">
+                        <td className="px-3 py-4 font-medium text-[#16423C] whitespace-nowrap">
+                          {client.clientId || `#${client._id?.slice(-6)}`}
+                        </td>
+                        <td className="px-3 py-4 whitespace-nowrap">{client.name || '—'}</td>
+                        <td className="px-3 py-4 whitespace-nowrap">{client.assigned_agent_name || '—'}</td>
+                        <td className="px-3 py-4 whitespace-nowrap">{client.husband_name || '—'}</td>
+                        <td className="px-3 py-4 whitespace-nowrap">{client.phone || '—'}</td>
+                        <td className="px-3 py-4 whitespace-nowrap">{client.landmark || '—'}</td>
+                        <td className="px-3 py-4 whitespace-nowrap">{client.address || '—'}</td>
+                        <td className="px-3 py-4 whitespace-nowrap">{client.district || '—'}</td>
+                        <td className="px-3 py-4 whitespace-nowrap font-medium">₹{(client.amount === 6900 ? 5000 : (client.amount || 0)).toLocaleString('en-IN')}</td>
+                        <td className="px-3 py-4 whitespace-nowrap text-green-700 font-medium">₹{(client.received || 0).toLocaleString('en-IN')}</td>
+                        <td className="px-3 py-4 whitespace-nowrap text-red-700 font-medium">₹{(client.pending || 0).toLocaleString('en-IN')}</td>
+                        <td className="px-3 py-4 whitespace-nowrap font-medium text-blue-600">₹{(client.amount === 5000 || client.amount === 6900 || client.weekly_amount === 627.27 || !client.weekly_amount ? 575 : client.weekly_amount).toFixed(2)}</td>
+                        {/* <td className="px-3 py-4 whitespace-nowrap font-medium">{client.total_weeks || 0} weeks</td> */}
+                        <td className="px-3 py-4 whitespace-nowrap">{formatDate(client.distributed_amount_date || client.distributed_date)}</td>
+                        <td className="px-3 py-4 whitespace-nowrap">{formatDate(client.loan_start_date)}</td>
+                        <td className="px-3 py-4 whitespace-nowrap">{formatDate(client.loan_end_date)}</td>
+                        <td className="px-3 py-4 whitespace-nowrap">
+                          <span className={`inline-block px-2 py-1 text-xs font-medium rounded-full ${getStatusClass(client.status)}`}>
+                            {getStatusBadge(client.status)}
+                          </span>
+                        </td>
+                        <td className="px-3 py-4 whitespace-nowrap">{client.nominee_name || '—'}</td>
+                        <td className="px-3 py-4 whitespace-nowrap">{client.nominee_husband || '—'}</td>
+                        <td className="px-3 py-4 whitespace-nowrap">{client.nominee_phone || '—'}</td>
+                        <td className="px-3 py-4 whitespace-nowrap">{client.nominee_address || '—'}</td>
+                        {/* <td className="px-3 py-4 max-w-[200px] truncate" title={client.notes}>
+                        {client.notes || '—'}
+                      </td> */}
+                        <td className="px-3 py-4 whitespace-nowrap">
+                          <div className="flex items-center gap-2 justify-center">
+                            <button
+                              onClick={() => openEditModal(client)}
+                              className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                              title="Edit"
+                            >
+                              <Pencil size={16} />
+                            </button>
+                            <button
+                              onClick={() => openDeleteModal(client)}
+                              className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                              title="Delete"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Mobile card view (compact - tap a card for full details) */}
+            <div className="md:hidden p-3 space-y-2.5">
+              {filteredClients.length === 0 ? (
+                <div className="py-10 text-center text-gray-500 flex flex-col items-center gap-2">
+                  <Users size={40} className="text-gray-400" />
+                  <p className="text-base">No matching clients found</p>
+                  <button
+                    onClick={() => {
+                      resetForm();
+                      setShowAddModal(true);
+                    }}
+                    className="text-[#16423C] hover:underline font-medium"
+                  >
+                    Add your first client
+                  </button>
+                </div>
+              ) : (
+                paginatedClients.map((client) => (
+                  <div
+                    key={client._id}
+                    onClick={() => setMobileDetailClient(client)}
+                    className="bg-white rounded-xl shadow border border-[#16423C]/15 px-3 py-2.5 cursor-pointer active:scale-[0.99] transition-all"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-[11px] font-semibold text-[#16423C]/70">
+                          {client.clientId || `#${client._id?.slice(-6)}`}
+                        </p>
+                        <h3 className="text-base font-bold text-[#16423C] truncate">{client.name || '—'}</h3>
+                        <p className="text-xs text-gray-600 mt-0.5">{client.phone || '—'}</p>
+                      </div>
+                      <span className={`flex-shrink-0 inline-block px-2 py-1 text-xs font-medium rounded-full ${getStatusClass(client.status)}`}>
+                        {getStatusBadge(client.status)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between mt-2 pt-2 border-t border-[#16423C]/10 text-xs">
+                      <span className="text-gray-600">
+                        Pending: <span className="font-bold text-red-700">₹{(client.pending || 0).toLocaleString('en-IN')}</span>
+                      </span>
+                      <span className="text-[#16423C] font-medium">View details ›</span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Pagination footer (desktop + mobile) */}
             {filteredClients.length > 0 && (
               <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3 border-t border-[#16423C]/10 bg-white/60">
                 <p className="text-sm text-gray-600">
-                  Showing {(currentPage - 1) * PAGE_SIZE + 1}–{Math.min(currentPage * PAGE_SIZE, filteredClients.length)} of {filteredClients.length} clients
+                  Showing {(safeCurrentPage - 1) * CLIENTS_PER_PAGE + 1}
+                  {' - '}
+                  {Math.min(safeCurrentPage * CLIENTS_PER_PAGE, filteredClients.length)} of {filteredClients.length} clients
                 </p>
-                {totalPages > 1 && (
-                  <div className="flex items-center gap-1">
-                    <button onClick={() => setCurrentPage(1)} disabled={currentPage === 1} className="px-3 py-1.5 text-sm rounded-lg border border-[#16423C]/20 text-[#16423C] hover:bg-[#16423C]/10 disabled:opacity-40 disabled:cursor-not-allowed">«</button>
-                    <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="px-3 py-1.5 text-sm rounded-lg border border-[#16423C]/20 text-[#16423C] hover:bg-[#16423C]/10 disabled:opacity-40 disabled:cursor-not-allowed">Prev</button>
-                    {pageNumbers.map(p => (
-                      <button
-                        key={p}
-                        onClick={() => setCurrentPage(p)}
-                        className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${p === currentPage
-                          ? 'bg-[#16423C] text-white border-[#16423C]'
-                          : 'border-[#16423C]/20 text-[#16423C] hover:bg-[#16423C]/10'}`}
-                      >
-                        {p}
-                      </button>
-                    ))}
-                    <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="px-3 py-1.5 text-sm rounded-lg border border-[#16423C]/20 text-[#16423C] hover:bg-[#16423C]/10 disabled:opacity-40 disabled:cursor-not-allowed">Next</button>
-                    <button onClick={() => setCurrentPage(totalPages)} disabled={currentPage === totalPages} className="px-3 py-1.5 text-sm rounded-lg border border-[#16423C]/20 text-[#16423C] hover:bg-[#16423C]/10 disabled:opacity-40 disabled:cursor-not-allowed">»</button>
+                {filteredClients.length > CLIENTS_PER_PAGE && (
+                  <div className="flex items-center gap-1 flex-wrap justify-center">
+                    <button
+                      onClick={() => setCurrentPage(Math.max(1, safeCurrentPage - 1))}
+                      disabled={safeCurrentPage === 1}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-[#16423C]/20 text-[#16423C] bg-white hover:bg-[#16423C] hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white disabled:hover:text-[#16423C]"
+                    >
+                      ‹ Prev
+                    </button>
+                    {getPageNumbers().map((page, idx) =>
+                      page === '...' ? (
+                        <span key={`ellipsis-${idx}`} className="px-2 text-[#16423C] text-xs">...</span>
+                      ) : (
+                        <button
+                          key={page}
+                          onClick={() => setCurrentPage(page)}
+                          className={`min-w-[32px] px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${page === safeCurrentPage
+                            ? 'bg-[#16423C] text-white border-[#16423C]'
+                            : 'bg-white text-[#16423C] border-[#16423C]/20 hover:bg-[#E9EFEC]'
+                            }`}
+                        >
+                          {page}
+                        </button>
+                      )
+                    )}
+                    <button
+                      onClick={() => setCurrentPage(Math.min(totalPages, safeCurrentPage + 1))}
+                      disabled={safeCurrentPage === totalPages}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-[#16423C]/20 text-[#16423C] bg-white hover:bg-[#16423C] hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white disabled:hover:text-[#16423C]"
+                    >
+                      Next ›
+                    </button>
                   </div>
                 )}
               </div>
@@ -865,6 +970,296 @@ export default function MClientManagement() {
           </div>
         )}
       </div>
+
+      {/* Mobile: full client details popup with Edit / Delete */}
+
+      {mobileDetailClient && (
+
+        <div
+
+          className="md:hidden fixed inset-0 bg-black/40 backdrop-blur-sm flex items-end sm:items-center justify-center z-50 p-0 sm:p-4"
+
+          onClick={() => setMobileDetailClient(null)}
+
+        >
+
+          <div
+
+            className="bg-white w-full max-w-md max-h-[90vh] rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col overflow-hidden"
+
+            onClick={(e) => e.stopPropagation()}
+
+          >
+
+            {/* Header */}
+
+            <div className="flex items-start justify-between gap-2 px-4 py-3 bg-gradient-to-r from-[#16423C] to-[#1f5a52] text-white">
+
+              <div className="min-w-0">
+
+                <p className="text-xs text-emerald-100">
+
+                  {mobileDetailClient.clientId || `#${mobileDetailClient._id?.slice(-6)}`}
+
+                </p>
+
+                <h2 className="text-lg font-bold truncate">{mobileDetailClient.name || '—'}</h2>
+
+              </div>
+
+              <div className="flex items-center gap-2 flex-shrink-0">
+
+                <span className={`inline-block px-2 py-1 text-xs font-medium rounded-full ${getStatusClass(mobileDetailClient.status)}`}>
+
+                  {getStatusBadge(mobileDetailClient.status)}
+
+                </span>
+
+                <button
+
+                  onClick={() => setMobileDetailClient(null)}
+
+                  className="p-1 rounded-full hover:bg-white/20"
+
+                  aria-label="Close"
+
+                >
+
+                  <X size={20} />
+
+                </button>
+
+              </div>
+
+            </div>
+
+
+
+            {/* Scrollable body */}
+
+            <div className="overflow-y-auto flex-1">
+
+              {/* Amounts */}
+
+              <div className="grid grid-cols-3 text-center border-b border-[#16423C]/10">
+
+                <div className="py-3 px-1">
+
+                  <p className="text-[10px] uppercase text-gray-500">Amount</p>
+
+                  <p className="text-sm font-bold text-[#16423C]">₹{(mobileDetailClient.amount === 6900 ? 5000 : (mobileDetailClient.amount || 0)).toLocaleString('en-IN')}</p>
+
+                </div>
+
+                <div className="py-3 px-1 border-x border-[#16423C]/10">
+
+                  <p className="text-[10px] uppercase text-gray-500">Received</p>
+
+                  <p className="text-sm font-bold text-green-700">₹{(mobileDetailClient.received || 0).toLocaleString('en-IN')}</p>
+
+                </div>
+
+                <div className="py-3 px-1">
+
+                  <p className="text-[10px] uppercase text-gray-500">Pending</p>
+
+                  <p className="text-sm font-bold text-red-700">₹{(mobileDetailClient.pending || 0).toLocaleString('en-IN')}</p>
+
+                </div>
+
+              </div>
+
+
+
+              {/* Client details */}
+
+              <div className="grid grid-cols-2 gap-x-3 gap-y-3 px-4 py-4 text-xs">
+
+                <div>
+
+                  <p className="text-gray-500">Agent</p>
+
+                  <p className="font-medium text-gray-800 break-words">{mobileDetailClient.assigned_agent_name || '—'}</p>
+
+                </div>
+
+                <div>
+
+                  <p className="text-gray-500">Husband</p>
+
+                  <p className="font-medium text-gray-800 break-words">{mobileDetailClient.husband_name || '—'}</p>
+
+                </div>
+
+                <div>
+
+                  <p className="text-gray-500">Phone</p>
+
+                  <p className="font-medium text-gray-800">{mobileDetailClient.phone || '—'}</p>
+
+                </div>
+
+                <div>
+
+                  <p className="text-gray-500">Weekly Amount</p>
+
+                  <p className="font-medium text-blue-600">₹{(mobileDetailClient.amount === 5000 || mobileDetailClient.amount === 6900 || mobileDetailClient.weekly_amount === 627.27 || !mobileDetailClient.weekly_amount ? 575 : mobileDetailClient.weekly_amount).toFixed(2)}</p>
+
+                </div>
+
+                <div>
+
+                  <p className="text-gray-500">Landmark</p>
+
+                  <p className="font-medium text-gray-800 break-words">{mobileDetailClient.landmark || '—'}</p>
+
+                </div>
+
+                <div>
+
+                  <p className="text-gray-500">District</p>
+
+                  <p className="font-medium text-gray-800 break-words">{mobileDetailClient.district || '—'}</p>
+
+                </div>
+
+                <div className="col-span-2">
+
+                  <p className="text-gray-500">Address</p>
+
+                  <p className="font-medium text-gray-800 break-words">{mobileDetailClient.address || '—'}</p>
+
+                </div>
+
+                <div>
+
+                  <p className="text-gray-500">Distribute Date</p>
+
+                  <p className="font-medium text-gray-800">{formatDate(mobileDetailClient.distributed_amount_date || mobileDetailClient.distributed_date)}</p>
+
+                </div>
+
+                <div>
+
+                  <p className="text-gray-500">Start Date</p>
+
+                  <p className="font-medium text-gray-800">{formatDate(mobileDetailClient.loan_start_date)}</p>
+
+                </div>
+
+                <div>
+
+                  <p className="text-gray-500">End Date</p>
+
+                  <p className="font-medium text-gray-800">{formatDate(mobileDetailClient.loan_end_date)}</p>
+
+                </div>
+
+              </div>
+
+
+
+              {/* Nominee details */}
+
+              <div className="px-4 py-4 border-t border-[#16423C]/10 bg-gray-50/70">
+
+                <p className="text-[11px] font-semibold uppercase text-[#16423C] mb-2">Nominee</p>
+
+                <div className="grid grid-cols-2 gap-x-3 gap-y-3 text-xs">
+
+                  <div>
+
+                    <p className="text-gray-500">Name</p>
+
+                    <p className="font-medium text-gray-800 break-words">{mobileDetailClient.nominee_name || '—'}</p>
+
+                  </div>
+
+                  <div>
+
+                    <p className="text-gray-500">Husband</p>
+
+                    <p className="font-medium text-gray-800 break-words">{mobileDetailClient.nominee_husband || '—'}</p>
+
+                  </div>
+
+                  <div>
+
+                    <p className="text-gray-500">Phone</p>
+
+                    <p className="font-medium text-gray-800">{mobileDetailClient.nominee_phone || '—'}</p>
+
+                  </div>
+
+                  <div>
+
+                    <p className="text-gray-500">Address</p>
+
+                    <p className="font-medium text-gray-800 break-words">{mobileDetailClient.nominee_address || '—'}</p>
+
+                  </div>
+
+                </div>
+
+              </div>
+
+            </div>
+
+
+
+            {/* Actions */}
+
+            <div className="grid grid-cols-2 border-t border-[#16423C]/10">
+
+              <button
+
+                onClick={() => {
+
+                  const c = mobileDetailClient;
+
+                  setMobileDetailClient(null);
+
+                  openEditModal(c);
+
+                }}
+
+                className="flex items-center justify-center gap-1.5 py-3 text-sm font-semibold text-blue-600 hover:bg-blue-50 transition-colors border-r border-[#16423C]/10"
+
+              >
+
+                <Pencil size={16} /> Edit
+
+              </button>
+
+              <button
+
+                onClick={() => {
+
+                  const c = mobileDetailClient;
+
+                  setMobileDetailClient(null);
+
+                  openDeleteModal(c);
+
+                }}
+
+                className="flex items-center justify-center gap-1.5 py-3 text-sm font-semibold text-red-600 hover:bg-red-50 transition-colors"
+
+              >
+
+                <Trash2 size={16} /> Delete
+
+              </button>
+
+            </div>
+
+          </div>
+
+        </div>
+
+      )}
+
+
 
       {/* Add Client Modal (NO agent dropdown) */}
       {showAddModal && (

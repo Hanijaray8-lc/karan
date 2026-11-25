@@ -9,8 +9,6 @@ import {
   Users,
   XCircle,
   CheckCircle,
-  ChevronLeft,
-  ChevronRight,
 } from 'lucide-react';
 import AdminNavbar from './AdminNavbar';
 
@@ -196,6 +194,20 @@ const isTodayDate = (dateInput) => {
   );
 };
 
+// Helper function to check if a date corresponds to yesterday (local time)
+const isYesterdayDate = (dateInput) => {
+  if (!dateInput) return false;
+  const d = dateInput instanceof Date ? dateInput : new Date(dateInput);
+  if (isNaN(d.getTime())) return false;
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  return (
+    d.getFullYear() === yesterday.getFullYear() &&
+    d.getMonth() === yesterday.getMonth() &&
+    d.getDate() === yesterday.getDate()
+  );
+};
+
 // Helper function to get the actual date the payment was collected/paid
 // Authoritative date is createdAt (when money was physically collected).
 const getPaymentPaidDate = (record) => {
@@ -223,12 +235,17 @@ const formatDateToYMD = (dateInput) => {
   return `${year}-${month}-${day}`;
 };
 
+// Number of cards shown per page in the mobile card view
+const MOBILE_PAGE_SIZE = 10;
+
+// Today's date (local time) in YYYY-MM-DD, used as the default date filter
+const getTodayYMD = () => formatDateToYMD(new Date());
+
 export default function PaymentHistory() {
   const [searchTerm, setSearchTerm] = useState('');
-  const [currentPage, setCurrentPage] = useState(1);
-  const PAGE_SIZE = 10; // records per page
   const [staffFilter, setStaffFilter] = useState('All Staff');
-  const [dateFilter, setDateFilter] = useState('');
+  const [dateFilter, setDateFilter] = useState(getTodayYMD);
+  const [mobilePage, setMobilePage] = useState(1);
   const [paymentRecords, setPaymentRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -611,34 +628,25 @@ export default function PaymentHistory() {
     return { totalCollected, todayCollected, totalPending };
   })();
 
-  // ---------------- Pagination (10 records per page) ----------------
-  const totalPages = Math.max(1, Math.ceil(filteredRecords.length / PAGE_SIZE));
-  const safePage = Math.min(currentPage, totalPages);
-  const pageStartIdx = (safePage - 1) * PAGE_SIZE;
-  const paginatedRecords = filteredRecords.slice(pageStartIdx, pageStartIdx + PAGE_SIZE);
+  // Mobile top summary: total collected today and yesterday (all records, not filtered)
+  const mobileTodayCollected = paymentRecords.reduce(
+    (sum, r) => (isTodayDate(getPaymentPaidDate(r)) ? sum + (r.received || 0) : sum),
+    0
+  );
+  const mobileYesterdayCollected = paymentRecords.reduce(
+    (sum, r) => (isYesterdayDate(getPaymentPaidDate(r)) ? sum + (r.received || 0) : sum),
+    0
+  );
 
-  // go back to page 1 whenever a filter changes
+  // Mobile card pagination: go back to page 1 whenever the filters change
   useEffect(() => {
-    setCurrentPage(1);
+    setMobilePage(1);
   }, [searchTerm, staffFilter, dateFilter]);
 
-  // keep current page valid if the list shrinks (e.g. after cancelling a payment)
-  useEffect(() => {
-    if (currentPage > totalPages) setCurrentPage(totalPages);
-  }, [currentPage, totalPages]);
-
-  // page numbers with ellipsis, e.g. 1 … 4 5 6 … 20
-  const getPageNumbers = () => {
-    if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1);
-    const pages = [1];
-    const start = Math.max(2, safePage - 1);
-    const end = Math.min(totalPages - 1, safePage + 1);
-    if (start > 2) pages.push('...');
-    for (let i = start; i <= end; i++) pages.push(i);
-    if (end < totalPages - 1) pages.push('...');
-    pages.push(totalPages);
-    return pages;
-  };
+  const mobileTotalPages = Math.max(1, Math.ceil(filteredRecords.length / MOBILE_PAGE_SIZE));
+  const mobileCurrentPage = Math.min(mobilePage, mobileTotalPages);
+  const mobileStartIndex = (mobileCurrentPage - 1) * MOBILE_PAGE_SIZE;
+  const mobileRecords = filteredRecords.slice(mobileStartIndex, mobileStartIndex + MOBILE_PAGE_SIZE);
 
   if (error) {
     return (
@@ -676,7 +684,36 @@ export default function PaymentHistory() {
         )} */}
 
         {/* Summary Cards */}
-        <div className="grid grid-cols-3 gap-3 sm:gap-5 mb-8">
+        {/* Mobile: same 3 cards as desktop */}
+        <div className="grid grid-cols-3 gap-2 mb-6 sm:hidden">
+          <div className="bg-gradient-to-r from-emerald-700 to-emerald-600 text-white rounded-xl shadow-md p-3 min-w-0">
+            <p className="text-[10px] opacity-90 leading-tight">
+              {staffFilter === 'All Staff' && !dateFilter
+                ? 'Total Collection'
+                : staffFilter !== 'All Staff' && dateFilter
+                  ? `${staffFilter}`
+                  : staffFilter !== 'All Staff'
+                    ? `${staffFilter}`
+                    : `Date`}
+            </p>
+            <p className="text-sm font-bold mt-1 break-words">₹{filteredStats.totalCollected.toLocaleString('en-IN')}</p>
+          </div>
+          <div className="bg-gradient-to-r from-emerald-600 to-emerald-500 text-white rounded-xl shadow-md p-3 min-w-0">
+            <p className="text-[10px] opacity-90 leading-tight">
+              {dateFilter ? 'Received' : staffFilter === 'All Staff' ? "Today's" : `Today`}
+            </p>
+            <p className="text-sm font-bold mt-1 break-words">₹{(dateFilter ? filteredStats.totalCollected : filteredStats.todayCollected).toLocaleString('en-IN')}</p>
+          </div>
+          <div className="bg-gradient-to-r from-emerald-500 to-emerald-400 text-white rounded-xl shadow-md p-3 min-w-0">
+            <p className="text-[10px] opacity-90 leading-tight">
+              {staffFilter === 'All Staff' ? 'Total Pending' : `Pending`}
+            </p>
+            <p className="text-sm font-bold mt-1 break-words">₹{filteredStats.totalPending.toLocaleString('en-IN')}</p>
+          </div>
+        </div>
+
+        {/* Desktop / tablet summary cards (hidden on mobile) */}
+        <div className="hidden sm:grid grid-cols-3 gap-3 sm:gap-5 mb-8">
           <div className="bg-gradient-to-r from-emerald-700 to-emerald-600 text-white rounded-xl shadow-md overflow-hidden">
             <div className="p-3 sm:p-6">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-4">
@@ -789,7 +826,7 @@ export default function PaymentHistory() {
                 onClick={() => {
                   setSearchTerm('');
                   setStaffFilter('All Staff');
-                  setDateFilter('');
+                  setDateFilter(getTodayYMD());
                 }}
                 className="flex items-center justify-center gap-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm transition-colors"
               >
@@ -801,8 +838,9 @@ export default function PaymentHistory() {
         </div>
 
         {/* Payment History Table */}
-        <div className="bg-white rounded-xl shadow border border-gray-200 overflow-hidden">
-          <div className="hidden md:block overflow-x-auto">
+        <div className="sm:bg-white sm:rounded-xl sm:shadow sm:border sm:border-gray-200 sm:overflow-hidden">
+          {/* Desktop / tablet table (hidden on mobile) */}
+          <div className="hidden sm:block overflow-x-auto">
             <table className="w-full text-sm min-w-[1100px]">
               <thead className="bg-[#16423C] text-white sticky top-0">
                 <tr>
@@ -835,9 +873,9 @@ export default function PaymentHistory() {
                     </td>
                   </tr>
                 ) : (
-                  paginatedRecords.map((record, idx) => (
+                  filteredRecords.map((record, idx) => (
                     <tr
-                      key={record._id || `${pageStartIdx + idx}`}
+                      key={record._id || `${idx}`}
                       className="border-t hover:bg-gray-50 transition-colors"
                     >
                       <td className="px-6 py-4 whitespace-nowrap font-medium text-gray-900">{record.paymentDate}</td>
@@ -880,136 +918,124 @@ export default function PaymentHistory() {
             </table>
           </div>
 
-          {/* Mobile card list (below md) */}
-          <div className="md:hidden divide-y divide-gray-100">
+          {/* Total records (all records shown on a single page) */}
+          {!loading && filteredRecords.length > 0 && (
+            <div className="hidden sm:flex items-center justify-between px-4 sm:px-6 py-4 border-t border-gray-200 bg-white">
+              <p className="text-sm text-gray-600">
+                Showing all <span className="font-semibold">{filteredRecords.length}</span> records
+              </p>
+            </div>
+          )}
+
+          {/* Mobile card view (hidden on sm and up) */}
+          <div className="sm:hidden">
             {loading ? (
-              <div className="py-12 flex items-center justify-center gap-2">
+              <div className="flex items-center justify-center gap-2 py-16 bg-white rounded-xl shadow border border-gray-200">
                 <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-emerald-600"></div>
                 <span className="text-gray-600 text-sm">Loading payment records...</span>
               </div>
             ) : filteredRecords.length === 0 ? (
-              <div className="py-12 text-center text-gray-500 text-sm">No payment records found</div>
+              <div className="py-16 text-center text-gray-500 text-sm bg-white rounded-xl shadow border border-gray-200">
+                No payment records found
+              </div>
             ) : (
-              paginatedRecords.map((record, idx) => {
-                const isForeclosure =
-                  record.paymentMethod === 'Foreclosure' ||
-                  record.paymentMethod === 'foreclosure' ||
-                  (record.notes && record.notes.toLowerCase().includes('foreclose'));
-                return (
-                  <div key={record._id || `m-${pageStartIdx + idx}`} className="p-4 space-y-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="font-semibold text-gray-900 break-words">{record.client.name}</p>
-                        <span className="inline-flex items-center mt-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800 max-w-full">
-                          <span className="truncate">
-                            {record.staff.name}
-                            {record.staff.role ? ` (${record.staff.role})` : ''}
-                          </span>
-                        </span>
+              <>
+                <div className="bg-white rounded-xl shadow border border-gray-200 overflow-hidden divide-y divide-gray-200">
+                  {mobileRecords.map((record, idx) => (
+                    <div key={record._id || `m-${mobileStartIndex + idx}`} className="p-4 min-w-0">
+                      {/* Client name + amount received */}
+                      <div className="flex items-start justify-between gap-3">
+                        <p className="text-base font-semibold text-gray-900 break-words min-w-0">
+                          {record.client.name}
+                        </p>
+                        <p className="text-lg font-bold text-green-700 shrink-0">
+                          ₹{record.received.toLocaleString('en-IN')}
+                        </p>
                       </div>
-                      <div className="text-right flex-shrink-0">
-                        <p className="text-lg font-bold text-green-700">₹{record.received.toLocaleString('en-IN')}</p>
-                        {isForeclosure && (
-                          <span className="inline-flex items-center mt-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-amber-100 text-amber-800 border border-amber-300">
+
+                      {/* Staff badge + foreclosure tag */}
+                      <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800 break-words max-w-full">
+                          {record.staff.name}
+                          {record.staff.role ? ` (${record.staff.role})` : ''}
+                        </span>
+                        {(record.paymentMethod === 'Foreclosure' || record.paymentMethod === 'foreclosure' || (record.notes && record.notes.toLowerCase().includes('foreclose'))) && (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-amber-100 text-amber-800 border border-amber-300">
                             Foreclosure
                           </span>
                         )}
                       </div>
-                    </div>
 
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
-                      <div>
-                        <p className="text-gray-500">Payment Date (Due)</p>
-                        <p className="font-medium text-gray-900">{record.paymentDate}</p>
+                      {/* Details grid */}
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-3 mt-4 text-sm">
+                        <div className="min-w-0">
+                          <p className="text-xs text-gray-500">Payment Date (Due)</p>
+                          <p className="font-medium text-gray-900 break-words">{record.paymentDate}</p>
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs text-gray-500">Paid Date</p>
+                          <p className="font-medium text-gray-900 break-words">{record.paidDate}</p>
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs text-gray-500">Mobile</p>
+                          <p className="font-medium text-gray-900 break-words">{record.client.phone}</p>
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs text-gray-500">Pending</p>
+                          <p className="font-medium text-red-700 break-words">
+                            ₹{record.pending.toLocaleString('en-IN')}
+                          </p>
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs text-gray-500">District</p>
+                          <p className="font-medium text-gray-900 break-words">{record.client.district}</p>
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs text-gray-500">Landmark</p>
+                          <p className="font-medium text-gray-900 break-words">{record.client.landmark}</p>
+                        </div>
                       </div>
-                      <div>
-                        <p className="text-gray-500">Paid Date</p>
-                        <p className="font-medium text-gray-900">{record.paidDate}</p>
-                      </div>
-                      <div>
-                        <p className="text-gray-500">Mobile</p>
-                        <p className="font-medium text-gray-900">{record.client.phone}</p>
-                      </div>
-                      <div>
-                        <p className="text-gray-500">Pending</p>
-                        <p className="font-semibold text-red-700">₹{record.pending.toLocaleString('en-IN')}</p>
-                      </div>
-                      <div>
-                        <p className="text-gray-500">District</p>
-                        <p className="font-medium text-gray-900 break-words">{record.client.district}</p>
-                      </div>
-                      <div>
-                        <p className="text-gray-500">Landmark</p>
-                        <p className="font-medium text-gray-900 break-words">{record.client.landmark}</p>
-                      </div>
-                    </div>
 
+                      {/* Cancel action */}
+                      <button
+                        onClick={() => openCancelConfirmModal(record._id, record.received, record.client.id, record.createdAt)}
+                        className="mt-4 w-full bg-red-500 hover:bg-red-600 text-white py-2.5 rounded-lg text-sm font-semibold transition-all active:scale-[0.98] shadow-sm"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Mobile pagination */}
+                <div className="flex items-center justify-between gap-2 mt-4 px-1">
+                  <p className="text-xs text-gray-600">
+                    {mobileStartIndex + 1}–{Math.min(mobileStartIndex + MOBILE_PAGE_SIZE, filteredRecords.length)} of{' '}
+                    <span className="font-semibold">{filteredRecords.length}</span>
+                  </p>
+                  <div className="flex items-center gap-2">
                     <button
-                      onClick={() => openCancelConfirmModal(record._id, record.received, record.client.id, record.createdAt)}
-                      className="w-full bg-red-500 hover:bg-red-600 text-white py-2 rounded-lg text-sm font-semibold transition-all active:scale-95 shadow-sm"
+                      onClick={() => setMobilePage((p) => Math.max(1, p - 1))}
+                      disabled={mobileCurrentPage <= 1}
+                      className="px-3 py-1.5 text-xs font-medium border border-gray-300 rounded-lg bg-white disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-50"
                     >
-                      Cancel
+                      Prev
+                    </button>
+                    <span className="text-xs text-gray-700 whitespace-nowrap">
+                      {mobileCurrentPage} / {mobileTotalPages}
+                    </span>
+                    <button
+                      onClick={() => setMobilePage((p) => Math.min(mobileTotalPages, p + 1))}
+                      disabled={mobileCurrentPage >= mobileTotalPages}
+                      className="px-3 py-1.5 text-xs font-medium border border-gray-300 rounded-lg bg-white disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-50"
+                    >
+                      Next
                     </button>
                   </div>
-                );
-              })
+                </div>
+              </>
             )}
           </div>
-
-          {/* Pagination */}
-          {!loading && filteredRecords.length > 0 && (
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 sm:px-6 py-4 border-t border-gray-200 bg-white">
-              <p className="text-sm text-gray-600">
-                Showing{' '}
-                <span className="font-semibold">{pageStartIdx + 1}</span>
-                {' – '}
-                <span className="font-semibold">{Math.min(pageStartIdx + PAGE_SIZE, filteredRecords.length)}</span>
-                {' of '}
-                <span className="font-semibold">{filteredRecords.length}</span> records
-              </p>
-
-              <div className="flex items-center gap-1.5 flex-wrap justify-center">
-                <button
-                  onClick={() => setCurrentPage(safePage - 1)}
-                  disabled={safePage === 1}
-                  className="flex items-center gap-1 px-3 py-1.5 border border-gray-300 rounded-lg text-sm hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                >
-                  <ChevronLeft size={16} />
-                  Prev
-                </button>
-
-                <span className="sm:hidden px-2 text-sm font-medium text-gray-700">
-                  Page {safePage} / {totalPages}
-                </span>
-
-                {getPageNumbers().map((pg, i) =>
-                  pg === '...' ? (
-                    <span key={`dots-${i}`} className="hidden sm:inline px-2 text-gray-500">…</span>
-                  ) : (
-                    <button
-                      key={pg}
-                      onClick={() => setCurrentPage(pg)}
-                      className={`hidden sm:inline-block min-w-[36px] px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${pg === safePage
-                        ? 'bg-emerald-600 text-white border-emerald-600'
-                        : 'border-gray-300 text-gray-700 hover:bg-gray-50'
-                        }`}
-                    >
-                      {pg}
-                    </button>
-                  )
-                )}
-
-                <button
-                  onClick={() => setCurrentPage(safePage + 1)}
-                  disabled={safePage === totalPages}
-                  className="flex items-center gap-1 px-3 py-1.5 border border-gray-300 rounded-lg text-sm hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                >
-                  Next
-                  <ChevronRight size={16} />
-                </button>
-              </div>
-            </div>
-          )}
         </div>
       </main>
 

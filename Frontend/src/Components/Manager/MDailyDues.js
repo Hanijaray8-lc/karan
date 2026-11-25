@@ -99,7 +99,7 @@ const getAdvanceTargetDetails = (p, client) => {
 };
 
 // Build accurate week-by-week schedule and payment status for client
-const getClientWeekSchedule = (client, targetDate = null) => {
+export const getClientWeekSchedule = (client, targetDate = null) => {
   if (!client) return [];
   const scheduledDates = getClientScheduledDueDates(client, targetDate);
   if (!scheduledDates || scheduledDates.length === 0) return [];
@@ -152,6 +152,12 @@ const getClientWeekSchedule = (client, targetDate = null) => {
     const pd = pp.paymentDate ? parseLocalDate(pp.paymentDate) : null;
     const isAdv = getAdvanceTargetDetails(pp, client);
     if (pd && _cycleStart && pd < _cycleStart && !isAdv) uniquePayments.splice(i, 1);
+    // Foreclosure of the OLD loan can happen on the same day the NEW loan starts (re-loan).
+    // Regular same-day payments are valid for the new loan, but a same-day foreclosure belongs to the old one.
+    else if (pd && _cycleStart && pd <= _cycleStart && !isAdv &&
+      ((pp.paymentMethod || '').toLowerCase() === 'foreclosure' || (pp.notes || '').toLowerCase().includes('foreclose'))) {
+      uniquePayments.splice(i, 1);
+    }
   }
 
   const usedPaymentIds = new Set();
@@ -369,6 +375,7 @@ const getPaymentReceivedDateStr = (p) => {
 
 // Total cash received by a client on a given date (current, previous-due and advance payments).
 // Foreclosure payments are skipped to keep the existing Paid behaviour unchanged.
+// Manager page: only manager-collected payments are counted (agent-collected ones are excluded).
 const getCashReceivedOnDate = (client, dateStr) => {
   if (!client || !dateStr || !Array.isArray(client.payments)) return 0;
   const seen = new Set();
@@ -382,6 +389,9 @@ const getCashReceivedOnDate = (client, dateStr) => {
     const method = (p.paymentMethod || '').toLowerCase();
     const notes = (p.notes || '').toLowerCase();
     if (method === 'foreclosure' || notes.includes('foreclose')) return;
+    // MANAGER side: show only money collected by the manager. Agent / admin collections are not manager "Paid".
+    const collectorRole = String(p.collectedByRole || (p.collectedStaff || '').toString().match(/\((agent|manager|admin)\)$/)?.[1] || '').toLowerCase();
+    if (collectorRole && collectorRole !== 'manager') return;
     if (getPaymentReceivedDateStr(p) === dateStr) total += Number(p.amount || 0);
   });
   return total;

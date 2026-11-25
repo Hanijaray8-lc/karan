@@ -13,6 +13,7 @@ import {
 
 import AgentNavbar from './AgentNavbar';  // ← adjust path if needed
 import { isRecordNewForUser } from '../utils/staffRecordFilter';
+import { getClientWeekSchedule } from './DailyDues';
 
 // ---------------------------------------------------------------------------
 // Who collected the payment? Agent dashboard must show AGENT-collected
@@ -60,6 +61,20 @@ const getClientAgentId = (c) => {
   return String(raw).trim();
 };
 
+// Actual date the money was PAID/collected (createdAt). Falls back to paymentDate / date
+// only when createdAt is missing. paymentDate is the due date (can be an advance/future date),
+// so it must NOT be used to decide "today collected".
+const getPaidDate = (p) => {
+  if (!p) return null;
+  const candidates = [p.createdAt, p.paymentDate, p.date];
+  for (const c of candidates) {
+    if (!c) continue;
+    const d = c instanceof Date ? new Date(c.getTime()) : new Date(c);
+    if (!isNaN(d.getTime())) return d;
+  }
+  return null;
+};
+
 export default function AgentDashboard() {
   const [recentPayments, setRecentPayments] = useState([]);
   const [loadingPayments, setLoadingPayments] = useState(true);
@@ -105,56 +120,43 @@ export default function AgentDashboard() {
     return derived > 0 ? derived : 575;
   };
 
-  // Helper: check if client is due on a specific date AND has NOT already pre-paid
-  // that week via an advance payment.
-  // Logic: find which week-index the target date falls on, then check if
-  // client.received >= (weekIndex+1) * weeklyAmount. If yes, the client already
-  // paid ahead and is NOT due on that date.
-  const isClientDueOnDate = (client, dateObj) => {
-    if (!client || !client.loan_start_date) return false;
-    // If no pending amount, client is not due
-    if (Number(client.pending) <= 0) return false;
+  // Parse date safely (strictly matches MDailyDues)
+  const parseLocalDate = (dateInput) => {
+    if (!dateInput) return null;
+    if (dateInput instanceof Date) return new Date(dateInput.getFullYear(), dateInput.getMonth(), dateInput.getDate());
+    const str = String(dateInput).trim();
+    const match = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (match) return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+    const d = new Date(dateInput);
+    return isNaN(d.getTime()) ? null : new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  };
 
-    const start = new Date(client.loan_start_date);
-    start.setHours(0, 0, 0, 0);
-    const defaultWeeks = 12;
-    const end = client.loan_end_date
-      ? new Date(client.loan_end_date)
-      : new Date(start.getTime() + (defaultWeeks - 1) * 7 * 24 * 60 * 60 * 1000);
-
-    const target = new Date(dateObj);
-    target.setHours(0, 0, 0, 0);
-
-    // Find if today is a scheduled due date and which week-index it is
-    let due = new Date(start);
-    due.setHours(0, 0, 0, 0);
-    let weekIndex = 0;
-    let foundDueWeek = -1;
-    while (due <= end) {
-      if (due.getTime() === target.getTime()) {
-        foundDueWeek = weekIndex;
-        break;
-      }
-      due.setDate(due.getDate() + 7);
-      weekIndex++;
+  const toLocalDateStr = (dateInput) => {
+    if (!dateInput) return '';
+    if (typeof dateInput === 'string') {
+      const match = dateInput.trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (match) return `${match[1]}-${match[2]}-${match[3]}`;
     }
+    const d = dateInput instanceof Date ? dateInput : new Date(dateInput);
+    if (isNaN(d.getTime())) return '';
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
 
-    // Today is not a scheduled due date at all
-    if (foundDueWeek === -1) return false;
-
-    // Check advance payment: compare received vs what should have been received
-    // up to and including this week
-    const weeklyAmount = computeWeeklyAmount(client);
-    if (weeklyAmount <= 0) return true; // can't determine, assume due
-
-    const weeksExpected = foundDueWeek + 1;
-    const amountExpected = weeksExpected * weeklyAmount;
-    const received = Number(client.received || 0);
-
-    // If received >= amount expected up to this week, client already paid ahead
-    if (received >= amountExpected) return false;
-
-    return true;
+  // Determine which 12-week installment (1..12) falls on targetStr (strictly 12-week schedule, matching MDailyDues)
+  const getClientDueWeekIndex = (client, dateInput) => {
+    if (!client || !client.loan_start_date) return -1;
+    const start = parseLocalDate(client.loan_start_date);
+    const target = parseLocalDate(dateInput);
+    if (!start || !target || target < start) return -1;
+    if (start.getDay() !== target.getDay()) return -1;
+    const diffDays = Math.round((target.getTime() - start.getTime()) / (24 * 60 * 60 * 1000));
+    if (diffDays % 7 !== 0) return -1;
+    const weekIndex = Math.floor(diffDays / 7) + 1;
+    if (weekIndex < 1 || weekIndex > 12) return -1;
+    return weekIndex;
   };
 
   useEffect(() => {
@@ -171,13 +173,13 @@ export default function AgentDashboard() {
       const totalPending = payments.reduce((s, x) => s + (Number(x.remainingDue || x.pending) || 0), 0);
       const today = new Date(); today.setHours(0, 0, 0, 0);
       const todayCollected = payments.reduce((s, x) => {
-        const d = x.paymentDate ? new Date(x.paymentDate) : (x.date ? new Date(x.date) : null);
+        const d = getPaidDate(x);
         if (!d) return s;
         d.setHours(0, 0, 0, 0);
         return s + ((d.getTime() === today.getTime()) ? (Number(x.amount) || 0) : 0);
       }, 0);
       const todayPending = payments.reduce((s, x) => {
-        const d = x.paymentDate ? new Date(x.paymentDate) : (x.date ? new Date(x.date) : null);
+        const d = getPaidDate(x);
         if (!d) return s;
         d.setHours(0, 0, 0, 0);
         return s + ((d.getTime() === today.getTime()) ? (Number(x.remainingDue || x.pending) || 0) : 0);
@@ -187,7 +189,7 @@ export default function AgentDashboard() {
       const totalLoan = totalCollected + totalPending;
       const collectionRate = totalLoan > 0 ? Math.round((totalCollected / totalLoan) * 100) : 0;
       const todayClientsDue = payments.filter(p => {
-        const d = p.paymentDate ? new Date(p.paymentDate) : (p.date ? new Date(p.date) : null);
+        const d = getPaidDate(p);
         if (!d) return false;
         d.setHours(0, 0, 0, 0);
         return d.getTime() === today.getTime();
@@ -216,7 +218,15 @@ export default function AgentDashboard() {
         // Request recent payments; backend uses req.user to scope results to the
         // current agent, so no additional query parameter is needed.
         const url = `https://karanfinance.com/api/payments/history?limit=500`;
-        const res = await fetch(url, { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` } });
+        const [res, clientsRes] = await Promise.all([
+          fetch(url, { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` } }),
+          fetch('https://karanfinance.com/api/clients/all', {
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
+          }).catch(err => {
+            console.warn('Clients API fetch failed:', err);
+            return { ok: false, status: 500 };
+          })
+        ]);
 
         // helper that enforces agent filter regardless of server response
         const enforceAgentFilter = (paymentsArray) => {
@@ -275,10 +285,7 @@ export default function AgentDashboard() {
         const stats = computeStats(filteredPayments);
         // Now fetch clients (agent view) to compute today's pending based on schedule
         try {
-          const token = localStorage.getItem('token');
-          const clientsRes = await fetch('https://karanfinance.com/api/clients/all', {
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
-          });
+          // clientsRes already fetched in parallel with payments
 
           let clientsList = [];
           if (clientsRes.ok) {
@@ -316,38 +323,62 @@ export default function AgentDashboard() {
           const assignedTotalPending = agentClients.reduce((s, c) => s + (Number(c.pending) || 0), 0);
           // later we will merge these values into state
 
-          // For each agent-specific client, if due today and no payment in filteredPayments for today, count weekly amount as pending
+          // ---- Today Due / Today Pending (same logic as the Manager dashboard) ----
+          // DUE     = FIXED total of every client scheduled today (paid or not); never reduces.
+          // PENDING = scheduled clients whose installment for THIS due date is not paid on this
+          //           due date. Advance / previous-week payments (by any staff) never reduce it;
+          //           only a normal payment dated on today's due date does.
+          const todayStr = toLocalDateStr(today);
+          const payKey = (p) => {
+            if (p.client && typeof p.client === 'object') return String(p.client._id || p.client.id || p.client.$oid || '');
+            return String(p.client || p.clientId || p.client_id || '');
+          };
+          const paymentsByClientId = {};
+          payments.forEach(p => {
+            const k = payKey(p);
+            if (!k) return;
+            (paymentsByClientId[k] = paymentsByClientId[k] || []).push(p);
+          });
+          const isAdvancePayment = (p) => /advance/i.test(String(p.notes || '')) || p.isAdvance === true;
+
           agentClients.forEach(client => {
-            const isDue = isClientDueOnDate(client, today);
-            console.log(`Client ${client.name || client.id}: isDue=${isDue}, pending=${client.pending}, start=${client.loan_start_date}`);
+            const key = String(client._id || client.id || client.clientId || client.$oid || '').trim();
+            if (!key) return;
+            // Must be scheduled today (12-week schedule) and not pushed to next week
+            if (getClientDueWeekIndex(client, today) === -1) return;
+            if (client.last_pushed_date && toLocalDateStr(client.last_pushed_date) === todayStr) return;
 
-            if (isDue) {
-              todayClientsDue++;
-              const weekly = computeWeeklyAmount(client) || 575;
-              console.log(`  Adding to due total: ${weekly}`);
-              todayDueTotal += weekly; // Add to total due amount
+            const clientPayments = paymentsByClientId[key] || [];
+            const cw = {
+              ...client,
+              pending: Number(client.pending ?? ((client.amount || 6900) - (client.received || 0))),
+              weekly_amount_value: 575,
+              payments: clientPayments
+            };
+            const schedule = getClientWeekSchedule(cw, todayStr) || [];
+            const weekObj = schedule.find(w => w.dueDate === todayStr);
+            // Same check as the Weekly Dues page: only a normal payment dated on this due date that the
+            // schedule assigned to THIS week counts. Advance / previous-week payments do not.
+            const paidOnDueDate = !!weekObj && !weekObj.isAdvance && (weekObj.payments || []).some(p =>
+              !isAdvancePayment(p) && toLocalDateStr(p.paymentDate || p.date) === todayStr
+            );
 
-              // check if a payment exists for this client with today's date
-              const paidToday = filteredPayments.some(p => {
-                if (!isAgentCollected(p, agentName)) return false;
-                const clientId = p.client?._id || p.client || p.clientName || '';
-                const payClientId = p.client && p.client._id ? p.client._id : (p.client || '');
-                // try match by id or name fallback
-                const sameClient = (client._id && payClientId && client._id === payClientId) || (p.clientName && (p.clientName === client.name));
-                if (!sameClient) return false;
-                const pDate = p.paymentDate ? new Date(p.paymentDate) : (p.date ? new Date(p.date) : null);
-                if (!pDate) return false;
-                pDate.setHours(0, 0, 0, 0);
-                return pDate.getTime() === today.getTime();
-              });
+            // Fully closed loans are only counted if they actually paid on this due date
+            const closed = Number(client.pending) <= 0 || client.status === 'paid';
+            if (closed && !paidOnDueDate) return;
 
-              if (!paidToday) {
-                todayPendingAmount += weekly;
+            const weekly = computeWeeklyAmount(client) || 575;
+            let amount = weekly;
+            if (!closed) {
+              if (weekObj && Number(weekObj.dueAmount) > 0) {
+                amount = Math.min(Number(cw.pending), Number(weekObj.dueAmount));
               }
             }
-          });
 
-          console.log('todayDueTotal:', todayDueTotal);
+            todayClientsDue++;
+            todayDueTotal += amount;                          // fixed, never reduces
+            if (!paidOnDueDate) todayPendingAmount += amount; // reduces only on due-date payment
+          });
 
           // merge client counts now and combine with today-specific values
           const finalStats = {
@@ -380,15 +411,15 @@ export default function AgentDashboard() {
     <div className="min-h-screen bg-gray-50">
       <AgentNavbar />
 
-      <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-10 xl:px-12 py-8 lg:py-10 space-y-10">
+      <main className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-10 xl:px-12 py-8 lg:py-10 space-y-6 md:space-y-10">
         {/* Welcome Banner */}
-        <div className="bg-gradient-to-r from-emerald-800 to-emerald-700 text-white rounded-2xl p-6 md:p-8 shadow-xl flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mt-0">
+        <div className="bg-gradient-to-r from-emerald-800 to-emerald-700 text-white rounded-2xl p-5 md:p-8 shadow-xl flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mt-0">
           <div>
-            <h1 className="text-3xl md:text-4xl font-bold">Welcome back, {agentName || 'Agent'}!</h1>
-            <p className="text-emerald-100 mt-2 text-lg">Have a productive day ahead</p>
+            <h1 className="text-2xl sm:text-3xl md:text-4xl font-bold break-words">Welcome back, {agentName || 'Agent'}!</h1>
+            <p className="text-emerald-100 mt-2 text-base sm:text-lg">Have a productive day ahead</p>
           </div>
-          <div className="bg-emerald-900/40 px-6 py-4 rounded-xl text-right min-w-[220px] backdrop-blur-sm">
-            <div className="text-sm opacity-90 flex items-center justify-end gap-2">
+          <div className="bg-emerald-900/40 px-4 sm:px-6 py-3 sm:py-4 rounded-xl text-left md:text-right w-full md:w-auto md:min-w-[220px] backdrop-blur-sm">
+            <div className="text-sm opacity-90 flex items-center justify-start md:justify-end gap-2">
               <Calendar size={16} />
               {new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
             </div>
@@ -397,7 +428,7 @@ export default function AgentDashboard() {
         </div>
 
         {/* Stats Cards */}
-        <div className="grid grid-cols-2 gap-6">
+        <div className="grid grid-cols-2 gap-3 sm:gap-6">
           {[
             { title: "MY CLIENTS", value: monthlyStats.assignedTotalClients || 0, subtitle: "Total assigned clients", icon: Users, color: "emerald" },
             { title: "MANAGED LOANS", value: `₹${(monthlyStats.assignedTotalLoan || 0).toLocaleString()}`, subtitle: "Total loan amount", color: "emerald" },
@@ -405,41 +436,41 @@ export default function AgentDashboard() {
           ].map((stat, index) => (
             <div
               key={index}
-              className="bg-white border border-gray-200 rounded-2xl p-5 lg:p-6 shadow hover:shadow-lg transition-all duration-300"
+              className="bg-white border border-gray-200 rounded-2xl p-3 sm:p-5 lg:p-6 shadow hover:shadow-lg transition-all duration-300 min-w-0"
             >
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-gray-600 font-medium uppercase tracking-wide">{stat.title}</p>
-                  <p className="text-4xl font-bold text-emerald-800 mt-3">{stat.value}</p>
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-[11px] sm:text-sm text-gray-600 font-medium uppercase tracking-wide">{stat.title}</p>
+                  <p className="text-xl sm:text-3xl lg:text-4xl font-bold text-emerald-800 mt-2 sm:mt-3 break-words">{stat.value}</p>
                 </div>
                 {stat.icon && (
-                  <div className={`bg-${stat.color}-50 p-4 rounded-xl`}>
-                    <stat.icon className={`h-8 w-8 text-${stat.color}-700`} />
+                  <div className={`bg-${stat.color}-50 p-2 sm:p-4 rounded-xl shrink-0`}>
+                    <stat.icon className={`h-5 w-5 sm:h-8 sm:w-8 text-${stat.color}-700`} />
                   </div>
                 )}
               </div>
-              <p className="text-sm text-gray-500 mt-3">{stat.subtitle}</p>
+              <p className="text-xs sm:text-sm text-gray-500 mt-2 sm:mt-3">{stat.subtitle}</p>
             </div>
           ))}
         </div>
 
         {/* Today Status Card */}
-        <div className="bg-white rounded-xl shadow-md border border-gray-200 p-6">
+        <div className="bg-white rounded-xl shadow-md border border-gray-200 p-4 sm:p-6">
           <div className="bg-gradient-to-r from-[#16423C] to-[#1f5a52] text-white px-4 py-3 rounded-lg mb-6">
             <h3 className="text-xl font-semibold">Today Status</h3>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 md:gap-6">
             {/* Today Due Amount */}
             <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg p-4 border-l-4 border-blue-500 hover:shadow-md transition-shadow">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-blue-600 font-medium uppercase tracking-wide">Today Due</p>
-                  <p className="text-3xl font-bold text-blue-800 mt-2">
+                  <p className="text-2xl sm:text-3xl font-bold text-blue-800 mt-2 break-words">
                     ₹{(monthlyStats.todayDueTotal || 0).toLocaleString()}
                   </p>
                 </div>
-                <div className="text-4xl opacity-30">📅</div>
+                <div className="text-3xl sm:text-4xl opacity-30 shrink-0">📅</div>
               </div>
               <p className="text-xs text-blue-600 mt-2">Today total due amount</p>
             </div>
@@ -449,11 +480,11 @@ export default function AgentDashboard() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-emerald-600 font-medium uppercase tracking-wide">Payment Success</p>
-                  <p className="text-3xl font-bold text-emerald-800 mt-2">
+                  <p className="text-2xl sm:text-3xl font-bold text-emerald-800 mt-2 break-words">
                     ₹{(monthlyStats.todayCollected || 0).toLocaleString()}
                   </p>
                 </div>
-                <div className="text-4xl opacity-30">✓</div>
+                <div className="text-3xl sm:text-4xl opacity-30 shrink-0">✓</div>
               </div>
               <p className="text-xs text-emerald-600 mt-2">Today collected amount</p>
             </div>
@@ -463,11 +494,11 @@ export default function AgentDashboard() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-amber-600 font-medium uppercase tracking-wide">Today Pending</p>
-                  <p className="text-3xl font-bold text-amber-800 mt-2">
+                  <p className="text-2xl sm:text-3xl font-bold text-amber-800 mt-2 break-words">
                     ₹{(monthlyStats.todayPending || 0).toLocaleString()}
                   </p>
                 </div>
-                <div className="text-4xl opacity-30">⏳</div>
+                <div className="text-3xl sm:text-4xl opacity-30 shrink-0">⏳</div>
               </div>
               <p className="text-xs text-amber-600 mt-2">Today not collected yet</p>
             </div>
@@ -475,9 +506,9 @@ export default function AgentDashboard() {
         </div>
 
         {/* Collection Progress + Recent Communications side by side */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 lg:gap-8">
           {/* Left: Merged Collection Progress */}
-          <div className="bg-white rounded-2xl border shadow-sm p-6 lg:p-7">
+          <div className="bg-white rounded-2xl border shadow-sm p-4 sm:p-6 lg:p-7 min-w-0">
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-xl font-semibold">Collection Progress</h2>
               <span className="text-sm text-gray-500">{new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</span>
@@ -507,17 +538,17 @@ export default function AgentDashboard() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-3 gap-4 pt-2">
+                <div className="grid grid-cols-3 gap-2 sm:gap-4 pt-2">
                   <div className="text-center">
-                    <p className="text-2xl font-bold text-emerald-700">₹{monthlyStats.totalCollected.toLocaleString()}</p>
+                    <p className="text-base sm:text-2xl font-bold text-emerald-700 break-words">₹{monthlyStats.totalCollected.toLocaleString()}</p>
                     <p className="text-xs text-gray-500 mt-1">Collected</p>
                   </div>
                   <div className="text-center">
-                    <p className="text-2xl font-bold text-amber-700">₹{monthlyStats.totalPending.toLocaleString()}</p>
+                    <p className="text-base sm:text-2xl font-bold text-amber-700 break-words">₹{monthlyStats.totalPending.toLocaleString()}</p>
                     <p className="text-xs text-gray-500 mt-1">Pending</p>
                   </div>
                   <div className="text-center">
-                    <p className="text-2xl font-bold text-gray-800">{monthlyStats.pendingClients || 0}</p>
+                    <p className="text-base sm:text-2xl font-bold text-gray-800 break-words">{monthlyStats.pendingClients || 0}</p>
                     <p className="text-xs text-gray-500 mt-1">Pending Clients</p>
                   </div>
                 </div>
@@ -568,17 +599,17 @@ export default function AgentDashboard() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-3 gap-4 pt-2">
+                <div className="grid grid-cols-3 gap-2 sm:gap-4 pt-2">
                   <div className="text-center">
-                    <p className="text-2xl font-bold text-emerald-700">₹{(monthlyStats.todayCollected || 0).toLocaleString()}</p>
+                    <p className="text-base sm:text-2xl font-bold text-emerald-700 break-words">₹{(monthlyStats.todayCollected || 0).toLocaleString()}</p>
                     <p className="text-xs text-gray-500 mt-1">Collected</p>
                   </div>
                   <div className="text-center">
-                    <p className="text-2xl font-bold text-amber-700">₹{(monthlyStats.todayPending || 0).toLocaleString()}</p>
+                    <p className="text-base sm:text-2xl font-bold text-amber-700 break-words">₹{(monthlyStats.todayPending || 0).toLocaleString()}</p>
                     <p className="text-xs text-gray-500 mt-1">Pending</p>
                   </div>
                   <div className="text-center">
-                    <p className="text-2xl font-bold text-blue-700">{monthlyStats.todayClientsDue}</p>
+                    <p className="text-base sm:text-2xl font-bold text-blue-700 break-words">{monthlyStats.todayClientsDue}</p>
                     <p className="text-xs text-gray-500 mt-1">Clients Due</p>
                   </div>
                 </div>
@@ -592,8 +623,8 @@ export default function AgentDashboard() {
               <h2 className="text-xl font-semibold">Recent Communications</h2>
             </div>
 
-            <div className="overflow-y-auto" style={{ maxHeight: '600px' }}>
-              <table className="w-full text-xs">
+            <div className="overflow-auto" style={{ maxHeight: '600px' }}>
+              <table className="w-full min-w-[460px] text-xs">
                 <thead className="bg-gray-50 sticky top-0">
                   <tr>
                     <th className="px-4 py-3 text-left font-medium">Client</th>
@@ -619,11 +650,11 @@ export default function AgentDashboard() {
                   ) : (
                     recentPayments.map((row, i) => (
                       <tr key={i} className="hover:bg-gray-50 transition-colors">
-                        <td className="px-4 py-3 font-medium truncate">{row.client}</td>
-                        <td className="px-4 py-3 text-green-700 font-medium">₹{Number(row.received).toLocaleString()}</td>
-                        <td className="px-4 py-3 text-gray-600 text-xs">{row.date}</td>
-                        <td className="px-4 py-3">
-                          <span className="inline-flex px-2 py-1 bg-orange-100 text-orange-800 rounded text-xs font-medium">
+                        <td className="px-3 sm:px-4 py-3 font-medium truncate max-w-[130px] sm:max-w-none">{row.client}</td>
+                        <td className="px-3 sm:px-4 py-3 text-green-700 font-medium whitespace-nowrap">₹{Number(row.received).toLocaleString()}</td>
+                        <td className="px-3 sm:px-4 py-3 text-gray-600 text-xs whitespace-nowrap">{row.date}</td>
+                        <td className="px-3 sm:px-4 py-3">
+                          <span className="inline-flex whitespace-nowrap px-2 py-1 bg-orange-100 text-orange-800 rounded text-xs font-medium">
                             {row.status}
                           </span>
                         </td>

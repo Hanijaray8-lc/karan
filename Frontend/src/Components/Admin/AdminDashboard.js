@@ -68,11 +68,15 @@ const AdminDashboard = () => {
           return p.agent?.name || p.agent?.username || rawStaff || 'Staff';
         };
 
-        // Helper to check if payment happened on the selectedDashDate
+        // Helper to check if payment was physically RECEIVED on the selectedDashDate.
+        // Priority: createdAt (actual server timestamp when the payment was saved)
+        // falls back to paymentDate only when createdAt is absent.
+        // Advance payments saved on day X for a future due date are counted on day X
+        // (when money was actually received), not on the scheduled due date.
         const isOnSelectedDate = (p) => {
           if (!p) return false;
           const target = new Date(selectedDashDate + 'T00:00:00');
-          const checkDate = (dInput) => {
+          const sameDay = (dInput) => {
             if (!dInput) return false;
             const d = new Date(dInput);
             return !isNaN(d.getTime()) &&
@@ -80,7 +84,10 @@ const AdminDashboard = () => {
               d.getMonth() === target.getMonth() &&
               d.getDate() === target.getDate();
           };
-          return checkDate(p.paymentDate) || checkDate(p.createdAt);
+          // Use createdAt (actual collection moment) first; fall back to
+          // paymentDate only when createdAt is missing (offline/local entry).
+          if (p.createdAt) return sameDay(p.createdAt);
+          return sameDay(p.paymentDate);
         };
 
         // Recent activities (most recent 4)
@@ -174,75 +181,102 @@ const AdminDashboard = () => {
           }
         };
 
-        // Helper: check if client has a due on the given date AND has NOT already
-        // pre-paid that week via an advance payment.
-        // Logic: count how many schedule slots have passed up to & including target date,
-        // then compare with how many weeks worth of payments have been received.
-        // If received >= weeksUpToTarget * weeklyAmount, the client is ahead and NOT due.
-        const isClientDueOnDate = (client, dateObj) => {
-          try {
-            if (!client.loan_start_date) return false;
-            // If no pending amount, client is fully paid
-            if (Number(client.pending || 0) <= 0) return false;
-
-            const start = new Date(client.loan_start_date);
-            start.setHours(0, 0, 0, 0);
-            const end = client.loan_end_date
-              ? new Date(client.loan_end_date)
-              : new Date(start.getTime() + (12 - 1) * 7 * 24 * 60 * 60 * 1000);
-
-            // normalize to date-only
-            const target = new Date(dateObj);
-            target.setHours(0, 0, 0, 0);
-
-            // Check if today falls on a scheduled due date
-            let due = new Date(start);
-            due.setHours(0, 0, 0, 0);
-            let weekIndex = 0;
-            let foundDueWeek = -1;
-            while (due <= end) {
-              if (due.getTime() === target.getTime()) {
-                foundDueWeek = weekIndex;
-                break;
-              }
-              due = new Date(due.getTime() + 7 * 24 * 60 * 60 * 1000);
-              weekIndex++;
-            }
-
-            // Today is not a scheduled due date
-            if (foundDueWeek === -1) return false;
-
-            // Check advance payment: if client already paid for this week ahead of time
-            // weeksExpected = foundDueWeek + 1 (1-indexed number of weeks due so far)
-            const weeklyAmount = computeWeeklyAmount(client);
-            if (weeklyAmount <= 0) return true; // can't determine, assume due
-
-            const weeksExpected = foundDueWeek + 1;
-            const amountExpected = weeksExpected * weeklyAmount;
-            const received = Number(client.received || 0);
-
-            // If received >= amount expected up to this week, client already paid ahead
-            if (received >= amountExpected) return false;
-
-            return true;
-          } catch (e) {
-            return false;
-          }
+        // Parse date safely (strictly matches MDailyDues)
+        const parseLocalDate = (dateInput) => {
+          if (!dateInput) return null;
+          if (dateInput instanceof Date) return new Date(dateInput.getFullYear(), dateInput.getMonth(), dateInput.getDate());
+          const str = String(dateInput).trim();
+          const match = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+          if (match) return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+          const d = new Date(dateInput);
+          return isNaN(d.getTime()) ? null : new Date(d.getFullYear(), d.getMonth(), d.getDate());
         };
 
-        // Calculate due based on clients schedule for selectedDashDate
-        const targetDate = new Date(selectedDashDate + 'T00:00:00');
-        targetDate.setHours(0, 0, 0, 0);
-        const dueTodayTotal = clients.reduce((sum, c) => {
-          const pendingNum = Number(c.pending || 0);
-          if (pendingNum <= 0) return sum;
-          const weekly = computeWeeklyAmount(c) || 575;
-          if (isClientDueOnDate(c, targetDate)) return sum + weekly;
-          return sum;
-        }, 0);
+        const toLocalDateStr = (dateInput) => {
+          if (!dateInput) return '';
+          if (typeof dateInput === 'string') {
+            const match = dateInput.trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+            if (match) return `${match[1]}-${match[2]}-${match[3]}`;
+          }
+          const d = dateInput instanceof Date ? dateInput : new Date(dateInput);
+          if (isNaN(d.getTime())) return '';
+          const y = d.getFullYear();
+          const m = String(d.getMonth() + 1).padStart(2, '0');
+          const day = String(d.getDate()).padStart(2, '0');
+          return `${y}-${m}-${day}`;
+        };
+
+        // Determine which 12-week installment (1..12) falls on targetStr (strictly 12-week schedule, matching MDailyDues)
+        const getClientDueWeekIndex = (client, targetStr) => {
+          if (!client || !client.loan_start_date) return -1;
+          const start = parseLocalDate(client.loan_start_date);
+          const target = parseLocalDate(targetStr);
+          if (!start || !target || target < start) return -1;
+          if (start.getDay() !== target.getDay()) return -1;
+          const diffDays = Math.round((target.getTime() - start.getTime()) / (24 * 60 * 60 * 1000));
+          if (diffDays % 7 !== 0) return -1;
+          const weekIndex = Math.floor(diffDays / 7) + 1;
+          if (weekIndex < 1 || weekIndex > 12) return -1;
+          return weekIndex;
+        };
+
+        // Clients who made a payment on selectedDashDate
+        const paidClientIdsToday = new Set();
+        todayPayments.forEach(p => {
+          const cid = (p.client && typeof p.client === 'object')
+            ? String(p.client._id || p.client.id || p.client.$oid || '')
+            : String(p.client || '');
+          if (cid) paidClientIdsToday.add(cid);
+          if (p.clientId) paidClientIdsToday.add(String(p.clientId));
+          const cName = p.client?.name || p.clientName || '';
+          if (cName) paidClientIdsToday.add('name:' + cName.trim().toLowerCase());
+        });
+
+        const isClientScheduled = (client, targetStr) => {
+          const weekIndex = getClientDueWeekIndex(client, targetStr);
+          if (weekIndex === -1) return false;
+          const cid = String(client._id || client.id || client.$oid || '').trim();
+          const cName = (client.name || '').trim().toLowerCase();
+          const paidToday = (cid && paidClientIdsToday.has(cid)) ||
+            (cName && paidClientIdsToday.has('name:' + cName));
+          // If already fully paid in a previous week and not paid today, they are closed/inactive
+          if ((client.status === 'paid' || Number(client.pending) <= 0) && !paidToday) {
+            return false;
+          }
+          return true;
+        };
+
+        const isClientPaidToday = (client, targetStr) => {
+          const cid = String(client._id || client.id || client.$oid || '').trim();
+          const cName = (client.name || '').trim().toLowerCase();
+          if ((cid && paidClientIdsToday.has(cid)) || (cName && paidClientIdsToday.has('name:' + cName))) {
+            return true;
+          }
+          const weekIndex = getClientDueWeekIndex(client, targetStr);
+          if (weekIndex !== -1) {
+            const weekly = computeWeeklyAmount(client) || 575;
+            const expectedTillDate = weekIndex * weekly;
+            if (Number(client.received || 0) >= expectedTillDate) {
+              return true;
+            }
+          }
+          return false;
+        };
+
+        let dueTodayTotal = 0;
+        let pendingToday = 0;
+
+        clients.forEach(c => {
+          if (isClientScheduled(c, selectedDashDate)) {
+            const weekly = computeWeeklyAmount(c) || 575;
+            dueTodayTotal += weekly;
+            if (!isClientPaidToday(c, selectedDashDate)) {
+              pendingToday += weekly;
+            }
+          }
+        });
 
         const collectedTodayTotal = todayArr.reduce((sum, d) => sum + (d.today || 0), 0);
-        const pendingToday = Math.max(0, dueTodayTotal - collectedTodayTotal);
 
         setTodayDueTotal(dueTodayTotal);
         setTodayCollectedTotal(collectedTodayTotal);

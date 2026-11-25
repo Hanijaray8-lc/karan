@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 
 import axios from 'axios';
 import ManagerNavbar from './ManagerNavbar';
+import { getClientWeekSchedule } from './MDailyDues';
 import { filterPaymentsForUser, filterClientsForUser, filterPaymentsForManager, filterClientsForManager, filterAgentsForManager, getLoggedInUser } from '../../utils/staffRecordFilter';
 import {
   LineChart,
@@ -115,11 +116,16 @@ const ManagerDashboard = () => {
           return p.agent?.name || p.agent?.username || rawStaff || 'Staff';
         };
 
-        // Helper to check if payment happened on the selectedDashDate
+        // Helper to check if payment was physically RECEIVED on the selectedDashDate.
+        // Priority: createdAt (actual server timestamp when the payment was saved)
+        // falls back to paymentDate only when createdAt is absent.
+        // This matches MDailyDues.js getPaymentReceivedDateStr() so both views are
+        // consistent: advance payments saved on Oct-30 for a Nov-01 due date are
+        // counted on Oct-30 (when money was actually received), not Nov-01.
         const isOnSelectedDate = (p) => {
           if (!p) return false;
           const target = new Date(selectedDashDate + 'T00:00:00');
-          const checkDate = (dInput) => {
+          const sameDay = (dInput) => {
             if (!dInput) return false;
             const d = new Date(dInput);
             return !isNaN(d.getTime()) &&
@@ -127,7 +133,10 @@ const ManagerDashboard = () => {
               d.getMonth() === target.getMonth() &&
               d.getDate() === target.getDate();
           };
-          return checkDate(p.paymentDate) || checkDate(p.createdAt);
+          // Use createdAt (actual collection moment) first; fall back to
+          // paymentDate only when createdAt is missing (offline/local entry).
+          if (p.createdAt) return sameDay(p.createdAt);
+          return sameDay(p.paymentDate);
         };
 
         // Recent activities (most recent 4)
@@ -214,75 +223,105 @@ const ManagerDashboard = () => {
           }
         };
 
-        // Helper: check if client has a due on the given date AND has NOT already
-        // pre-paid that week via an advance payment.
-        // Logic: count how many schedule slots have passed up to & including target date,
-        // then compare with how many weeks worth of payments have been received.
-        // If received >= weeksUpToTarget * weeklyAmount, the client is ahead and NOT due.
-        const isClientDueOnDate = (client, dateObj) => {
-          try {
-            if (!client.loan_start_date) return false;
-            // If no pending amount, client is fully paid
-            if (Number(client.pending || 0) <= 0) return false;
-
-            const start = new Date(client.loan_start_date);
-            start.setHours(0, 0, 0, 0);
-            const end = client.loan_end_date
-              ? new Date(client.loan_end_date)
-              : new Date(start.getTime() + (12 - 1) * 7 * 24 * 60 * 60 * 1000);
-
-            // normalize to date-only
-            const target = new Date(dateObj);
-            target.setHours(0, 0, 0, 0);
-
-            // Check if today falls on a scheduled due date
-            let due = new Date(start);
-            due.setHours(0, 0, 0, 0);
-            let weekIndex = 0;
-            let foundDueWeek = -1;
-            while (due <= end) {
-              if (due.getTime() === target.getTime()) {
-                foundDueWeek = weekIndex;
-                break;
-              }
-              due = new Date(due.getTime() + 7 * 24 * 60 * 60 * 1000);
-              weekIndex++;
-            }
-
-            // Today is not a scheduled due date
-            if (foundDueWeek === -1) return false;
-
-            // Check advance payment: if client already paid for this week ahead of time
-            // weeksExpected = foundDueWeek + 1 (1-indexed number of weeks due so far)
-            const weeklyAmount = computeWeeklyAmount(client);
-            if (weeklyAmount <= 0) return true; // can't determine, assume due
-
-            const weeksExpected = foundDueWeek + 1;
-            const amountExpected = weeksExpected * weeklyAmount;
-            const received = Number(client.received || 0);
-
-            // If received >= amount expected up to this week, client already paid ahead
-            if (received >= amountExpected) return false;
-
-            return true;
-          } catch (e) {
-            return false;
-          }
+        // Parse date safely (strictly matches MDailyDues)
+        const parseLocalDate = (dateInput) => {
+          if (!dateInput) return null;
+          if (dateInput instanceof Date) return new Date(dateInput.getFullYear(), dateInput.getMonth(), dateInput.getDate());
+          const str = String(dateInput).trim();
+          const match = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+          if (match) return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+          const d = new Date(dateInput);
+          return isNaN(d.getTime()) ? null : new Date(d.getFullYear(), d.getMonth(), d.getDate());
         };
 
-        // Calculate due based on clients schedule for selectedDashDate
-        const targetDate = new Date(selectedDashDate + 'T00:00:00');
-        targetDate.setHours(0, 0, 0, 0);
-        const dueTodayTotal = clients.reduce((sum, c) => {
-          const pendingNum = Number(c.pending || 0);
-          if (pendingNum <= 0) return sum;
+        const toLocalDateStr = (dateInput) => {
+          if (!dateInput) return '';
+          if (typeof dateInput === 'string') {
+            const match = dateInput.trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+            if (match) return `${match[1]}-${match[2]}-${match[3]}`;
+          }
+          const d = dateInput instanceof Date ? dateInput : new Date(dateInput);
+          if (isNaN(d.getTime())) return '';
+          const y = d.getFullYear();
+          const m = String(d.getMonth() + 1).padStart(2, '0');
+          const day = String(d.getDate()).padStart(2, '0');
+          return `${y}-${m}-${day}`;
+        };
+
+        // Determine which 12-week installment (1..12) falls on targetStr (strictly 12-week schedule, matching MDailyDues)
+        const getClientDueWeekIndex = (client, targetStr) => {
+          if (!client || !client.loan_start_date) return -1;
+          const start = parseLocalDate(client.loan_start_date);
+          const target = parseLocalDate(targetStr);
+          if (!start || !target || target < start) return -1;
+          if (start.getDay() !== target.getDay()) return -1;
+          const diffDays = Math.round((target.getTime() - start.getTime()) / (24 * 60 * 60 * 1000));
+          if (diffDays % 7 !== 0) return -1;
+          const weekIndex = Math.floor(diffDays / 7) + 1;
+          if (weekIndex < 1 || weekIndex > 12) return -1;
+          return weekIndex;
+        };
+
+        // ---- Collection Status: Due / Pending ----
+        // DUE     = FIXED total for the selected date: every client scheduled on that date
+        //           (paid or not). It does NOT go down when payments are collected.
+        // PENDING = scheduled clients whose installment for THIS due date has not been paid on
+        //           this due date. Advance payments (for other weeks) and previous-week payments
+        //           never reduce it; only a normal payment dated on the due date itself does.
+        const payKey = (p) => {
+          if (p.client && typeof p.client === 'object') return String(p.client._id || p.client.id || p.client.$oid || '');
+          return String(p.client || p.clientId || p.client_id || '');
+        };
+        const paymentsByClientId = {};
+        payments.forEach(p => {
+          const k = payKey(p);
+          if (!k) return;
+          (paymentsByClientId[k] = paymentsByClientId[k] || []).push(p);
+        });
+        const isAdvancePayment = (p) => /advance/i.test(String(p.notes || '')) || p.isAdvance === true;
+
+        let dueTodayTotal = 0;
+        let pendingToday = 0;
+
+        clients.forEach(c => {
+          const key = String(c._id || c.id || c.clientId || c.$oid || '').trim();
+          if (!key) return;
+          // Must be a scheduled due date (12-week schedule) and not pushed to next week
+          if (getClientDueWeekIndex(c, selectedDashDate) === -1) return;
+          if (c.last_pushed_date && toLocalDateStr(c.last_pushed_date) === selectedDashDate) return;
+
+          const clientPayments = paymentsByClientId[key] || [];
+          const paidOnDueDate = clientPayments.some(p =>
+            !isAdvancePayment(p) && toLocalDateStr(p.paymentDate) === selectedDashDate
+          );
+
+          // Fully closed loans are only counted if they actually paid on this due date
+          const closed = Number(c.pending) <= 0 || c.status === 'paid';
+          if (closed && !paidOnDueDate) return;
+
+          const cw = {
+            ...c,
+            pending: Number(c.pending ?? ((c.amount || 6900) - (c.received || 0))),
+            weekly_amount_value: 575,
+            payments: clientPayments
+          };
           const weekly = computeWeeklyAmount(c) || 575;
-          if (isClientDueOnDate(c, targetDate)) return sum + weekly;
-          return sum;
-        }, 0);
+
+          // Installment for this date (includes carried-forward shortfall when still unpaid)
+          let amount = weekly;
+          if (!closed) {
+            const schedule = getClientWeekSchedule(cw, selectedDashDate) || [];
+            const weekObj = schedule.find(w => w.dueDate === selectedDashDate);
+            if (weekObj && Number(weekObj.dueAmount) > 0) {
+              amount = Math.min(Number(cw.pending), Number(weekObj.dueAmount));
+            }
+          }
+
+          dueTodayTotal += amount;                       // fixed, never reduces
+          if (!paidOnDueDate) pendingToday += amount;    // reduces only on due-date payment
+        });
 
         const collectedTodayTotal = todayArr.reduce((sum, d) => sum + (d.today || 0), 0);
-        const pendingToday = Math.max(0, dueTodayTotal - collectedTodayTotal);
 
         setTodayDueTotal(dueTodayTotal);
         setTodayCollectedTotal(collectedTodayTotal);

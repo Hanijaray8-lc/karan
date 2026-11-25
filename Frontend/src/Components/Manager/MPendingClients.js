@@ -47,6 +47,10 @@ const MPendingClients = () => {
   const [notification, setNotification] = useState(null);
   const [myAgents, setMyAgents] = useState([]);
 
+  // Pagination state (20 clients per page)
+  const [currentPage, setCurrentPage] = useState(1);
+  const CLIENTS_PER_PAGE = 20;
+
   // Pay modal state
   const [showPayModal, setShowPayModal] = useState(false);
   const [selectedPayClient, setSelectedPayClient] = useState(null);
@@ -57,13 +61,6 @@ const MPendingClients = () => {
   const [payLoading, setPayLoading] = useState(false);
   const [payErrorMsg, setPayErrorMsg] = useState('');
   const [paySuccessMsg, setPaySuccessMsg] = useState('');
-
-  // Pagination: 20 clients per page
-  const PAGE_SIZE = 20;
-  const [currentPage, setCurrentPage] = useState(1);
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [searchQuery, selectedDistrict, selectedLandmark, selectedAgent, selectedEndDate]);
 
   const showNotification = (message, type = 'success') => {
     setNotification({ message, type });
@@ -722,28 +719,40 @@ const MPendingClients = () => {
 
   const filteredList = getFilteredClients();
 
+  // Pagination calculations (20 clients per page)
+  const totalPages = Math.max(1, Math.ceil(filteredList.length / CLIENTS_PER_PAGE));
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+  const pageStartIndex = (safeCurrentPage - 1) * CLIENTS_PER_PAGE;
+  const paginatedList = filteredList.slice(pageStartIndex, pageStartIndex + CLIENTS_PER_PAGE);
+
+  // Go back to page 1 whenever any filter changes
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, selectedDistrict, selectedLandmark, selectedAgent, selectedEndDate]);
+
+  // Build page number list with ellipsis (e.g. 1 ... 4 5 6 ... 12)
+  const getPageNumbers = () => {
+    const pages = [];
+    if (totalPages <= 7) {
+      for (let i = 1; i <= totalPages; i++) pages.push(i);
+    } else {
+      pages.push(1);
+      if (safeCurrentPage > 3) pages.push('...');
+      const start = Math.max(2, safeCurrentPage - 1);
+      const end = Math.min(totalPages - 1, safeCurrentPage + 1);
+      for (let i = start; i <= end; i++) pages.push(i);
+      if (safeCurrentPage < totalPages - 2) pages.push('...');
+      pages.push(totalPages);
+    }
+    return pages;
+  };
+
   const metrics = {
     totalClients: filteredList.length,
     totalOutstanding: filteredList.reduce((sum, c) => sum + getClientOutstanding(c), 0),
     totalPushes: filteredList.reduce((sum, c) => sum + getClientOverdueOrPushedWeeks(c), 0),
     avgPending: filteredList.length > 0 ? Math.round(filteredList.reduce((sum, c) => sum + getClientOutstanding(c), 0) / filteredList.length) : 0
   };
-
-  // Pagination (metrics above still use the full filtered list)
-  const totalPages = Math.max(1, Math.ceil(filteredList.length / PAGE_SIZE));
-  const safePage = Math.min(currentPage, totalPages);
-  const pageOffset = (safePage - 1) * PAGE_SIZE;
-  const paginatedList = filteredList.slice(pageOffset, pageOffset + PAGE_SIZE);
-  const pageNumbers = (() => {
-    const maxButtons = 5;
-    let start = Math.max(1, safePage - Math.floor(maxButtons / 2));
-    const end = Math.min(totalPages, start + maxButtons - 1);
-    start = Math.max(1, end - maxButtons + 1);
-    const pages = [];
-    for (let p = start; p <= end; p++) pages.push(p);
-    return pages;
-  })();
-  const pageBtnClass = "px-3 py-1.5 text-sm rounded-lg border border-gray-200 text-[#16423C] hover:bg-emerald-50 disabled:opacity-40 disabled:cursor-not-allowed";
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
@@ -893,8 +902,8 @@ const MPendingClients = () => {
             </div>
           ) : (
             <>
-              {/* Mobile cards (below md) */}
-              <div className="md:hidden divide-y divide-gray-100">
+              {/* Mobile card view (below md) */}
+              <div className="md:hidden p-3 space-y-3">
                 {paginatedList.map((client, idx) => {
                   const outstanding = getClientOutstanding(client);
                   const pushes = getClientOverdueOrPushedWeeks(client);
@@ -904,52 +913,62 @@ const MPendingClients = () => {
                     <div
                       key={client._id}
                       onClick={() => navigate(`/Manager/MClientDetails?clientId=${client._id}`)}
-                      className="p-4 active:bg-slate-50 cursor-pointer"
+                      className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden cursor-pointer active:bg-slate-50"
                     >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="font-bold text-gray-800 break-words">
-                            <span className="text-gray-400 font-semibold mr-1.5">{pageOffset + idx + 1}.</span>
-                            {client.name}
+                      {/* Header: S.No, name, outstanding */}
+                      <div className="flex items-start justify-between gap-3 px-3 py-3 bg-slate-50 border-b border-gray-100">
+                        <div className="flex items-start gap-2.5 min-w-0">
+                          <span className="flex-shrink-0 w-7 h-7 rounded-full bg-[#16423C] text-white text-[11px] font-bold flex items-center justify-center">
+                            {pageStartIndex + idx + 1}
+                          </span>
+                          <div className="min-w-0">
+                            <div className="font-bold text-gray-800 break-words leading-tight">{client.name}</div>
+                            <div className="text-[11px] text-gray-500 mt-0.5">{client.phone}</div>
+                            <div className="font-mono text-[10px] font-semibold text-gray-500 mt-0.5">ID: {client.clientId || 'N/A'}</div>
                           </div>
-                          <div className="text-xs text-gray-400 mt-0.5">{client.phone}</div>
-                          <div className="font-mono text-[11px] font-semibold text-gray-500 mt-0.5">ID: {client.clientId || 'N/A'}</div>
                         </div>
                         <div className="text-right flex-shrink-0">
-                          <div className="text-[11px] text-gray-400 uppercase font-semibold">Outstanding</div>
-                          <div className="font-extrabold text-red-600">₹{outstanding.toLocaleString('en-IN')}</div>
+                          <p className="text-[10px] uppercase text-gray-500">Outstanding</p>
+                          <p className="text-base font-extrabold text-red-600">₹{outstanding.toLocaleString('en-IN')}</p>
                         </div>
                       </div>
 
-                      <div className="text-xs text-gray-600 mt-2">
-                        <span className="font-semibold text-gray-700">{client.landmark || 'N/A'}</span>
-                        <span className="text-gray-400"> • {client.district || 'N/A'}</span>
+                      {/* Details */}
+                      <div className="grid grid-cols-2 gap-x-3 gap-y-2.5 px-3 py-3 text-xs">
+                        <div className="col-span-2">
+                          <p className="text-gray-500">Landmark / District</p>
+                          <p className="font-semibold text-gray-700 break-words">
+                            {client.landmark || 'N/A'}
+                            <span className="text-gray-400 font-normal"> • {client.district || 'N/A'}</span>
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-gray-500 mb-0.5">Loan End Date</p>
+                          <span className={`inline-block px-2 py-1 rounded-lg text-[11px] font-bold ${isPast ? 'bg-red-50 text-red-600 border border-red-200' : 'bg-slate-100 text-slate-700'}`}>
+                            {formatDate(client.loan_end_date)}
+                          </span>
+                        </div>
+                        <div>
+                          <p className="text-gray-500 mb-0.5">Overdue / Pushes</p>
+                          <p className="font-bold text-yellow-600">{pushes} Weeks</p>
+                        </div>
+                        <div className="col-span-2">
+                          <p className="text-gray-500 mb-0.5">Next Due</p>
+                          <span className={`inline-block px-2.5 py-1 rounded-full font-bold text-[11px] ${currentDue > 0 ? 'bg-orange-50 text-orange-600 border border-orange-100' : 'bg-green-50 text-green-600 border border-green-100'}`}>
+                            ₹{currentDue.toLocaleString('en-IN')}
+                          </span>
+                        </div>
                       </div>
 
-                      <div className="grid grid-cols-3 gap-2 mt-3">
-                        <div className="bg-slate-50 rounded-lg p-2 text-center">
-                          <div className="text-[10px] text-gray-400 uppercase font-semibold">End Date</div>
-                          <div className={`text-xs font-bold mt-0.5 ${isPast ? 'text-red-600' : 'text-slate-700'}`}>{formatDate(client.loan_end_date)}</div>
-                        </div>
-                        <div className="bg-slate-50 rounded-lg p-2 text-center">
-                          <div className="text-[10px] text-gray-400 uppercase font-semibold">Overdue</div>
-                          <div className="text-xs font-bold text-yellow-600 mt-0.5">{pushes} Weeks</div>
-                        </div>
-                        <div className="bg-slate-50 rounded-lg p-2 text-center">
-                          <div className="text-[10px] text-gray-400 uppercase font-semibold">Next Due</div>
-                          <div className={`text-xs font-bold mt-0.5 ${currentDue > 0 ? 'text-orange-600' : 'text-green-600'}`}>₹{currentDue.toLocaleString('en-IN')}</div>
-                        </div>
-                      </div>
-
-                      <div className="flex gap-2 mt-3">
+                      {/* Actions */}
+                      <div className="grid grid-cols-2 gap-2 px-3 pb-3">
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
                             handleOpenPayModal(client);
                           }}
-                          className="flex-1 bg-[#16423C] hover:bg-[#1f5a52] text-white px-3 py-2 rounded-lg text-xs font-bold transition-all shadow-sm active:scale-95 flex items-center justify-center gap-1.5"
+                          className="bg-[#16423C] hover:bg-[#1f5a52] text-white py-2 rounded-lg text-xs font-bold transition-all shadow-sm active:scale-95"
                         >
-                          <i className="fas fa-money-bill-wave text-xs"></i>
                           Pay
                         </button>
                         <button
@@ -957,7 +976,7 @@ const MPendingClients = () => {
                             e.stopPropagation();
                             navigate(`/Manager/MClientDetails?clientId=${client._id}`);
                           }}
-                          className="flex-1 bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-2 rounded-lg text-xs font-bold transition-all shadow-sm active:scale-95"
+                          className="bg-emerald-50 text-emerald-700 border border-emerald-200 py-2 rounded-lg text-xs font-bold transition-all shadow-sm active:scale-95"
                         >
                           View
                         </button>
@@ -997,7 +1016,7 @@ const MPendingClients = () => {
                           className="hover:bg-slate-50/80 transition-colors cursor-pointer group"
                           title="Click to view client details"
                         >
-                          <td className="px-5 py-4 font-semibold text-gray-500">{pageOffset + idx + 1}</td>
+                          <td className="px-5 py-4 font-semibold text-gray-500">{pageStartIndex + idx + 1}</td>
                           <td className="px-5 py-4">
                             <div className="font-bold text-gray-800 group-hover:text-emerald-700 transition-colors">{client.name}</div>
                             <div className="text-xs text-gray-400 mt-0.5">{client.phone}</div>
@@ -1057,28 +1076,45 @@ const MPendingClients = () => {
                 </table>
               </div>
 
-              {/* Pagination */}
+              {/* Pagination footer (20 clients per page) */}
               <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3 border-t border-gray-100 bg-slate-50/60">
-                <p className="text-xs sm:text-sm text-gray-500 text-center">
-                  Showing {pageOffset + 1}–{Math.min(pageOffset + PAGE_SIZE, filteredList.length)} of {filteredList.length} clients
+                <p className="text-xs sm:text-sm text-gray-500">
+                  Showing {pageStartIndex + 1}
+                  {' - '}
+                  {Math.min(pageStartIndex + CLIENTS_PER_PAGE, filteredList.length)} of {filteredList.length} clients
                 </p>
-                {totalPages > 1 && (
-                  <div className="flex flex-wrap items-center justify-center gap-1">
-                    <button onClick={() => setCurrentPage(1)} disabled={safePage === 1} className={pageBtnClass}>«</button>
-                    <button onClick={() => setCurrentPage(Math.max(1, safePage - 1))} disabled={safePage === 1} className={pageBtnClass}>Prev</button>
-                    {pageNumbers.map(p => (
-                      <button
-                        key={p}
-                        onClick={() => setCurrentPage(p)}
-                        className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${p === safePage
-                          ? 'bg-[#16423C] text-white border-[#16423C]'
-                          : 'border-gray-200 text-[#16423C] hover:bg-emerald-50'}`}
-                      >
-                        {p}
-                      </button>
-                    ))}
-                    <button onClick={() => setCurrentPage(Math.min(totalPages, safePage + 1))} disabled={safePage === totalPages} className={pageBtnClass}>Next</button>
-                    <button onClick={() => setCurrentPage(totalPages)} disabled={safePage === totalPages} className={pageBtnClass}>»</button>
+                {filteredList.length > CLIENTS_PER_PAGE && (
+                  <div className="flex items-center gap-1 flex-wrap justify-center">
+                    <button
+                      onClick={() => setCurrentPage(Math.max(1, safeCurrentPage - 1))}
+                      disabled={safeCurrentPage === 1}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-gray-300 text-[#16423C] bg-white hover:bg-[#16423C] hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white disabled:hover:text-[#16423C]"
+                    >
+                      ‹ Prev
+                    </button>
+                    {getPageNumbers().map((page, idx) =>
+                      page === '...' ? (
+                        <span key={`ellipsis-${idx}`} className="px-2 text-[#16423C] text-xs">...</span>
+                      ) : (
+                        <button
+                          key={page}
+                          onClick={() => setCurrentPage(page)}
+                          className={`min-w-[32px] px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${page === safeCurrentPage
+                            ? 'bg-[#16423C] text-white border-[#16423C]'
+                            : 'bg-white text-[#16423C] border-gray-300 hover:bg-slate-100'
+                            }`}
+                        >
+                          {page}
+                        </button>
+                      )
+                    )}
+                    <button
+                      onClick={() => setCurrentPage(Math.min(totalPages, safeCurrentPage + 1))}
+                      disabled={safeCurrentPage === totalPages}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-gray-300 text-[#16423C] bg-white hover:bg-[#16423C] hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white disabled:hover:text-[#16423C]"
+                    >
+                      Next ›
+                    </button>
                   </div>
                 )}
               </div>

@@ -98,8 +98,24 @@ const getAdvanceTargetDetails = (p, client) => {
 };
 
 // Build accurate week-by-week schedule and payment status for client
-const getClientWeekSchedule = (client, targetDate = null) => {
+// Cache computed week schedules per client object to prevent expensive repeated re-calculations
+const scheduleCache = new WeakMap();
+
+export const getClientWeekSchedule = (client, targetDate = null) => {
   if (!client) return [];
+  const cacheKey = targetDate || '__all__';
+  let clientCache = scheduleCache.get(client);
+  if (clientCache && clientCache.has(cacheKey)) {
+    return clientCache.get(cacheKey);
+  }
+  const commitSchedule = (s) => {
+    if (!clientCache) {
+      clientCache = new Map();
+      scheduleCache.set(client, clientCache);
+    }
+    clientCache.set(cacheKey, s);
+    return s;
+  };
   const scheduledDates = getClientScheduledDueDates(client, targetDate);
   if (!scheduledDates || scheduledDates.length === 0) return [];
 
@@ -120,7 +136,7 @@ const getClientWeekSchedule = (client, targetDate = null) => {
     payments: []
   }));
 
-  if (isFullyPaid) return schedule;
+  if (isFullyPaid) return commitSchedule(schedule);
 
   const seen = new Set();
   const uniquePayments = [];
@@ -151,6 +167,12 @@ const getClientWeekSchedule = (client, targetDate = null) => {
     const pd = pp.paymentDate ? parseLocalDate(pp.paymentDate) : null;
     const isAdv = getAdvanceTargetDetails(pp, client);
     if (pd && _cycleStart && pd < _cycleStart && !isAdv) uniquePayments.splice(i, 1);
+    // Foreclosure of the OLD loan can happen on the same day the NEW loan starts (re-loan).
+    // Regular same-day payments are valid for the new loan, but a same-day foreclosure belongs to the old one.
+    else if (pd && _cycleStart && pd <= _cycleStart && !isAdv &&
+      ((pp.paymentMethod || '').toLowerCase() === 'foreclosure' || (pp.notes || '').toLowerCase().includes('foreclose'))) {
+      uniquePayments.splice(i, 1);
+    }
   }
 
   const usedPaymentIds = new Set();
@@ -200,7 +222,7 @@ const getClientWeekSchedule = (client, targetDate = null) => {
       w.dueAmount = 0;
       if (!w.paidAmount) w.paidAmount = weeklyInstallment;
     });
-    return schedule;
+    return commitSchedule(schedule);
   }
 
   // Pass 2: Regular payments matching exact scheduled dueDate
@@ -312,7 +334,7 @@ const getClientWeekSchedule = (client, targetDate = null) => {
     }
   }
 
-  return schedule;
+  return commitSchedule(schedule);
 };
 
 // Keep the date the user picked after the Refresh button reloads the page.
@@ -635,13 +657,19 @@ const DailyDues = () => {
   const fetchClientsWithoutLoading = async () => {
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch('https://karanfinance.com/api/clients/all', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
+      const [res, payRes] = await Promise.all([
+        fetch('https://karanfinance.com/api/clients/all', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        }),
+        fetch('https://karanfinance.com/api/payments/test/all')
+      ]);
 
       if (!res.ok) return;
 
-      const data = await res.json();
+      const [data, payJson] = await Promise.all([
+        res.json(),
+        payRes.ok ? payRes.json() : Promise.resolve(null)
+      ]);
 
       if (data.success && data.clients) {
         const loggedInUser = getLoggedInUser();
@@ -667,8 +695,6 @@ const DailyDues = () => {
         });
         // Attach paid status by checking payment records
         try {
-          const payRes = await fetch('https://karanfinance.com/api/payments/test/all');
-          const payJson = payRes.ok ? await payRes.json() : null;
           const rawPayments = filterPaymentsForUser((payJson && payJson.data && payJson.data.payments) || [], loggedInUser);
           const seenIds = new Set();
           const payments = [];
@@ -690,6 +716,14 @@ const DailyDues = () => {
           const collectorsMap = {};
           const paymentsByClient = {};
 
+          // Fast O(1) client lookup map to eliminate O(N*M) loop freeze
+          const clientLookup = new Map();
+          transformedClients.forEach(c => {
+            if (c._id) clientLookup.set(String(c._id), c);
+            if (c.clientId) clientLookup.set(String(c.clientId), c);
+            if (c.id) clientLookup.set(String(c.id), c);
+          });
+
           payments.forEach(p => {
             const clientId = p.client && p.client._id
               ? String(p.client._id)
@@ -704,10 +738,7 @@ const DailyDues = () => {
 
               if (!paidDatesMap[clientId]) paidDatesMap[clientId] = new Set();
 
-              const clientObj = transformedClients.find(c => {
-                const cid = c._id ? String(c._id) : (c.clientId ? String(c.clientId) : (c.id ? String(c.id) : null));
-                return cid === clientId;
-              });
+              const clientObj = clientLookup.get(clientId);
 
               const advDetails = getAdvanceTargetDetails(p, clientObj);
               if (advDetails && advDetails.targetDueDates.length > 0) {
@@ -816,13 +847,19 @@ const DailyDues = () => {
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch('https://karanfinance.com/api/clients/all', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
+      const [res, payRes] = await Promise.all([
+        fetch('https://karanfinance.com/api/clients/all', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        }),
+        fetch('https://karanfinance.com/api/payments/test/all')
+      ]);
 
       if (!res.ok) throw new Error('Failed to fetch clients');
 
-      const data = await res.json();
+      const [data, payJson] = await Promise.all([
+        res.json(),
+        payRes.ok ? payRes.json() : Promise.resolve(null)
+      ]);
 
       if (data.success && data.clients) {
         const loggedInUser = getLoggedInUser();
@@ -856,8 +893,6 @@ const DailyDues = () => {
         });
 
         try {
-          const payRes = await fetch('https://karanfinance.com/api/payments/test/all');
-          const payJson = payRes.ok ? await payRes.json() : null;
           const rawPayments = filterPaymentsForUser((payJson && payJson.data && payJson.data.payments) || [], loggedInUser);
           const seenIds = new Set();
           const payments = [];
@@ -877,6 +912,14 @@ const DailyDues = () => {
           const collectorsMap = {};
           const paymentsByClient = {};
 
+          // Fast O(1) client lookup map to eliminate O(N*M) loop freeze
+          const clientLookup = new Map();
+          transformedClients.forEach(c => {
+            if (c._id) clientLookup.set(String(c._id), c);
+            if (c.clientId) clientLookup.set(String(c.clientId), c);
+            if (c.id) clientLookup.set(String(c.id), c);
+          });
+
           payments.forEach(p => {
             const clientId = p.client && p.client._id
               ? String(p.client._id)
@@ -891,10 +934,7 @@ const DailyDues = () => {
 
               if (!paidDatesMap[clientId]) paidDatesMap[clientId] = new Set();
 
-              const clientObj = transformedClients.find(c => {
-                const cid = c._id ? String(c._id) : (c.clientId ? String(c.clientId) : (c.id ? String(c.id) : null));
-                return cid === clientId;
-              });
+              const clientObj = clientLookup.get(clientId);
 
               const advDetails = getAdvanceTargetDetails(p, clientObj);
               if (advDetails && advDetails.targetDueDates.length > 0) {
@@ -1189,15 +1229,26 @@ const DailyDues = () => {
     let totalPaid = 0;
 
     filtered.forEach(client => {
-      const remainingDue = calculateCurrentDue(client, statsDate);
-      if (!isClientPaidOnDate(client, statsDate)) {
+      // DUE: exclude a client only if cash was RECEIVED on this date (createdAt-based).
+      // Consistent with getCashReceivedOnDate so that advance payments entered yesterday
+      // with tomorrow's paymentDate do NOT pre-reduce today's DUE.
+      // Only a normal (non-advance) payment dated on THIS due date settles this date's due.
+      // Advance payments (future weeks) or previous-week payments received today must NOT
+      // remove today's due from the DUE box.
+      const dueWeek = (getClientWeekSchedule(client, statsDate) || []).find(w => w.dueDate === statsDate);
+      const paidOnDueDate = !!dueWeek && (dueWeek.payments || []).some(p =>
+        !/advance/i.test(String(p.notes || '')) && p.isAdvance !== true &&
+        toLocalDateStr(p.paymentDate) === statsDate
+      );
+      if (!paidOnDueDate) {
+        const remainingDue = calculateCurrentDue(client, statsDate);
         totalDue += remainingDue;
       }
     });
 
     // PAID = cash actually received on this date (any due week: current, previous or advance).
-    // Counted by the day it was received, not by the due date it settled, and includes clients
-    // that are not due on this date.
+    // Counted by the day it was received (createdAt), not by the due date it settled,
+    // and includes clients that are not due on this date.
     clients.forEach(client => {
       if (selectedDistrict && client.district !== selectedDistrict) return;
       if (selectedLandmark && client.landmark !== selectedLandmark) return;

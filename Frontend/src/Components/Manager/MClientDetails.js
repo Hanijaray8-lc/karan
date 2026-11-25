@@ -20,6 +20,9 @@ const MClientDetails = () => {
   const [weekDateFilter, setWeekDateFilter] = useState(''); // date filter: show clients due in that date's week
   const [districts, setDistricts] = useState([]);
   const [landmarks, setLandmarks] = useState([]);
+  // Pagination state (30 clients per page)
+  const [currentPage, setCurrentPage] = useState(1);
+  const CLIENTS_PER_PAGE = 30;
   const FORCED_WEEKLY = 575;
   const [myAgents, setMyAgents] = useState([]);
   const [duePayments, setDuePayments] = useState([]);
@@ -488,6 +491,36 @@ const MClientDetails = () => {
     return matchesSearch && matchesDistrict && matchesLandmark && matchesStatus && matchesWeekDate;
   });
 
+  // Pagination calculations (30 clients per page)
+  const totalPages = Math.max(1, Math.ceil(filteredClients.length / CLIENTS_PER_PAGE));
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+  const paginatedClients = filteredClients.slice(
+    (safeCurrentPage - 1) * CLIENTS_PER_PAGE,
+    safeCurrentPage * CLIENTS_PER_PAGE
+  );
+
+  // Go back to page 1 whenever any filter changes
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, selectedDistrict, selectedLandmark, selectedStatus, weekDateFilter]);
+
+  // Build page number list with ellipsis (e.g. 1 ... 4 5 6 ... 12)
+  const getPageNumbers = () => {
+    const pages = [];
+    if (totalPages <= 7) {
+      for (let i = 1; i <= totalPages; i++) pages.push(i);
+    } else {
+      pages.push(1);
+      if (safeCurrentPage > 3) pages.push('...');
+      const start = Math.max(2, safeCurrentPage - 1);
+      const end = Math.min(totalPages - 1, safeCurrentPage + 1);
+      for (let i = start; i <= end; i++) pages.push(i);
+      if (safeCurrentPage < totalPages - 2) pages.push('...');
+      pages.push(totalPages);
+    }
+    return pages;
+  };
+
   // Open cancel confirmation modal
   const openCancelConfirmModal = (paymentId, paymentAmount, clientId) => {
     setCancelPaymentData({ paymentId, paymentAmount, clientId });
@@ -915,10 +948,18 @@ const MClientDetails = () => {
           }
         });
 
+        const isForeclosePayment = (p) => {
+          const m = (p.paymentMethod || '').toLowerCase();
+          const n = (p.notes || '').toLowerCase();
+          return m === 'foreclosure' || n.includes('foreclose');
+        };
+        const clientIsClosed = selectedClient?.status === 'paid';
+
         // Pass 1: Exact date range match (pISO between weekStartISO and weekEndISO)
         // Skip payments that are advance payments or already used
         uniquePayments.forEach(p => {
           if (isUsed(p)) return;
+          if (isForeclosePayment(p) && !clientIsClosed) return;
           const notes = (p.notes || '').trim();
           if (/advance/i.test(notes) || p.isAdvance === true) return;
 
@@ -942,6 +983,7 @@ const MClientDetails = () => {
         // Skip payments that are advance payments or already used
         uniquePayments.forEach(p => {
           if (isUsed(p)) return;
+          if (isForeclosePayment(p) && !clientIsClosed) return;
           const notes = (p.notes || '').trim();
           if (/advance/i.test(notes) || p.isAdvance === true) return;
 
@@ -963,20 +1005,12 @@ const MClientDetails = () => {
 
         // Pass 3: If loan was foreclosed, mark remaining unpaid weeks as paid
         const currentLoanStart = selectedClient?.loan_start_date ? new Date(selectedClient.loan_start_date) : null;
-        const currentForeclosurePayment = uniquePayments.find(p => {
-          const method = (p.paymentMethod || '').toLowerCase();
-          const notes = (p.notes || '').toLowerCase();
-          const isFp = method === 'foreclosure' || notes.includes('foreclose');
-          if (!isFp) return false;
-          if (!currentLoanStart) return true;
-          const pDate = new Date(p.paymentDate || p.createdAt || p.date || 0);
-          return pDate >= currentLoanStart;
-        });
+        const currentForeclosurePayment = clientIsClosed
+          ? uniquePayments.find(p => isForeclosePayment(p) && (!currentLoanStart || new Date(p.paymentDate || p.createdAt || p.date || 0) >= currentLoanStart))
+          : null;
 
-        const isForeclosed = !!currentForeclosurePayment || (
-          selectedClient?.status === 'paid' &&
-          ((selectedClient?.notes || '').toLowerCase().includes('foreclose') || selectedClient?.isForeclosed === true)
-        );
+        const isForeclosed = clientIsClosed && (!!currentForeclosurePayment ||
+          ((selectedClient?.notes || '').toLowerCase().includes('foreclose') || selectedClient?.isForeclosed === true));
 
         if (isForeclosed) {
           const fp = currentForeclosurePayment;
@@ -1538,7 +1572,7 @@ const MClientDetails = () => {
             {/* Client Grid - 5 columns */}
             {!loading && filteredClients.length > 0 && (
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-                {filteredClients.map((client) => (
+                {paginatedClients.map((client) => (
                   <div
                     key={client._id}
                     onClick={() => handleClientSelect(client)}
@@ -1564,6 +1598,49 @@ const MClientDetails = () => {
                     </div>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {/* Pagination Controls */}
+            {!loading && filteredClients.length > CLIENTS_PER_PAGE && (
+              <div className="mt-5 flex flex-col sm:flex-row items-center justify-between gap-3 bg-white rounded-lg p-3 shadow">
+                <p className="text-xs text-[#16423C] font-medium">
+                  Showing {(safeCurrentPage - 1) * CLIENTS_PER_PAGE + 1}
+                  {' - '}
+                  {Math.min(safeCurrentPage * CLIENTS_PER_PAGE, filteredClients.length)} of {filteredClients.length} clients
+                </p>
+                <div className="flex items-center gap-1 flex-wrap justify-center">
+                  <button
+                    onClick={() => setCurrentPage(Math.max(1, safeCurrentPage - 1))}
+                    disabled={safeCurrentPage === 1}
+                    className="px-3 py-1.5 rounded-lg text-xs font-semibold border-2 border-[#16423C]/20 text-[#16423C] bg-white hover:bg-[#16423C] hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white disabled:hover:text-[#16423C]"
+                  >
+                    ‹ Prev
+                  </button>
+                  {getPageNumbers().map((page, idx) =>
+                    page === '...' ? (
+                      <span key={`ellipsis-${idx}`} className="px-2 text-[#16423C] text-xs">...</span>
+                    ) : (
+                      <button
+                        key={page}
+                        onClick={() => setCurrentPage(page)}
+                        className={`min-w-[32px] px-2.5 py-1.5 rounded-lg text-xs font-semibold border-2 transition-colors ${page === safeCurrentPage
+                          ? 'bg-[#16423C] text-white border-[#16423C]'
+                          : 'bg-white text-[#16423C] border-[#16423C]/20 hover:bg-[#E9EFEC]'
+                          }`}
+                      >
+                        {page}
+                      </button>
+                    )
+                  )}
+                  <button
+                    onClick={() => setCurrentPage(Math.min(totalPages, safeCurrentPage + 1))}
+                    disabled={safeCurrentPage === totalPages}
+                    className="px-3 py-1.5 rounded-lg text-xs font-semibold border-2 border-[#16423C]/20 text-[#16423C] bg-white hover:bg-[#16423C] hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white disabled:hover:text-[#16423C]"
+                  >
+                    Next ›
+                  </button>
+                </div>
               </div>
             )}
 

@@ -30,6 +30,9 @@ const savePdfBase64 = async (fileName, base64) => {
 
 const PendingClients = () => {
   const navigate = useNavigate();
+  // Number of client cards per page in the mobile view
+  const MOBILE_PAGE_SIZE = 20;
+  const [mobilePage, setMobilePage] = useState(1);
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -55,13 +58,6 @@ const PendingClients = () => {
   const [payLoading, setPayLoading] = useState(false);
   const [payErrorMsg, setPayErrorMsg] = useState('');
   const [paySuccessMsg, setPaySuccessMsg] = useState('');
-
-  // Pagination: 20 clients per page
-  const PAGE_SIZE = 20;
-  const [currentPage, setCurrentPage] = useState(1);
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [searchQuery, selectedDistrict, selectedLandmark, selectedAgent, selectedEndDate]);
 
   const showNotification = (message, type = 'success') => {
     setNotification({ message, type });
@@ -696,28 +692,22 @@ const PendingClients = () => {
 
   const filteredList = getFilteredClients();
 
+  // Mobile pagination: back to page 1 whenever a filter or search changes
+  useEffect(() => {
+    setMobilePage(1);
+  }, [searchQuery, selectedDistrict, selectedLandmark, selectedAgent, selectedEndDate]);
+
+  const mobileTotalPages = Math.max(1, Math.ceil(filteredList.length / MOBILE_PAGE_SIZE));
+  const mobileCurrentPage = Math.min(mobilePage, mobileTotalPages);
+  const mobileStartIndex = (mobileCurrentPage - 1) * MOBILE_PAGE_SIZE;
+  const pageList = filteredList.slice(mobileStartIndex, mobileStartIndex + MOBILE_PAGE_SIZE);
+
   const metrics = {
     totalClients: filteredList.length,
     totalOutstanding: filteredList.reduce((sum, c) => sum + getClientOutstanding(c), 0),
     totalPushes: filteredList.reduce((sum, c) => sum + getClientOverdueOrPushedWeeks(c), 0),
     avgPending: filteredList.length > 0 ? Math.round(filteredList.reduce((sum, c) => sum + getClientOutstanding(c), 0) / filteredList.length) : 0
   };
-
-  // Pagination (metrics above still use the full filtered list)
-  const totalPages = Math.max(1, Math.ceil(filteredList.length / PAGE_SIZE));
-  const safePage = Math.min(currentPage, totalPages);
-  const pageOffset = (safePage - 1) * PAGE_SIZE;
-  const paginatedList = filteredList.slice(pageOffset, pageOffset + PAGE_SIZE);
-  const pageNumbers = (() => {
-    const maxButtons = 5;
-    let start = Math.max(1, safePage - Math.floor(maxButtons / 2));
-    const end = Math.min(totalPages, start + maxButtons - 1);
-    start = Math.max(1, end - maxButtons + 1);
-    const pages = [];
-    for (let p = start; p <= end; p++) pages.push(p);
-    return pages;
-  })();
-  const pageBtnClass = "px-3 py-1.5 text-sm rounded-lg border border-gray-200 text-[#16423C] hover:bg-emerald-50 disabled:opacity-40 disabled:cursor-not-allowed";
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
@@ -865,82 +855,8 @@ const PendingClients = () => {
             </div>
           ) : (
             <>
-              {/* Mobile cards (below md) */}
-              <div className="md:hidden divide-y divide-gray-100">
-                {paginatedList.map((client, idx) => {
-                  const outstanding = getClientOutstanding(client);
-                  const pushes = getClientOverdueOrPushedWeeks(client);
-                  const currentDue = calculateCurrentDue(client);
-                  const isPast = isLoanPastEndDate(client);
-                  return (
-                    <div
-                      key={client._id}
-                      onClick={() => navigate(`/Admin/AClientDetails?clientId=${client._id}`)}
-                      className="p-4 active:bg-slate-50 cursor-pointer"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="font-bold text-gray-800 break-words">
-                            <span className="text-gray-400 font-semibold mr-1.5">{pageOffset + idx + 1}.</span>
-                            {client.name}
-                          </div>
-                          <div className="text-xs text-gray-400 mt-0.5">{client.phone}</div>
-                          <div className="font-mono text-[11px] font-semibold text-gray-500 mt-0.5">ID: {client.clientId || 'N/A'}</div>
-                        </div>
-                        <div className="text-right flex-shrink-0">
-                          <div className="text-[11px] text-gray-400 uppercase font-semibold">Outstanding</div>
-                          <div className="font-extrabold text-red-600">₹{outstanding.toLocaleString('en-IN')}</div>
-                        </div>
-                      </div>
-
-                      <div className="text-xs text-gray-600 mt-2">
-                        <span className="font-semibold text-gray-700">{client.landmark || 'N/A'}</span>
-                        <span className="text-gray-400"> • {client.district || 'N/A'}</span>
-                      </div>
-
-                      <div className="grid grid-cols-3 gap-2 mt-3">
-                        <div className="bg-slate-50 rounded-lg p-2 text-center">
-                          <div className="text-[10px] text-gray-400 uppercase font-semibold">End Date</div>
-                          <div className={`text-xs font-bold mt-0.5 ${isPast ? 'text-red-600' : 'text-slate-700'}`}>{formatDate(client.loan_end_date)}</div>
-                        </div>
-                        <div className="bg-slate-50 rounded-lg p-2 text-center">
-                          <div className="text-[10px] text-gray-400 uppercase font-semibold">Overdue</div>
-                          <div className="text-xs font-bold text-yellow-600 mt-0.5">{pushes} Weeks</div>
-                        </div>
-                        <div className="bg-slate-50 rounded-lg p-2 text-center">
-                          <div className="text-[10px] text-gray-400 uppercase font-semibold">Next Due</div>
-                          <div className={`text-xs font-bold mt-0.5 ${currentDue > 0 ? 'text-orange-600' : 'text-green-600'}`}>₹{currentDue.toLocaleString('en-IN')}</div>
-                        </div>
-                      </div>
-
-                      <div className="flex gap-2 mt-3">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleOpenPayModal(client);
-                          }}
-                          className="flex-1 bg-[#16423C] hover:bg-[#1f5a52] text-white px-3 py-2 rounded-lg text-xs font-bold transition-all shadow-sm active:scale-95 flex items-center justify-center gap-1.5"
-                        >
-                          <i className="fas fa-money-bill-wave text-xs"></i>
-                          Pay
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            navigate(`/Admin/AClientDetails?clientId=${client._id}`);
-                          }}
-                          className="flex-1 bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-2 rounded-lg text-xs font-bold transition-all shadow-sm active:scale-95"
-                        >
-                          View
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Desktop / tablet table (md and up) */}
-              <div className="hidden md:block w-full overflow-x-auto">
+              {/* Desktop / tablet table (sm and up) */}
+              <div className="hidden sm:block w-full overflow-x-auto">
                 <table className="w-full min-w-[950px] text-left border-collapse">
                   <thead>
                     <tr className="bg-gradient-to-r from-emerald-800 to-[#16423C] text-white text-xs font-bold uppercase tracking-wider">
@@ -956,7 +872,7 @@ const PendingClients = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100 text-sm text-gray-700">
-                    {paginatedList.map((client, idx) => {
+                    {pageList.map((client, idx) => {
                       const outstanding = getClientOutstanding(client);
                       const pushes = getClientOverdueOrPushedWeeks(client);
                       const currentDue = calculateCurrentDue(client);
@@ -969,7 +885,7 @@ const PendingClients = () => {
                           className="hover:bg-slate-50/80 transition-colors cursor-pointer group"
                           title="Click to view client details"
                         >
-                          <td className="px-5 py-4 font-semibold text-gray-500">{pageOffset + idx + 1}</td>
+                          <td className="px-5 py-4 font-semibold text-gray-500">{mobileStartIndex + idx + 1}</td>
                           <td className="px-5 py-4">
                             <div className="font-bold text-gray-800 group-hover:text-emerald-700 transition-colors">{client.name}</div>
                             <div className="text-xs text-gray-400 mt-0.5">{client.phone}</div>
@@ -1029,30 +945,115 @@ const PendingClients = () => {
                 </table>
               </div>
 
-              {/* Pagination */}
-              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3 border-t border-gray-100 bg-slate-50/60">
-                <p className="text-xs sm:text-sm text-gray-500 text-center">
-                  Showing {pageOffset + 1}–{Math.min(pageOffset + PAGE_SIZE, filteredList.length)} of {filteredList.length} clients
+              {/* Mobile card view (below sm) */}
+              <div className="sm:hidden divide-y divide-gray-100">
+                {pageList.map((client, idx) => {
+                  const outstanding = getClientOutstanding(client);
+                  const pushes = getClientOverdueOrPushedWeeks(client);
+                  const currentDue = calculateCurrentDue(client);
+                  const isPast = isLoanPastEndDate(client);
+
+                  return (
+                    <div
+                      key={client._id}
+                      onClick={() => navigate(`/Admin/AClientDetails?clientId=${client._id}`)}
+                      className="p-4 min-w-0 cursor-pointer active:bg-slate-50"
+                    >
+                      {/* Name + outstanding */}
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold text-gray-400">#{mobileStartIndex + idx + 1}</p>
+                          <p className="font-bold text-gray-800 break-words">{client.name}</p>
+                          <p className="text-xs text-gray-400 break-words">{client.phone}</p>
+                        </div>
+                        <p className="text-lg font-extrabold text-red-600 shrink-0">
+                          ₹{outstanding.toLocaleString('en-IN')}
+                        </p>
+                      </div>
+
+                      {/* Details grid */}
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-3 mt-4 text-sm">
+                        <div className="min-w-0">
+                          <p className="text-xs text-gray-500">Client ID</p>
+                          <p className="font-mono text-xs font-semibold text-gray-700 break-all">{client.clientId || 'N/A'}</p>
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs text-gray-500">Overdue / Pushes</p>
+                          <p className="font-bold text-yellow-600">{pushes} Weeks</p>
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs text-gray-500">Landmark / District</p>
+                          <p className="font-semibold text-gray-800 break-words">{client.landmark || 'N/A'}</p>
+                          <p className="text-xs text-gray-400 break-words">{client.district || 'N/A'}</p>
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs text-gray-500">Loan End Date</p>
+                          <span className={`inline-block mt-0.5 px-2.5 py-1 rounded-lg text-xs font-bold ${isPast ? 'bg-red-50 text-red-600 border border-red-200' : 'bg-slate-100 text-slate-700'
+                            }`}>
+                            {formatDate(client.loan_end_date)}
+                          </span>
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs text-gray-500">Next Due</p>
+                          <span className={`inline-block mt-0.5 px-3 py-1 rounded-full font-bold text-xs ${currentDue > 0 ? 'bg-orange-50 text-orange-600 border border-orange-100' : 'bg-green-50 text-green-600 border border-green-100'
+                            }`}>
+                            ₹{currentDue.toLocaleString('en-IN')}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Actions */}
+                      <div className="grid grid-cols-2 gap-2 mt-4">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleOpenPayModal(client);
+                          }}
+                          className="bg-[#16423C] hover:bg-[#1f5a52] text-white py-2.5 rounded-lg text-sm font-bold transition-all shadow-sm active:scale-95 flex items-center justify-center gap-1.5"
+                        >
+                          <i className="fas fa-money-bill-wave text-xs"></i>
+                          Pay
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigate(`/Admin/AClientDetails?clientId=${client._id}`);
+                          }}
+                          className="bg-emerald-50 text-emerald-700 border border-emerald-200 py-2.5 rounded-lg text-sm font-bold transition-all shadow-sm active:scale-95"
+                        >
+                          View
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Pagination (20 clients per page, all screen sizes) */}
+              <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-t border-gray-100 bg-slate-50/60">
+                <p className="text-xs text-gray-500">
+                  {mobileStartIndex + 1}–{Math.min(mobileStartIndex + MOBILE_PAGE_SIZE, filteredList.length)} of{' '}
+                  <span className="font-semibold text-gray-700">{filteredList.length}</span>
                 </p>
-                {totalPages > 1 && (
-                  <div className="flex flex-wrap items-center justify-center gap-1">
-                    <button onClick={() => setCurrentPage(1)} disabled={safePage === 1} className={pageBtnClass}>«</button>
-                    <button onClick={() => setCurrentPage(Math.max(1, safePage - 1))} disabled={safePage === 1} className={pageBtnClass}>Prev</button>
-                    {pageNumbers.map(p => (
-                      <button
-                        key={p}
-                        onClick={() => setCurrentPage(p)}
-                        className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${p === safePage
-                          ? 'bg-[#16423C] text-white border-[#16423C]'
-                          : 'border-gray-200 text-[#16423C] hover:bg-emerald-50'}`}
-                      >
-                        {p}
-                      </button>
-                    ))}
-                    <button onClick={() => setCurrentPage(Math.min(totalPages, safePage + 1))} disabled={safePage === totalPages} className={pageBtnClass}>Next</button>
-                    <button onClick={() => setCurrentPage(totalPages)} disabled={safePage === totalPages} className={pageBtnClass}>»</button>
-                  </div>
-                )}
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setMobilePage((p) => Math.max(1, p - 1))}
+                    disabled={mobileCurrentPage <= 1}
+                    className="px-3 py-1.5 text-xs font-bold border border-gray-300 rounded-lg bg-white disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    Prev
+                  </button>
+                  <span className="text-xs text-gray-700 whitespace-nowrap">
+                    {mobileCurrentPage} / {mobileTotalPages}
+                  </span>
+                  <button
+                    onClick={() => setMobilePage((p) => Math.min(mobileTotalPages, p + 1))}
+                    disabled={mobileCurrentPage >= mobileTotalPages}
+                    className="px-3 py-1.5 text-xs font-bold border border-gray-300 rounded-lg bg-white disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    Next
+                  </button>
+                </div>
               </div>
             </>
           )}
